@@ -2,7 +2,6 @@
 app/config.py
 TV alt codes
 
-.env
 aws_creds.cvs
 
 
@@ -74,7 +73,7 @@ Thumbs.db
 ############################################
 # PDFs
 ############################################
-* .pdf
+*.pdf
 
 
 # local secrets
