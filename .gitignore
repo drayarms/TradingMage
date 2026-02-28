@@ -1,0 +1,77 @@
+.venv/
+app/config.py
+TV alt codes
+
+.env
+
+
+############################################
+# Terraform
+############################################
+
+# Local Terraform directories
+**/.terraform/*
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Terraform CLI config files
+.terraformrc
+terraform.rc
+
+############################################
+# Terraform variable files (secrets)
+############################################
+
+# Variable definition files that may contain secrets
+*.tfvars
+*.tfvars.json
+
+# Explicit examples (if you use them)
+terraform.tfvars
+terraform.tfvars.json
+
+############################################
+# Terraform plan files
+############################################
+
+# Binary plan output
+*.tfplan
+*.plan
+
+############################################
+# Lambda / build artifacts
+############################################
+
+# Zip files created by archive_file
+*.zip
+
+############################################
+# OS / Editor noise
+############################################
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Vim
+*.swp
+*.swo
+
+
+############################################
+# PDFs
+############################################
+* .pdf
+

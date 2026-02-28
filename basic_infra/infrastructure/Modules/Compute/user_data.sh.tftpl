@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+# Enable strict mode shell
+# -e exit immidiately if any command fails
+# -u error if any undefined var is used
+# -o pipefail (fail if any command in a pipeline fails)
+# This prevents silent, partially configured servers
+set -euo pipefail
+
+# Terraform evaluates templatefile() locally. Reads user_data.sh.tftpl. Replaces:
+# ${app_name}, ${ecr_repo_url}, ${tv_webhook_secret}
+# Produces a fully rendered bash script. Terraform sends that rendered script to AWS. It becomes the EC2 instance’s user data
+# EC2 executes it automatically
+# Runs once, rus as boot, runs on first boot only.
+# Runs only on instance creation, if we change user_data.sh.tftpl or run terraform apply. Terraform will NOT re-run it unless:
+# The EC2 instance is replaced, or
+# We explicitly force it (e.g. taint / replace)
+# So terraform apply will not rerun script but terraform apply -replace=aws_intance.web will
+
+#Variables injected from Terraform templatefile(), backed into the EC2 instance at boot time
+APP_NAME="${app_name}"
+ECR_REPO_URL="${ecr_repo_url}"
+TV_WEBHOOK_SECRET="${tv_webhook_secret}"
+
+# SYSTEM UPDATE + BASE PACKAGES
+# Refreshes Ubuntu’s package index. Required before installing anything
+apt-get update -y
+#Installs: ca-certificates → TLS trust store, curl → download files, gnupg → verify Docker’s GPG key, nginx → reverse proxy in front of FastAPI
+apt-get install -y ca-certificates curl gnupg nginx
+
+# DOCKER
+# DOCKER INSTALLATION (OFFICIAL METHOD)
+# Creates a secure directory for apt signing keys. Required by modern Docker install instructions
+install -m 0755 -d /etc/apt/keyrings
+# Downloads Docker’s official GPG key. Converts it to binary format for apt
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+# Allows apt to read the key
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Adds Docker’s official repository to apt. Automatically matches Ubuntu version (Jammy 22.04)
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+	> /etc/apt/sources.list.d/docker.list
+
+apt-get update -y
+# Docker engine, Docker CLI, Container runtime, Buildx plugin (useful later)
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+#Starts Docker immediately, Enables it on every reboot
+systemctl enable --now docker
+
+# NGINX REVERSE PROXY CONFIGURATION
+# Writes a new nginx site config. Uses APP_NAME as filename (tv-webhook). Cat reads from stdin and writes (overwrites) to the fielpath. The heredoc supplies that input
+# Listens on port 80. Accepts traffic for any hostname
+# Forwards incoming webhook requests to FastAPI. FastAPI is not exposed publicly. Nginx is the only public entry point
+cat >/etc/nginx/sites-available/${APP_NAME} <<'NGINX'
+server {
+	listen 80;
+	server_name _;
+
+	location /health {
+		return 200 "ok\n";
+	}
+
+	location /webhook/tradingview {
+		proxy_pass http://127.0.0.1:8000;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+	}
+}
+NGINX
+
+# ENABLE THE NGINX SITE
+rm -f /etc/nginx/sites-enabled/default # Removes Ubuntu’s default site
+ln -sf /etc/nginx/sites-available/${APP_NAME} /etc/nginx/sites-enabled/${APP_NAME} # Enables our site via symlink
+nginx -t # Validates nginx config. Script will fail if config is invalid (good)
+systemctl restart nginx # Restarts nginx with your config
+systemctl enable nginx # Enables nginx on reboot
+
+# CREATE A SYSTEMD SERVICE FOR FASTAPI CONTAINER (CI/CD WILL PULL + RESTART)
+# Creates a systemd unit file. Ensures Docker is running before starting the app. Automatically restarts if the container crashes.
+# Deletes any old container with the same name. - prefix means “ignore errors”
+# Runs our container: Binds FastAPI only to localhost. Injects TV_WEBHOOK_SECRET. Uses latest image from ECR
+# Public traffic can only reach it via nginx
+# Clean shutdown on stop/restart
+# Enables this service at normal system boot
+cat >/etc/systemd/system/${APP_NAME}.service <<SYSTEMD
+[Unit]
+Description=${APP_NAME} container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}
+ExecStart=/usr/bin/docker run --name ${APP_NAME} --restart unless-stopped \
+	-p 127.0.0.1:8000:8000 \
+	-e TV_WEBHOOK_SECRET=${TV_WEBHOOK_SECRET} \
+	${ECR_REPO_URL}:latest
+ExecStop=/usr/bin/docker stop ${APP_NAME}
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+
+# ACTIVATE SYSTEMD SERVICE
+systemctl daemon-reload # Reloads systemd to recognize the new service
+systemctl enable ${APP_NAME}.service # Enables the service on boot
+# Don't start yet (no image pulled yet). CI/CD will do it after it pushes the first image.
+
+
+# Key architectural takeaways
+# Nginx is the public edge (port 80)
+# FastAPI is private (127.0.0.1:8000)
+# systemd keeps the container alive
+# CI/CD controls when new code is deployed
+# Secrets are injected securely via env vars
+# No SSH required in production later
