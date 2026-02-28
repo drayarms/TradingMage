@@ -35,9 +35,9 @@ jobs:
       - name: Terraform Apply
         working-directory: basic_infra/infrastructure
         env:
-          TF_VAR_ALLOWED_SSH_CIDR: ${{ secrets.TF_VAR_ALLOWED_SSH_CIDR }}
-          TF_VAR_TV_WEBHOOK_SECRET: ${{ secrets.TF_VAR_TV_WEBHOOK_SECRET }}
-        run: terraform apply -auto-approve
+          TF_VAR_allowed_ssh_cidr: ${{ secrets.TF_VAR_ALLOWED_SSH_CIDR }} # Assigned to allowed_ssh_cidr
+          TF_VAR_tv_webhook_secret: ${{ secrets.TF_VAR_TV_WEBHOOK_SECRET }} # Assigned to tv_webhook_secret
+        run: terraform apply -auto-approve -input=false # input=false forces TF to fail fast instead of waiting for an input shold an error occur
 
       - name: Read Terraform outputs
         id: tfout
