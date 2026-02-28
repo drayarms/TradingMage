@@ -76,3 +76,10 @@ Thumbs.db
 ############################################
 * .pdf
 
+
+# local secrets
+aws_creds.csv
+aws_creds.*
+.env
+*.pem
+*.key
