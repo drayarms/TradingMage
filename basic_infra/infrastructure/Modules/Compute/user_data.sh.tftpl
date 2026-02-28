@@ -49,10 +49,10 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 systemctl enable --now docker
 
 # NGINX REVERSE PROXY CONFIGURATION
-# Writes a new nginx site config. Uses APP_NAME as filename (tv-webhook). Cat reads from stdin and writes (overwrites) to the fielpath. The heredoc supplies that input
+# Writes a new nginx site config. Uses app_name as filename (tv-webhook). Cat reads from stdin and writes (overwrites) to the fielpath. The heredoc supplies that input
 # Listens on port 80. Accepts traffic for any hostname
 # Forwards incoming webhook requests to FastAPI. FastAPI is not exposed publicly. Nginx is the only public entry point
-cat >/etc/nginx/sites-available/${APP_NAME} <<'NGINX'
+cat >/etc/nginx/sites-available/${app_name} <<'NGINX'
 server {
 	listen 80;
 	server_name _;
@@ -73,7 +73,7 @@ NGINX
 
 # ENABLE THE NGINX SITE
 rm -f /etc/nginx/sites-enabled/default # Removes Ubuntu’s default site
-ln -sf /etc/nginx/sites-available/${APP_NAME} /etc/nginx/sites-enabled/${APP_NAME} # Enables our site via symlink
+ln -sf /etc/nginx/sites-available/${app_name} /etc/nginx/sites-enabled/${app_name} # Enables our site via symlink
 nginx -t # Validates nginx config. Script will fail if config is invalid (good)
 systemctl restart nginx # Restarts nginx with your config
 systemctl enable nginx # Enables nginx on reboot
@@ -81,24 +81,24 @@ systemctl enable nginx # Enables nginx on reboot
 # CREATE A SYSTEMD SERVICE FOR FASTAPI CONTAINER (CI/CD WILL PULL + RESTART)
 # Creates a systemd unit file. Ensures Docker is running before starting the app. Automatically restarts if the container crashes.
 # Deletes any old container with the same name. - prefix means “ignore errors”
-# Runs our container: Binds FastAPI only to localhost. Injects TV_WEBHOOK_SECRET. Uses latest image from ECR
+# Runs our container: Binds FastAPI only to localhost. Injects tv_webhook_secret. Uses latest image from ECR
 # Public traffic can only reach it via nginx
 # Clean shutdown on stop/restart
 # Enables this service at normal system boot
-cat >/etc/systemd/system/${APP_NAME}.service <<SYSTEMD
+cat >/etc/systemd/system/${app_name}.service <<SYSTEMD
 [Unit]
-Description=${APP_NAME} container
+Description=${app_name} container
 After=docker.service
 Requires=docker.service
 
 [Service]
 Restart=always
-ExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}
-ExecStart=/usr/bin/docker run --name ${APP_NAME} --restart unless-stopped \
+ExecStartPre=-/usr/bin/docker rm -f ${app_name}
+ExecStart=/usr/bin/docker run --name ${app_name} --restart unless-stopped \
 	-p 127.0.0.1:8000:8000 \
-	-e TV_WEBHOOK_SECRET=${TV_WEBHOOK_SECRET} \
-	${ECR_REPO_URL}:latest
-ExecStop=/usr/bin/docker stop ${APP_NAME}
+	-e TV_WEBHOOK_SECRET=${tv_webhook_secret} \
+	${ecr_repo_url}:latest
+ExecStop=/usr/bin/docker stop ${app_name}
 
 [Install]
 WantedBy=multi-user.target
@@ -106,7 +106,7 @@ SYSTEMD
 
 # ACTIVATE SYSTEMD SERVICE
 systemctl daemon-reload # Reloads systemd to recognize the new service
-systemctl enable ${APP_NAME}.service # Enables the service on boot
+systemctl enable ${app_name}.service # Enables the service on boot
 # Don't start yet (no image pulled yet). CI/CD will do it after it pushes the first image.
 
 

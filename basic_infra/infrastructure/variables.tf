@@ -8,6 +8,11 @@ variable "project_name" {
 	default = "trading-mage"
 }
 
+variable "app_name" {
+  type    = string
+  default = "trading-mage-app"
+}
+
 # Minimal: 1 AZ. Can add more later
 variable "azs" {
 	type    = list(string)
