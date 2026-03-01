@@ -6,7 +6,7 @@ provider "aws"{ # Runtime config of provider. Determines where AWS API calls go,
 # Create S3 bucket for remote state
 resource "aws_s3_bucket" "tf_state" { # Stores remote state file (terraform.tfstate)
 	bucket = var.s3_bucket_name # Must be globally unique
-	#force_destroy = true
+	force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "tf_state"{ # Manages versioning config for existing S3 bucket. Every state file change creates a new version, comes in handy for rolling back.

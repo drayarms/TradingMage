@@ -10,6 +10,7 @@ permissions:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
+  APP_NAME: trading-mage-app # var.trading-mage-app from TF
 
 jobs:
   terraform:
@@ -108,38 +109,48 @@ jobs:
 
       - name: Deploy on EC2 (SSH)
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_REPO_URL: ${{ steps.infraout.outputs.ecr_repo_url }}        
         with:
           host: ${{ steps.infraout.outputs.ec2_ip }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           passphrase: ${{ secrets.EC2_SSH_KEY_PASSPHRASE }}
-          envs: AWS_REGION
+          envs: AWS_REGION,APP_NAME,ECR_REPO_URL
           script: |
             set -euo pipefail
 
-            # Ensure awscli exists on the host so we can auth Docker to ECR
-            if ! command -v aws >/dev/null 2>&1; then
-              sudo apt-get update -y
-              sudo apt-get install -y awscli
+            echo "APP_NAME=$APP_NAME"
+            echo "ECR_REPO_URL=$ECR_REPO_URL"
+
+
+            # Ensure ECR helper exist
+            if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
+              echo "ERROR: docker-credential-ecr-login not installed on host (user_data likely didn't run on this instance)."
+              echo "Either replace the instance or install amazon-ecr-credential-helper once."
+              exit 1
             fi
 
-            ECR_REPO="${{ steps.infraout.outputs.ecr_repo_url }}"
-            REGISTRY="$(echo "$ECR_REPO" | cut -d/ -f1)"
+            # Ensure systemd unit exists
+            if [ ! -f "/etc/systemd/system/${APP_NAME}.service" ]; then
+              echo "ERROR: /etc/systemd/system/${APP_NAME}.service not found (user_data may not have run)."
+              sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage|trading' || true
+              exit 1
+            fi            
 
-            aws ecr get-login-password --region "${AWS_REGION}" \
-              | sudo docker login --username AWS --password-stdin "$REGISTRY"
-
-            sudo docker pull "${ECR_REPO}:latest"
-
-
-
-            sudo systemctl list-unit-files --type=service | grep -E 'webhook|tv|mage' || true
-            sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage' || true
+            sudo docker pull "${ECR_REPO_URL}:latest"
 
 
+            # Debug
+            sudo systemctl list-unit-files --type=service | grep -E 'webhook|tv|mage|trading' || true
+            sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage|trading' || true
 
-            sudo systemctl restart tv-webhook.service
-            sudo systemctl --no-pager status tv-webhook.service
+
+            sudo systemctl daemon-reload
+            sudo systemctl restart "${APP_NAME}.service"
+            sudo systemctl --no-pager status "${APP_NAME}.service"            
 
             sudo nginx -t
             sudo systemctl reload nginx
+
+
