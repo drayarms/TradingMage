@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs: # Exposes outputs producesd by a (later) step in this job so that downstream jobs can use them, akin to return vals of a function
       ecr_repo_url: ${{ steps.tfout.outputs.ecr_repo_url }}
-      ec2_dns: ${{ steps.tfout.outputs.ec2_dns }}
+      ec2_ip: ${{ steps.tfout.outputs.ec2_ip }}
+      #ec2_dns: ${{ steps.tfout.outputs.ec2_dns }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +46,12 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y jq
           echo "ecr_repo_url=$(terraform output -raw ecr_repo_url)" >> $GITHUB_OUTPUT
-          echo "ec2_dns=$(terraform output -json ec2_public_dns | jq -r '.[0]')" >> $GITHUB_OUTPUT
+          echo "ec2_ip=$(terraform output -json ec2_public_ips | jq -r '.[0]')" >> $GITHUB_OUTPUT 
+
+      - name: Debug Terraform outputs
+        run: |
+          echo "ECR URL = '${{ steps.tfout.outputs.ecr_repo_url }}'"
+          echo "EC2 IP = '${{ steps.tfout.outputs.ec2_ip }}'"
 
   build_push_deploy:
     runs-on: ubuntu-latest
@@ -72,7 +78,8 @@ jobs:
       - name: Deploy on EC2 (SSH)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform.outputs.ec2_dns }}
+          host: ${{ needs.terraform.outputs.ec2_ip }}
+          #host: ${{ needs.terraform.outputs.ec2_dns }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: AWS_REGION
@@ -98,3 +105,6 @@ jobs:
 
             sudo nginx -t
             sudo systemctl reload nginx
+outputs
+echo
+DNS
