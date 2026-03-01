@@ -130,8 +130,17 @@ jobs:
               | sudo docker login --username AWS --password-stdin "$REGISTRY"
 
             sudo docker pull "${ECR_REPO}:latest"
+
+
+
+            sudo systemctl list-unit-files --type=service | grep -E 'webhook|tv|mage' || true
+            sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage' || true
+
+
+
             sudo systemctl restart tv-webhook.service
             sudo systemctl --no-pager status tv-webhook.service
 
             sudo nginx -t
             sudo systemctl reload nginx
+awscli
