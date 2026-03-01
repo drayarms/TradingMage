@@ -55,7 +55,8 @@ jobs:
 
   build_push_deploy:
     runs-on: ubuntu-latest
-    needs: terraform # Depends on the last job terraform
+    needs: terraform
+
     steps:
       - uses: actions/checkout@v4
 
@@ -67,19 +68,48 @@ jobs:
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
-                      
+
+      # Read Terraform outputs independently (from remote state)
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init (read outputs)
+        working-directory: basic_infra/infrastructure
+        run: terraform init -input=false
+
+      - name: Read infra outputs (ECR + EC2 IP)
+        id: infraout
+        working-directory: basic_infra/infrastructure
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          echo "ecr_repo_url=$(terraform output -raw ecr_repo_url)" >> $GITHUB_OUTPUT
+          echo "ec2_ip=$(terraform output -json ec2_public_ips | jq -r '.[0]')" >> $GITHUB_OUTPUT
+
+      - name: Debug infra outputs
+        run: |
+          echo "ECR='${{ steps.infraout.outputs.ecr_repo_url }}'"
+          echo "EC2_IP='${{ steps.infraout.outputs.ec2_ip }}'"
+
       - name: Build & Push image to ECR
         working-directory: app
         run: |
-          IMAGE="${{ needs.terraform.outputs.ecr_repo_url }}:latest"
+          set -euo pipefail
+
+          ECR="${{ steps.infraout.outputs.ecr_repo_url }}"
+          if [ -z "$ECR" ]; then
+            echo "ERROR: ecr_repo_url is empty"
+            exit 1
+          fi
+
+          IMAGE="$ECR:latest"
+          echo "Building image: $IMAGE"
+
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
       - name: Deploy on EC2 (SSH)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform.outputs.ec2_ip }}
-          #host: ${{ needs.terraform.outputs.ec2_dns }}
+          host: ${{ steps.infraout.outputs.ec2_ip }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: AWS_REGION
@@ -92,10 +122,9 @@ jobs:
               sudo apt-get install -y awscli
             fi
 
-            ECR_REPO="${{ needs.terraform.outputs.ecr_repo_url }}"
+            ECR_REPO="${{ steps.infraout.outputs.ecr_repo_url }}"
             REGISTRY="$(echo "$ECR_REPO" | cut -d/ -f1)"
 
-            # Login Docker to ECR, pull latest image, restart service
             aws ecr get-login-password --region "${AWS_REGION}" \
               | sudo docker login --username AWS --password-stdin "$REGISTRY"
 
