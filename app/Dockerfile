@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . . # Copy the rest of the contents of src parent dir to docker container's /app
+COPY . .
 
 ENV PYTHONUNBUFFERED=1 
 EXPOSE 8000
