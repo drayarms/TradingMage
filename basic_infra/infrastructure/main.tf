@@ -29,7 +29,7 @@ module "compute"{
 	allowed_ssh_cidr     = var.allowed_ssh_cidr # assinged in CI/CD pipeline
 	instance_type        = var.instance_type # Assigned in variables.tf
 
-	# Key pair created outside Terraform
+	# Key pair created outside Terraform #
 	key_name            = var.key_name
 
 	# ECR
