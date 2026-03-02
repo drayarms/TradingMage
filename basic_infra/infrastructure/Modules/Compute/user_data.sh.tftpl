@@ -33,11 +33,11 @@ chown root:root /etc/trading-mage-image.env
 chmod 600 /etc/trading-mage-image.env
 
 # APP ENV FILE (secrets/config)
-cat >/etc/trading-mage.env <<EOF
-TV_WEBHOOK_SECRET="${tv_webhook_secret}"
-APCA_API_BASE_URL="${apca_api_base_url}"
-APCA_API_KEY_ID="${apca_api_key_id}"
-APCA_API_SECRET_KEY="${apca_api_secret_key}"
+cat >/etc/trading-mage.env <<'EOF'
+TV_WEBHOOK_SECRET=${tv_webhook_secret}
+APCA_API_BASE_URL=${apca_api_base_url}
+APCA_API_KEY_ID=${apca_api_key_id}
+APCA_API_SECRET_KEY=${apca_api_secret_key}
 EOF
 
 chown root:root /etc/trading-mage.env
@@ -123,6 +123,7 @@ systemctl enable nginx # Enables nginx on reboot
 # Public traffic can only reach it via nginx
 # Clean shutdown on stop/restart
 # Enables this service at normal system boot
+
 cat >/etc/systemd/system/$APP_NAME.service <<SYSTEMD
 [Unit]
 Description=$APP_NAME container
@@ -132,16 +133,10 @@ Requires=docker.service
 
 [Service]
 Restart=always
-EnvironmentFile=/etc/trading-mage.env
-EnvironmentFile=/etc/trading-mage-image.env
+RestartSec=2
 
 ExecStartPre=-/usr/bin/docker rm -f $APP_NAME
-
-ExecStart=/usr/bin/docker run --name $APP_NAME \
-  -p 127.0.0.1:8000:8000 \
-  $ECR_REPO_URL:\$${IMAGE_TAG} \
-  python -m uvicorn app:app --host 0.0.0.0 --port 8000
-
+ExecStart=/usr/bin/docker run --name $APP_NAME --env-file /etc/trading-mage.env --env-file /etc/trading-mage-image.env -p 127.0.0.1:8000:8000 $ECR_REPO_URL:\$${IMAGE_TAG} python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ExecStop=/usr/bin/docker stop $APP_NAME
 ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
 
@@ -149,7 +144,10 @@ ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
 WantedBy=multi-user.target
 SYSTEMD
 
+#Tests
 test -s "/etc/systemd/system/$APP_NAME.service"
+grep -c '^ExecStart=' "/etc/systemd/system/$APP_NAME.service" | grep -q '^1$'
+
 
 # ACTIVATE SYSTEMD SERVICE
 systemctl daemon-reload # Reloads systemd to recognize the new service
