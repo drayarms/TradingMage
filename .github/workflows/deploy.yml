@@ -135,34 +135,59 @@ jobs:
             echo "ECR_REPO_URL=$ECR_REPO_URL"
             echo "IMAGE_TAG=$IMAGE_TAG"
 
-            # Ensure ECR helper exist
+            # Ensure ECR helper exists
             if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
               echo "ERROR: docker-credential-ecr-login not installed on host (user_data likely didn't run on this instance)."
               echo "Either replace the instance or install amazon-ecr-credential-helper once."
               exit 1
             fi
 
-            # Ensure systemd unit exists
+            # Ensure systemd unit file exists on disk
             if [ ! -f "/etc/systemd/system/${APP_NAME}.service" ]; then
               echo "ERROR: /etc/systemd/system/${APP_NAME}.service not found (user_data may not have run)."
               sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage|trading' || true
               exit 1
-            fi                 
+            fi
 
             echo "Updating /etc/trading-mage-image.env to IMAGE_TAG=${IMAGE_TAG}"
             echo "IMAGE_TAG=${IMAGE_TAG}" | sudo tee /etc/trading-mage-image.env >/dev/null
             sudo chmod 600 /etc/trading-mage-image.env
+            sudo chown root:root /etc/trading-mage-image.env
 
             echo "Pulling immutable image: ${ECR_REPO_URL}:${IMAGE_TAG}"
             sudo docker pull "${ECR_REPO_URL}:${IMAGE_TAG}"
 
+            echo "---- systemd preflight ----"
+            sudo systemctl is-enabled "${APP_NAME}.service" || true
+            sudo systemctl is-active "${APP_NAME}.service" || true
+            sudo ls -l "/etc/systemd/system/${APP_NAME}.service" || true
+
+            # If it's masked, unmask it (masked units can never be started)
+            sudo systemctl unmask "${APP_NAME}.service" || true
+
+            # Make sure systemd loads latest unit definition
+            sudo systemctl daemon-reload
+
+            # Enable service (idempotent)
+            sudo systemctl enable "${APP_NAME}.service" || true
+
+            # Reset failed state (now that unit is loadable)
             sudo systemctl reset-failed "${APP_NAME}.service" || true
 
-            sudo cat /etc/trading-mage-image.env
-            sudo systemctl show "${APP_NAME}.service" -p EnvironmentFiles            
-            
-            sudo systemctl restart "${APP_NAME}.service"
-            sudo systemctl --no-pager status "${APP_NAME}.service" -l          
+            echo "---- show EnvironmentFiles ----"
+            sudo systemctl show "${APP_NAME}.service" -p EnvironmentFiles || true
+            sudo cat /etc/trading-mage-image.env || true
+            sudo cat /etc/trading-mage.env || true
+
+            echo "---- restart service ----"
+            if ! sudo systemctl restart "${APP_NAME}.service"; then
+              echo "ERROR: restart failed. Dumping status + logs..."
+              sudo systemctl --no-pager status "${APP_NAME}.service" -l || true
+              sudo journalctl -u "${APP_NAME}.service" -n 120 --no-pager || true
+              exit 1
+            fi
+
+            sudo systemctl --no-pager status "${APP_NAME}.service" -l
 
             sudo nginx -t
             sudo systemctl reload nginx
