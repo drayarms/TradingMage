@@ -34,10 +34,10 @@ chmod 600 /etc/trading-mage-image.env
 
 # APP ENV FILE (secrets/config)
 cat >/etc/trading-mage.env <<EOF
-TV_WEBHOOK_SECRET=$${TV_WEBHOOK_SECRET}
-APCA_API_BASE_URL=$${APCA_API_BASE_URL}
-APCA_API_KEY_ID=$${APCA_API_KEY_ID}
-APCA_API_SECRET_KEY=$${APCA_API_SECRET_KEY}
+TV_WEBHOOK_SECRET="${tv_webhook_secret}"
+APCA_API_BASE_URL="${apca_api_base_url}"
+APCA_API_KEY_ID="${apca_api_key_id}"
+APCA_API_SECRET_KEY="${apca_api_secret_key}"
 EOF
 
 chown root:root /etc/trading-mage.env
