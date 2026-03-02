@@ -94,7 +94,7 @@ resource "aws_security_group" "web_sg" {
 }
 
 
-# Minimal phase: 1 EC2 instance (first public subnet!)
+# Minimal phase: 1 EC2 instance (first public subnet)
 resource "aws_instance" "web" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type

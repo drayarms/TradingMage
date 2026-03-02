@@ -135,8 +135,15 @@ Requires=docker.service
 Restart=always
 RestartSec=2
 
+# systemd needs this so it can expand \${IMAGE_TAG} in ExecStart
+EnvironmentFile=/etc/trading-mage-image.env
+
 ExecStartPre=-/usr/bin/docker rm -f $APP_NAME
-ExecStart=/usr/bin/docker run --name $APP_NAME --env-file /etc/trading-mage.env --env-file /etc/trading-mage-image.env -p 127.0.0.1:8000:8000 $ECR_REPO_URL:\$${IMAGE_TAG} python -m uvicorn app:app --host 0.0.0.0 --port 8000
+ExecStart=/usr/bin/docker run --name $APP_NAME \
+  --env-file /etc/trading-mage.env \
+  -p 127.0.0.1:8000:8000 \
+  $ECR_REPO_URL:\${IMAGE_TAG} \
+  python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ExecStop=/usr/bin/docker stop $APP_NAME
 ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
 
