@@ -33,11 +33,11 @@ chown root:root /etc/trading-mage-image.env
 chmod 600 /etc/trading-mage-image.env
 
 # APP ENV FILE (secrets/config)
-cat >/etc/trading-mage.env <<'EOF'
-TV_WEBHOOK_SECRET=${tv_webhook_secret}
-APCA_API_BASE_URL=${apca_api_base_url}
-APCA_API_KEY_ID=${apca_api_key_id}
-APCA_API_SECRET_KEY=${apca_api_secret_key}
+cat >/etc/trading-mage.env <<EOF
+TV_WEBHOOK_SECRET=$TV_WEBHOOK_SECRET
+APCA_API_BASE_URL=$APCA_API_BASE_URL
+APCA_API_KEY_ID=$APCA_API_KEY_ID
+APCA_API_SECRET_KEY=$APCA_API_SECRET_KEY
 EOF
 
 chown root:root /etc/trading-mage.env
@@ -135,17 +135,13 @@ Requires=docker.service
 Restart=always
 RestartSec=2
 
-# systemd needs this so it can expand \${IMAGE_TAG} in ExecStart
+Environment="ECR_REPO_URL=${ecr_repo_url}"
 EnvironmentFile=/etc/trading-mage-image.env
 
-ExecStartPre=-/usr/bin/docker rm -f $APP_NAME
-ExecStart=/usr/bin/docker run --name $APP_NAME \
-  --env-file /etc/trading-mage.env \
-  -p 127.0.0.1:8000:8000 \
-  $ECR_REPO_URL:\${IMAGE_TAG} \
-  python -m uvicorn app:app --host 0.0.0.0 --port 8000
-ExecStop=/usr/bin/docker stop $APP_NAME
-ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
+ExecStartPre=-/usr/bin/docker rm -f %p
+ExecStart=/usr/bin/docker run --name %p --env-file /etc/trading-mage.env -p 127.0.0.1:8000:8000 ${ECR_REPO_URL}:${IMAGE_TAG} python -m uvicorn app:app --host 0.0.0.0 --port 8000
+ExecStop=/usr/bin/docker stop %p
+ExecStopPost=-/usr/bin/docker rm -f %p
 
 [Install]
 WantedBy=multi-user.target
