@@ -139,7 +139,7 @@ ExecStartPre=-/usr/bin/docker rm -f $APP_NAME
 
 ExecStart=/usr/bin/docker run --name $APP_NAME \
   -p 127.0.0.1:8000:8000 \
-  $ECR_REPO_URL:$${IMAGE_TAG} \
+  $ECR_REPO_URL:\$${IMAGE_TAG} \
   python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 ExecStop=/usr/bin/docker stop $APP_NAME
