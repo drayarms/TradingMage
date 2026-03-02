@@ -17,10 +17,30 @@ set -euo pipefail
 # We explicitly force it (e.g. taint / replace)
 # So terraform apply will not rerun script but terraform apply -replace=aws_intance.web will
 
-#Variables injected from Terraform templatefile(), backed into the EC2 instance at boot time
+#Variables injected from Terraform templatefile(), baked into the EC2 instance at boot time
 APP_NAME="${app_name}"
 ECR_REPO_URL="${ecr_repo_url}"
 TV_WEBHOOK_SECRET="${tv_webhook_secret}"
+APCA_API_BASE_URL="${apca_api_base_url}"
+APCA_API_KEY_ID="${apca_api_key_id}"
+APCA_API_SECRET_KEY="${apca_api_secret_key}"
+
+# IMAGE TAG FILE (updated by CI/CD)
+cat >/etc/trading-mage-image.env <<EOF
+IMAGE_TAG=bootstrap
+EOF
+chown root:root /etc/trading-mage-image.env
+chmod 600 /etc/trading-mage-image.env
+
+# APP ENV FILE (secrets/config)
+cat >/etc/trading-mage.env <<EOF
+TV_WEBHOOK_SECRET="${TV_WEBHOOK_SECRET}"
+APCA_API_BASE_URL="${APCA_API_BASE_URL}"
+APCA_API_KEY_ID="${APCA_API_KEY_ID}"
+APCA_API_SECRET_KEY="${APCA_API_SECRET_KEY}"
+EOF
+chown root:root /etc/trading-mage.env
+chmod 600 /etc/trading-mage.env
 
 # SYSTEM UPDATE + BASE PACKAGES
 # Refreshes Ubuntu’s package index. Required before installing anything
@@ -69,7 +89,7 @@ systemctl enable --now docker
 # Writes a new nginx site config. Uses app_name as filename (tv-webhook). Cat reads from stdin and writes (overwrites) to the fielpath. The heredoc supplies that input
 # Listens on port 80. Accepts traffic for any hostname
 # Forwards incoming webhook requests to FastAPI. FastAPI is not exposed publicly. Nginx is the only public entry point
-cat >/etc/nginx/sites-available/$APP_NAME <<'NGINX'
+cat >/etc/nginx/sites-available/"$APP_NAME" <<'NGINX'
 server {
 	listen 80;
 	server_name _;
@@ -90,7 +110,7 @@ NGINX
 
 # ENABLE THE NGINX SITE
 rm -f /etc/nginx/sites-enabled/default # Removes Ubuntu’s default site
-ln -sf /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/$APP_NAME # Enables our site via symlink
+ln -sf /etc/nginx/sites-available/"$APP_NAME" /etc/nginx/sites-enabled/"$APP_NAME" # Enables our site via symlink
 nginx -t # Validates nginx config. Script will fail if config is invalid (good)
 systemctl restart nginx # Restarts nginx with your config
 systemctl enable nginx # Enables nginx on reboot
@@ -105,17 +125,24 @@ systemctl enable nginx # Enables nginx on reboot
 cat >/etc/systemd/system/$APP_NAME.service <<SYSTEMD
 [Unit]
 Description=$APP_NAME container
-After=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
 Requires=docker.service
 
 [Service]
 Restart=always
+EnvironmentFile=/etc/trading-mage.env
+EnvironmentFile=/etc/trading-mage-image.env
+
 ExecStartPre=-/usr/bin/docker rm -f $APP_NAME
-ExecStart=/usr/bin/docker run --name $APP_NAME --restart unless-stopped \
-	-p 127.0.0.1:8000:8000 \
-	-e TV_WEBHOOK_SECRET=$TV_WEBHOOK_SECRET \
-	$ECR_REPO_URL:latest
+
+ExecStart=/usr/bin/docker run --name $APP_NAME \
+  -p 127.0.0.1:8000:8000 \
+  $ECR_REPO_URL:$${IMAGE_TAG} \
+  python -m uvicorn app:app --host 0.0.0.0 --port 8000
+
 ExecStop=/usr/bin/docker stop $APP_NAME
+ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
 
 [Install]
 WantedBy=multi-user.target

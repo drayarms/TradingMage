@@ -11,6 +11,7 @@ permissions:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   APP_NAME: trading-mage-app # var.trading-mage-app from TF
+  IMAGE_TAG: ${{ github.sha }}  
 
 jobs:
   terraform:
@@ -39,6 +40,9 @@ jobs:
         env:
           TF_VAR_allowed_ssh_cidr: ${{ secrets.TF_VAR_ALLOWED_SSH_CIDR }} # Assigned to allowed_ssh_cidr
           TF_VAR_tv_webhook_secret: ${{ secrets.TF_VAR_TV_WEBHOOK_SECRET }} # Assigned to tv_webhook_secret
+          TF_VAR_apca_api_key_id: ${{ secrets.TF_VAR_APCA_API_KEY_ID }}
+          TF_VAR_apca_api_secret_key: ${{ secrets.TF_VAR_APCA_API_SECRET_KEY }}
+          TF_VAR_apca_api_base_url: ${{ secrets.TF_VAR_APCA_API_BASE_URL }}        
         run: terraform apply -auto-approve -input=false # input=false forces TF to fail fast instead of waiting for an input shold an error occur
 
       - name: Read Terraform outputs
@@ -101,11 +105,18 @@ jobs:
             exit 1
           fi
 
-          IMAGE="$ECR:latest"
+          IMAGE="$ECR:${{ env.IMAGE_TAG }}"
           echo "Building image: $IMAGE"
 
-          docker build -t "$IMAGE" .
+          docker build --pull -t "$IMAGE" .
           docker push "$IMAGE"
+
+          # Also move latest to this digest for convenience (not used for deploy)
+          # Create a second tag reference (latest) pointing to the same image digest above
+          docker tag "$IMAGE" "$ECR:latest"
+          # Push only the tag metadata, not the image again. Since the layers already exist in ECR, Docker just updates the tag -> digest mapping
+          docker push "$ECR:latest"
+          # ECR stores images by digest, not by tag
 
       - name: Deploy on EC2 (SSH)
         uses: appleboy/ssh-action@v1.0.3
@@ -116,13 +127,13 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           passphrase: ${{ secrets.EC2_SSH_KEY_PASSPHRASE }}
-          envs: AWS_REGION,APP_NAME,ECR_REPO_URL
+          envs: AWS_REGION,APP_NAME,ECR_REPO_URL,IMAGE_TAG
           script: |
             set -euo pipefail
 
             echo "APP_NAME=$APP_NAME"
             echo "ECR_REPO_URL=$ECR_REPO_URL"
-
+            echo "IMAGE_TAG=$IMAGE_TAG"
 
             # Ensure ECR helper exist
             if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
@@ -136,21 +147,23 @@ jobs:
               echo "ERROR: /etc/systemd/system/${APP_NAME}.service not found (user_data may not have run)."
               sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage|trading' || true
               exit 1
-            fi            
+            fi                 
 
-            sudo docker pull "${ECR_REPO_URL}:latest"
+            echo "Updating /etc/trading-mage-image.env to IMAGE_TAG=${IMAGE_TAG}"
+            echo "IMAGE_TAG=${IMAGE_TAG}" | sudo tee /etc/trading-mage-image.env >/dev/null
+            sudo chmod 600 /etc/trading-mage-image.env
 
+            echo "Pulling immutable image: ${ECR_REPO_URL}:${IMAGE_TAG}"
+            sudo docker pull "${ECR_REPO_URL}:${IMAGE_TAG}"
 
-            # Debug
-            sudo systemctl list-unit-files --type=service | grep -E 'webhook|tv|mage|trading' || true
-            sudo ls -lah /etc/systemd/system | grep -E 'webhook|tv|mage|trading' || true
+            sudo systemctl reset-failed "${APP_NAME}.service" || true
 
-
-            sudo systemctl daemon-reload
+            sudo cat /etc/trading-mage-image.env
+            sudo systemctl show "${APP_NAME}.service" -p EnvironmentFiles            
+            
             sudo systemctl restart "${APP_NAME}.service"
-            sudo systemctl --no-pager status "${APP_NAME}.service"            
+            sudo systemctl --no-pager status "${APP_NAME}.service" -l          
 
             sudo nginx -t
             sudo systemctl reload nginx
-
 

@@ -35,8 +35,11 @@ module "compute"{
 	# ECR
 	ecr_repo_url        = aws_ecr_repository.app.repository_url
 
-	# App secret
+	# App secrets
 	tv_webhook_secret   = var.tv_webhook_secret		
+  apca_api_base_url   = var.apca_api_base_url
+  apca_api_key_id     = var.apca_api_key_id
+  apca_api_secret_key = var.apca_api_secret_key	
 }
 
 resource "aws_ecr_repository" "app" {

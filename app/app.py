@@ -9,8 +9,9 @@ Date Created: Feb 12, 2026
 #from pytz import timezone
 from zoneinfo import ZoneInfo
 #import time
-import config 
+#import config 
 import dataframes
+import os
 
 import json
 from datetime import datetime, timezone
@@ -18,6 +19,26 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
 import logging
 
+import alpaca_trade_api as tradeapi
+
+from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
+
+
+logger = logging.getLogger("tv-webhook")
+logger.setLevel(logging.INFO)
+
+TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # required
+# Example optional vars:
+APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
+APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
+APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+
+
+api = tradeapi.REST(
+    base_url=APCA_API_BASE_URL,
+    key_id=APCA_API_KEY_ID,
+    secret_key=APCA_API_SECRET_KEY
+)
 
 #import os
 #import os.path
@@ -28,7 +49,7 @@ SECURITIES = []
 
 
 # Get our account information.
-account = config.api.get_account()
+account = api.get_account()
 
 #PACIFIC_TZ = timezone('US/Pacific')
 #EASTERN_TZ = timezone('US/Eastern')
@@ -43,13 +64,9 @@ if account.trading_blocked:
     logger.info("Account is currently restricted from trading")
 
 
-logger = logging.getLogger("tv-webhook")
-logger.setLevel(logging.INFO)
 
 
-
-
-if not config.TV_WEBHOOK_SECRET:
+if not TV_WEBHOOK_SECRET:
 	raise RuntimeError("Missing TV_WEBHOOK_SECRET environment variable")
 
 app = FastAPI(title="TradingView Webhook - Print Signals Only")
@@ -113,7 +130,7 @@ async def tradingview_webhook(request: Request):
 	payload = await request.json()
 
 	# 1) Auth
-	if payload.get("secret") != config.TV_WEBHOOK_SECRET: #Ensure secret obtained from payload matches the configured secret to preven some random payload from accessing app
+	if payload.get("secret") != TV_WEBHOOK_SECRET: #Ensure secret obtained from payload matches the configured secret to preven some random payload from accessing app
 		logger.warning("Invalid webhook secret")
 		raise HTTPException(status_code=401, detail="Invalid secret")
 

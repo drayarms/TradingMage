@@ -108,9 +108,12 @@ resource "aws_instance" "web" {
   #templatefile() is a Terraform built-in function that lets you treat a file as a parameterized template, render it with variables, and pass the rendered result somewhere (like EC2 user_data). Runs during terraform plan/apply, not on EC2, in CI, or dynamically at runtime
   #In this setup, it’s the bridge between Terraform variables and a bash script.
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    ecr_repo_url      = var.ecr_repo_url
-    app_name          = var.app_name
-    tv_webhook_secret = var.tv_webhook_secret
+    ecr_repo_url        = var.ecr_repo_url
+    app_name            = var.app_name
+    tv_webhook_secret   = var.tv_webhook_secret
+    apca_api_base_url   = var.apca_api_base_url
+    apca_api_key_id     = var.apca_api_key_id
+    apca_api_secret_key = var.apca_api_secret_key
   })
 
   tags = {

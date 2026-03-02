@@ -58,3 +58,18 @@ variable "tv_webhook_secret" {
 	type      = string
 	sensitive = true
 }
+
+variable "apca_api_base_url" {
+	type      = string
+	sensitive = true
+}
+
+variable "apca_api_key_id" {
+	type      = string
+	sensitive = true
+}
+
+variable "apca_api_secret_key" {
+	type      = string
+	sensitive = true
+}
