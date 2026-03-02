@@ -149,6 +149,8 @@ ExecStopPost=-/usr/bin/docker rm -f $APP_NAME
 WantedBy=multi-user.target
 SYSTEMD
 
+test -s "/etc/systemd/system/$APP_NAME.service"
+
 # ACTIVATE SYSTEMD SERVICE
 systemctl daemon-reload # Reloads systemd to recognize the new service
 systemctl enable $APP_NAME.service # Enables the service on boot
