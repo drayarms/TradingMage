@@ -165,6 +165,13 @@ jobs:
             # If it's masked, unmask it (masked units can never be started)
             sudo systemctl unmask "${APP_NAME}.service" || true
 
+            # If unmask removed the unit (or it's empty), fail fast with a clear message
+            if [ ! -s "/etc/systemd/system/${APP_NAME}.service" ]; then
+              echo "ERROR: unit file missing/empty after unmask. user_data likely wrote an empty unit due to IMAGE_TAG expansion."
+              sudo ls -lah /etc/systemd/system/${APP_NAME}.service || true
+              exit 1
+            fi
+
             # Make sure systemd loads latest unit definition
             sudo systemctl daemon-reload
 
@@ -192,3 +199,4 @@ jobs:
             sudo nginx -t
             sudo systemctl reload nginx
 
+unmask
