@@ -57,20 +57,19 @@ SECURITIES = []
 #import math
 
 
-# Get our account information.
-account = api.get_account()
-
 #PACIFIC_TZ = timezone('US/Pacific')
 #EASTERN_TZ = timezone('US/Eastern')
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 EASTERN_TZ = ZoneInfo("America/New_York")
 MY_TZ = EASTERN_TZ
 
+# Get our account information.
+#account = api.get_account()
 
 # Check if our account is restricted from trading.
-if account.trading_blocked:
+#if account.trading_blocked:
     #print('Account is currently restricted from trading.')
-    logger.info("Account is currently restricted from trading")
+    #logger.info("Account is currently restricted from trading")
 
 
 
@@ -139,6 +138,16 @@ def _normalize_signal(sig: str) -> str:
 def _h(s: str) -> str:
 	return hashlib.sha256((s or "").encode()).hexdigest()[:12]
 
+# When app starts, this function runs once
+#systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
+@app.on_event("startup")
+def _startup():
+	try:
+		account = api.get_account()
+		if account.trading_blocked:
+			logger.info("Account is currently restricted from trading")
+	except Exception:
+		logger.exception("Alpaca get_account failed during startup")
 
 @app.get("/health")
 def health():
@@ -150,14 +159,14 @@ async def tradingview_webhook(request: Request):
 	try:
 		payload = await request.json()
 	except Exception:
-		raw = await request.json()
+		raw = await request.body()
 		logger.warning("Bad JSON. raw=%r", raw[:500])
 		raise HTTPException(status_code=400, detail="Invalid JSON")
 
 	# 1) Auth
 	if payload.get("secret") != TV_WEBHOOK_SECRET: #Ensure secret obtained from payload matches the configured secret to preven some random payload from accessing app
 		logger.warning(
-			"Invalid webhook secret"
+			"Invalid webhook secret. got=%s expected=%s keys=%s",
 			_h(str(payload.get("secret"))),
 			_h(TV_WEBHOOK_SECRET),
 			sorted(payload.keys()),

@@ -195,13 +195,38 @@ jobs:
             fi
 
             # Ensures running container is actually replaced by newly built image. Especially useful on subsequent builds.
-            sudo docker ps --filter "name=${APP_NAME}" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" 
-            RUNNING_IMAGE="$(sudo docker ps --filter "name=^/${APP_NAME}$" --format "{{.Image}}")"
+            echo "---- verify container is running expected image ----"
+
+            # Give systemd/docker a moment to recreate the container after restart
+            for i in $(seq 1 15); do
+              RUNNING_IMAGE="$(sudo docker ps --filter "name=${APP_NAME}" --format "{{.Image}}" | head -n 1 || true)"
+              if [ -n "$RUNNING_IMAGE" ]; then
+                break
+              fi
+              echo "Waiting for container '${APP_NAME}' to appear... ($i/15)"
+              sleep 1
+            done
+
+            sudo docker ps --filter "name=${APP_NAME}" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+
+            if [ -z "$RUNNING_IMAGE" ]; then
+              echo "ERROR: container '${APP_NAME}' not running after restart"
+              sudo systemctl --no-pager status "${APP_NAME}.service" -l || true
+              sudo journalctl -u "${APP_NAME}.service" -n 120 --no-pager || true
+              sudo docker ps -a --filter "name=${APP_NAME}" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+              sudo docker logs "${APP_NAME}" --tail 120 || true
+              exit 1
+            fi
+
             echo "RUNNING_IMAGE=$RUNNING_IMAGE"
-            case "$RUNNING_IMAGE" in
-              "${ECR_REPO_URL}:${IMAGE_TAG}") echo "OK: running expected image tag" ;;
-              *) echo "ERROR: expected ${ECR_REPO_URL}:${IMAGE_TAG} but running $RUNNING_IMAGE"; exit 1 ;;
-            esac            
+            if [ "$RUNNING_IMAGE" != "${ECR_REPO_URL}:${IMAGE_TAG}" ]; then
+              echo "ERROR: expected ${ECR_REPO_URL}:${IMAGE_TAG} but running $RUNNING_IMAGE"
+              exit 1
+            fi
+
+            echo "OK: running expected image tag"
+
+
 
             sudo systemctl --no-pager status "${APP_NAME}.service" -l
 
