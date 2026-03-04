@@ -18,14 +18,23 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, HTTPException
 import logging
+import sys
 
 import alpaca_trade_api as tradeapi
 
+import hashlib
+
 from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
 
+logging.basicConfig(
+	level=logging.INFO,
+	stream=sys.stdout,
+	format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 logger = logging.getLogger("tv-webhook")
 logger.setLevel(logging.INFO)
+logger.propagate = True
 
 TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # required
 # Example optional vars:
@@ -103,7 +112,6 @@ def _normalize_tf(tf: str) -> str:
 
 	return t
 
-
 def _utc_iso_to_pacific(iso_str: str) -> str:
 	if not iso_str:
 		return ""
@@ -119,6 +127,18 @@ def _utc_iso_to_pacific(iso_str: str) -> str:
 	except Exception:
 		return iso_str  # fallback, don't break webhook	
 
+def _normalize_signal(sig: str) -> str:
+	s = (sig or "").strip().lower()
+	# allow "buy+", "sell+", and anything like "buy++++"
+	if s.startswith("buy"):
+		return "buy"
+	if s.startswith("sell"):
+		return "sell"
+	return s		
+
+def _h(s: str) -> str:
+	return hashlib.sha256((s or "").encode()).hexdigest()[:12]
+
 
 @app.get("/health")
 def health():
@@ -127,19 +147,29 @@ def health():
 
 @app.post("/webhook/tradingview")
 async def tradingview_webhook(request: Request):
-	payload = await request.json()
+	try:
+		payload = await request.json()
+	except Exception:
+		raw = await request.json()
+		logger.warning("Bad JSON. raw=%r", raw[:500])
+		raise HTTPException(status_code=400, detail="Invalid JSON")
 
 	# 1) Auth
 	if payload.get("secret") != TV_WEBHOOK_SECRET: #Ensure secret obtained from payload matches the configured secret to preven some random payload from accessing app
-		logger.warning("Invalid webhook secret")
+		logger.warning(
+			"Invalid webhook secret"
+			_h(str(payload.get("secret"))),
+			_h(TV_WEBHOOK_SECRET),
+			sorted(payload.keys()),
+		)
 		raise HTTPException(status_code=401, detail="Invalid secret")
 
-
 	# 2) Parse
-	symbol = str(payload.get("symbol", "")).upper()
+	symbol = str(payload.get("symbol", "")).upper().strip()
 	timeframe = _normalize_tf(str(payload.get("timeframe", "")))
-	signal = str(payload.get("signal", "")).lower()
-	bar_close_time = str(payload.get("bar_close_time", ""))
+	#signal = str(payload.get("signal", "")).lower()
+	signal = _normalize_signal(str(payload.get("signal", "")).lower().strip())
+	bar_close_time = str(payload.get("bar_close_time", "")).strip()
 
 	price = payload.get("price", None)
 	if price is not None:
@@ -150,6 +180,10 @@ async def tradingview_webhook(request: Request):
 
 	# 3) Validate minimal fields
 	if not symbol or not timeframe or signal not in ("buy", "sell") or not bar_close_time:
+		logger.warning(
+			"Invalid fields: symbol=%r tf=%r signal=%r bar_close_time=%r payload_keys=%s",
+			symbol, timeframe, signal, bar_close_time, sorted(payload.keys())
+		)		
 		raise HTTPException(status_code=400, detail="Missing/invalid fields")
 
 	# 4) Print nicely
