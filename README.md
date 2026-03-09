@@ -1,5 +1,5 @@
 TradingMage – TradingView LuxAlgo Webhook Integration
-Overview:
+Overview
 
 This project enables TradingView LuxAlgo alerts to send webhook payloads to a publicly reachable FastAPI service, which receives, validates, and processes trading signals for automated or semi-automated trading workflows.
 
