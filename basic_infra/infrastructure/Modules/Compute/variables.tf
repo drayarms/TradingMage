@@ -36,3 +36,13 @@ variable "apca_api_secret_key" {
 	type      = string
 	sensitive = true
 }
+
+variable "redis_ebs_size_gb" {
+	type    = number
+	default = 8
+}
+
+variable "redis_ebs_type" {
+	type    = string
+	default = "gp3"
+}

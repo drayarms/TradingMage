@@ -119,6 +119,29 @@ resource "aws_instance" "web" {
   tags = {
     Name = "${var.project_name}-${var.app_name}-ec2"
   }
+
+  depends_on = [
+    aws_iam_instance_profile.ec2_profile
+  ]
+
 }
 
+
+resource "aws_ebs_volume" "redis_data" {
+  availability_zone = aws_instance.web.availability_zone
+  size              = var.redis_ebs_size_gb
+  type              = var.redis_ebs_type
+  encrypted         = true
+
+  tags = {
+    Name = "${var.project_name}-${var.app_name}-redis-data"
+  }
+}
+
+resource "aws_volume_attachment" "redis_data" {
+  device_name  = "/dev/sdf"
+  volume_id    = aws_ebs_volume.redis_data.id
+  instance_id  = aws_instance.web.id
+  force_detach = true
+}
 

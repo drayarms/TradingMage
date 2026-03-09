@@ -1,23 +1,8 @@
 #!/usr/bin/env bash
 
-# Enable strict mode shell
-# -e exit immidiately if any command fails
-# -u error if any undefined var is used
-# -o pipefail (fail if any command in a pipeline fails)
-# This prevents silent, partially configured servers
 set -euo pipefail
 
-# Terraform evaluates templatefile() locally. Reads user_data.sh.tftpl. Replaces:
-# ${app_name}, ${ecr_repo_url}, ${tv_webhook_secret}
-# Produces a fully rendered bash script. Terraform sends that rendered script to AWS. It becomes the EC2 instance’s user data
-# EC2 executes it automatically
-# Runs once, rus as boot, runs on first boot only.
-# Runs only on instance creation, if we change user_data.sh.tftpl or run terraform apply. Terraform will NOT re-run it unless:
-# The EC2 instance is replaced, or
-# We explicitly force it (e.g. taint / replace)
-# So terraform apply will not rerun script but terraform apply -replace=aws_intance.web will
 
-#Variables injected from Terraform templatefile(), baked into the EC2 instance at boot time
 APP_NAME="${app_name}"
 ECR_REPO_URL="${ecr_repo_url}"
 TV_WEBHOOK_SECRET="${tv_webhook_secret}"
@@ -25,11 +10,21 @@ APCA_API_BASE_URL="${apca_api_base_url}"
 APCA_API_KEY_ID="${apca_api_key_id}"
 APCA_API_SECRET_KEY="${apca_api_secret_key}"
 
-# IMAGE TAG FILE (updated by CI/CD)
+
+# Redis app config
+# Redis server running on same machine (localhost -EC2-) on Redis port (6379). Confirm on EC2 with 
+# sudo ss -lntp | grep 6379 OR redis-cli ping. Expected output: PONG
+REDIS_URL="redis://127.0.0.1:6379/0"
+# Limits the length of specific Redis lists e.g. tv:15m:AAPL:date, tv:15m:AAPL:signal, tv:15m:AAPL:open
+TV_MAXLEN="500" 
+# Custom directory to store Redis persistent data.
+REDIS_DATA_DIR="/var/lib/redis-data" 
+
+
 cat >/etc/trading-mage-image.env <<EOF
 IMAGE_TAG=bootstrap
 EOF
-chown root:root /etc/trading-mage-image.env
+chown root:root /etc/trading-mage-image.env # Change ownership to root from defualt ubuntu to prevent accidental editing by a regular user
 chmod 600 /etc/trading-mage-image.env
 
 # APP ENV FILE (secrets/config)
@@ -38,6 +33,8 @@ TV_WEBHOOK_SECRET=$TV_WEBHOOK_SECRET
 APCA_API_BASE_URL=$APCA_API_BASE_URL
 APCA_API_KEY_ID=$APCA_API_KEY_ID
 APCA_API_SECRET_KEY=$APCA_API_SECRET_KEY
+REDIS_URL=$REDIS_URL
+TV_MAXLEN=$TV_MAXLEN
 EOF
 
 chown root:root /etc/trading-mage.env
@@ -45,9 +42,9 @@ chmod 600 /etc/trading-mage.env
 
 # SYSTEM UPDATE + BASE PACKAGES
 # Refreshes Ubuntu’s package index. Required before installing anything
-apt-get update -y
+apt-get update -y # y flag automatically answers "yes" to all prompts
 #Installs: ca-certificates → TLS trust store, curl → download files, gnupg → verify Docker’s GPG key, nginx → reverse proxy in front of FastAPI
-apt-get install -y ca-certificates curl gnupg nginx
+apt-get install -y ca-certificates curl gnupg nginx util-linux
 
 # DOCKER
 # DOCKER INSTALLATION (OFFICIAL METHOD)
@@ -86,17 +83,87 @@ chmod 600 /root/.docker/config.json
 #Starts Docker immediately, Enables it on every reboot
 systemctl enable --now docker
 
-# NGINX REVERSE PROXY CONFIGURATION
-# Writes a new nginx site config. Uses app_name as filename (tv-webhook). Cat reads from stdin and writes (overwrites) to the fielpath. The heredoc supplies that input
-# Listens on port 80. Accepts traffic for any hostname
-# Forwards incoming webhook requests to FastAPI. FastAPI is not exposed publicly. Nginx is the only public entry point
-cat >/etc/nginx/sites-available/"$APP_NAME" <<'NGINX'
+
+# REDIS EBS DATA DISK SETUP
+###############
+# Assumes a separate EBS vol is attached for REDIS data. 
+# We look for a non-root whole disk that is currently unmounted
+mkdir -p "$REDIS_DATA_DIR" # -p flag creates the entire path if if doesn't already exist
+
+
+ROOT_SOURCE="$(findmnt -n -o SOURCE / || true)" # Run the command inside the parentheses and store its output in the variable ROOT_SOURCE.
+ROOT_DISK="" # Initialized as an empty variable. The script will populate it later if it successfully detects the root disk.
+if [ -n "$ROOT_SOURCE" ]; then # Checks if root source exists ie ROOT_SOURCE is not an empty string.
+	ROOT_PARENT="$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null || true)" # Determines the parent disk. lsblk lists block devices.
+	if [ -n "$ROOT_PARENT" ]; then # Checks if parent disk was found ie is non empty e.g ROOT_PARENT=nvme0n1
+		ROOT_DISK="/dev/$ROOT_PARENT" # Construct the full disk path e.g ROOT_DISK=/dev/nvme0n1.
+	fi
+fi
+
+
+REDIS_DEV=""
+for i in $(seq 1 30); do # Try 30 times to find the extra disk. Attached EBS vosl do not always appear instantly at boot.
+	REDIS_DEV="$(
+		lsblk -dpno NAME,TYPE,MOUNTPOINT | awk '
+			$2 == "disk" && $3 == "" { print $1 }
+		' | grep -vx "$${ROOT_DISK:-/dev/null}" | head -n 1 || true
+	)"
+
+	if [ -n "$REDIS_DEV" ]; then
+		echo "Found Redis EBS device: $REDIS_DEV"
+		break
+	fi
+
+	echo "Waiting for Redis EBS volume to appear... ($i/30)"
+	sleep 2 # Wait 2 seconds after every failed attempt. 
+done 
+
+if [ -z "$REDIS_DEV" ]; then
+	echo "ERROR: Redis EBS volume not found"
+	lsblk
+	exit 1
+fi
+
+# Format only if it doesn't already have a filesystem
+if ! blkid "$REDIS_DEV" >/dev/null 2>&1; then # If blkid fails, then the device likely has no filesystem. So, format it.
+	echo "Formatting Redis device $REDIS_DEV as ext4"
+	mkfs.ext4 -F "$REDIS_DEV" 
+else
+	echo "Redis device $REDIS_DEV already has a filesystem"
+fi
+
+# UUIDs are preferred over raw device names because device names can change across reboots.
+UUID="$(blkid -s UUID -o value "$REDIS_DEV")"
+if [ -z "$UUID" ]; then
+	echo "ERROR: Could not determine UUID for $REDIS_DEV"
+	exit 1
+fi
+
+if ! grep -q "$UUID" /etc/fstab; then # If UUID is determined, persist the mount in /etc/fstab entry (add one if it doesn't already exist).
+	# nofail means if the disk is missing at boot, don’t fail the whole boot process
+	echo "UUID=$UUID $REDIS_DATA_DIR ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+
+mount -a # Mount everything from fstab
+
+# Redis container runs as a uid 999 in the official image
+# Change owner and group recursively to UID 999, GID 999. That matches the Redis process inside the official container image.
+chown -R 999:999 "$REDIS_DATA_DIR"
+chmod 750 "$REDIS_DATA_DIR"
+
+
+
+cat >/etc/nginx/sites-available/"$APP_NAME" <<'NGINX' #NGINX quoted so as to not expand shell vars inside the block since Nginx uses vars like $host,$remote_addr,$scheme. Without it, Bash would try to substitute them.
 server {
 	listen 80;
 	server_name _;
 
 	location /health {
-		return 200 "ok\n";
+		proxy_pass http://127.0.0.1:8000;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
 	}
 
 	location /webhook/tradingview {
@@ -116,20 +183,39 @@ nginx -t # Validates nginx config. Script will fail if config is invalid (good)
 systemctl restart nginx # Restarts nginx with your config
 systemctl enable nginx # Enables nginx on reboot
 
-# CREATE A SYSTEMD SERVICE FOR FASTAPI CONTAINER (CI/CD WILL PULL + RESTART)
-# Creates a systemd unit file. Ensures Docker is running before starting the app. Automatically restarts if the container crashes.
-# Deletes any old container with the same name. - prefix means “ignore errors”
-# Runs our container: Binds FastAPI only to localhost. Injects tv_webhook_secret. Uses latest image from ECR
-# Public traffic can only reach it via nginx
-# Clean shutdown on stop/restart
-# Enables this service at normal system boot
+
+#How you would interact with it? Check status: systemctl status redis  View logs: journalctl -u redis -f  See container logs: docker logs redis  Stop service:systemctl stop redis
+cat >/etc/systemd/system/redis.service <<'SYSTEMD'
+[Unit]
+Description=Redis container
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=2
+
+ExecStartPre=-/usr/bin/docker rm -f redis
+ExecStart=/usr/bin/docker run --name redis \
+	-p 127.0.0.1:6379:6379 \
+	-v /var/lib/redis-data:/data \
+	redis:7-alpine \
+	redis-server --appendonly yes --dir /data
+ExecStop=/usr/bin/docker stop redis
+ExecStopPost=-/usr/bin/docker rm -f redis
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+
 
 cat >/etc/systemd/system/$APP_NAME.service <<SYSTEMD
 [Unit]
 Description=$APP_NAME container
-After=network-online.target docker.service
+After=network-online.target docker.service redis.service
 Wants=network-online.target
-Requires=docker.service
+Requires=docker.service redis.service
 
 [Service]
 Restart=always
@@ -148,20 +234,15 @@ WantedBy=multi-user.target
 SYSTEMD
 
 #Tests
+test -s "/etc/systemd/system/redis.service"
 test -s "/etc/systemd/system/$APP_NAME.service"
+grep -c '^ExecStart=' "/etc/systemd/system/redis.service" | grep -q '^1$'
 grep -c '^ExecStart=' "/etc/systemd/system/$APP_NAME.service" | grep -q '^1$'
-
 
 # ACTIVATE SYSTEMD SERVICE
 systemctl daemon-reload # Reloads systemd to recognize the new service
-systemctl enable $APP_NAME.service # Enables the service on boot
+systemctl enable --now redis.service # Enables the service on boot
+systemctl enable --now $APP_NAME.service # Enables the service on boot
 # Don't start yet (no image pulled yet). CI/CD will do it after it pushes the first image.
 
 
-# Key architectural takeaways
-# Nginx is the public edge (port 80)
-# FastAPI is private (127.0.0.1:8000)
-# systemd keeps the container alive
-# CI/CD controls when new code is deployed
-# Secrets are injected securely via env vars
-# No SSH required in production later
