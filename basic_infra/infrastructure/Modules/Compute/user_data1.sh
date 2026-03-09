@@ -29,7 +29,7 @@ APCA_API_SECRET_KEY="${apca_api_secret_key}"
 # Redis app config
 # Redis server running on same machine (localhost -EC2-) on Redis port (6379). Confirm on EC2 with 
 # sudo ss -lntp | grep 6379 OR redis-cli ping. Expected output: PONG
-REDIS_URL="redis://127.0.0.1:6379/0"
+REDIS_URL=redis://redis:6379/0
 # Limits the length of specific Redis lists e.g. tv:15m:AAPL:date, tv:15m:AAPL:signal, tv:15m:AAPL:open
 TV_MAXLEN="500" 
 # Custom directory to store Redis persistent data.
@@ -103,6 +103,7 @@ chmod 600 /root/.docker/config.json
 
 #Starts Docker immediately, Enables it on every reboot
 systemctl enable --now docker
+docker network create trading-mage-net || true
 
 
 # REDIS EBS DATA DISK SETUP
@@ -297,17 +298,22 @@ Restart=always
 RestartSec=2
 
 ExecStartPre=-/usr/bin/docker rm -f redis
+
 ExecStart=/usr/bin/docker run --name redis \
-	-p 127.0.0.1:6379:6379 \
+	--network trading-mage-net \
 	-v /var/lib/redis-data:/data \
 	redis:7-alpine \
 	redis-server --appendonly yes --dir /data
+
 ExecStop=/usr/bin/docker stop redis
 ExecStopPost=-/usr/bin/docker rm -f redis
 
 [Install]
 WantedBy=multi-user.target
 SYSTEMD
+
+
+
 
 
 # APP SYSTEMD SERVICE
@@ -332,7 +338,14 @@ Environment="ECR_REPO_URL=${ecr_repo_url}"
 EnvironmentFile=/etc/trading-mage-image.env
 
 ExecStartPre=-/usr/bin/docker rm -f %p
-ExecStart=/usr/bin/docker run --name %p --env-file /etc/trading-mage.env -p 127.0.0.1:8000:8000 \$${ECR_REPO_URL}:\$${IMAGE_TAG} python -m uvicorn app:app --host 0.0.0.0 --port 8000
+
+ExecStart=/usr/bin/docker run --name %p \
+	--network trading-mage-net \
+	--env-file /etc/trading-mage.env \
+	-p 127.0.0.1:8000:8000 \
+	$${ECR_REPO_URL}:$${IMAGE_TAG} \
+	python -m uvicorn app:app --host 0.0.0.0 --port 8000
+
 ExecStop=/usr/bin/docker stop %p
 ExecStopPost=-/usr/bin/docker rm -f %p
 
@@ -360,3 +373,4 @@ systemctl enable --now $APP_NAME.service # Enables the service on boot
 # CI/CD controls when new code is deployed
 # Secrets are injected securely via env vars
 # No SSH required in production later
+enable
