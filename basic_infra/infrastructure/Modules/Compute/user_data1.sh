@@ -29,7 +29,7 @@ APCA_API_SECRET_KEY="${apca_api_secret_key}"
 # Redis app config
 # Redis server running on same machine (localhost -EC2-) on Redis port (6379). Confirm on EC2 with 
 # sudo ss -lntp | grep 6379 OR redis-cli ping. Expected output: PONG
-REDIS_URL=redis://redis:6379/0
+REDIS_URL="redis://redis:6379/0"
 # Limits the length of specific Redis lists e.g. tv:15m:AAPL:date, tv:15m:AAPL:signal, tv:15m:AAPL:open
 TV_MAXLEN="500" 
 # Custom directory to store Redis persistent data.
@@ -298,7 +298,6 @@ Restart=always
 RestartSec=2
 
 ExecStartPre=-/usr/bin/docker rm -f redis
-
 ExecStart=/usr/bin/docker run --name redis \
 	--network trading-mage-net \
 	-v /var/lib/redis-data:/data \
@@ -343,7 +342,7 @@ ExecStart=/usr/bin/docker run --name %p \
 	--network trading-mage-net \
 	--env-file /etc/trading-mage.env \
 	-p 127.0.0.1:8000:8000 \
-	$${ECR_REPO_URL}:$${IMAGE_TAG} \
+	\$${ECR_REPO_URL}:\$${IMAGE_TAG} \
 	python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 ExecStop=/usr/bin/docker stop %p
