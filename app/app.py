@@ -3,7 +3,6 @@ Author: Matthew Akofu
 Date Created: Feb 12, 2026
 """
 
-
 #import numpy #as np 
 #import pandas #as pd
 #from pytz import timezone
@@ -12,22 +11,26 @@ from zoneinfo import ZoneInfo
 #import config 
 ##REMOVE CONFIG FIRST !!!!!! import dataframes
 import os
-import redis
+#import redis
 
 #import json
-from datetime import datetime, timezone
+#from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, HTTPException, Query
+#from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 import logging
 import sys
 
 import alpaca_trade_api as tradeapi
 
-import hashlib
+import trading_view_webhook_helpers 
+
+#import hashlib
 
 from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
 
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -79,121 +82,9 @@ SECURITIES = []
     #logger.info("Account is currently restricted from trading")
 
 
-try:
-	r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-	r.ping()
-except Exception:
-	r = None
-
-
-if not TV_WEBHOOK_SECRET:
-	raise RuntimeError("Missing TV_WEBHOOK_SECRET environment variable")
-
 app = FastAPI(title="TradingView Webhook - Print Signals Only")
 
-
-def _utc_now_iso() -> str:
-	return datetime.now(timezone.utc).isoformat()
-
-
-def _normalize_tf(timeframe: str) -> str:
-	tf = str(timeframe or "").strip().lower()
-
-	aliases = {
-		"1": "1m",
-		"3": "3m",
-		"5": "5m",
-		"15": "15m",
-		"30": "30m",
-		"45": "45m",
-		"60": "1h",
-		"120": "2h",
-		"240": "4h",
-		"d": "1d",
-		"1d": "1d",
-		"w": "1w",
-		"1w": "1w",
-	}
-
-	return aliases.get(tf, tf)
-
-
-def _utc_iso_to_pacific(iso_str: str) -> str:
-	if not iso_str:
-		return ""
-
-	# Handle "Z" suffix from TradingView
-	if iso_str.endswith("Z"):
-		iso_str = iso_str.replace("Z", "+00:00")
-
-	try:
-		dt_utc = datetime.fromisoformat(iso_str)
-		dt_pacific = dt_utc.astimezone(PACIFIC_TZ)
-		return dt_pacific.isoformat()
-	except Exception:
-		return iso_str  # fallback, don't break webhook	
-
-def _normalize_signal(sig: str) -> str:
-	s = (sig or "").strip().lower()
-	# allow "buy+", "sell+", and anything like "buy++++"
-	if s.startswith("buy"):
-		return "buy"
-	if s.startswith("sell"):
-		return "sell"
-	return s		
-
-def _h(s: str) -> str:
-	return hashlib.sha256((s or "").encode()).hexdigest()[:12]
-
-
-
-
-
-
-def _stream_key(timeframe: str, symbol: str) -> str:
-	tf = _normalize_tf(timeframe)
-	sym = str(symbol or "").upper().strip()
-	return f"tv:stream:{tf}:{sym}"
-
-
-def _state_key(timeframe: str, symbol: str) -> str:
-	tf = _normalize_tf(timeframe)
-	sym = str(symbol or "").upper().strip()
-	return f"tv:state:{tf}:{sym}"
-
-
-def _to_str(value: Any) -> str:
-	if value is None:
-		return ""
-	return str(value)
-
-
-def _safe_float(value: Optional[str]) -> Optional[float]:
-	if value in (None, ""):
-		return None
-	try:
-		return float(value)
-	except (TypeError, ValueError):
-		return None
-
-
-def _parse_iso_to_pacific(iso_str: Optional[str]) -> Optional[str]:
-	if not iso_str:
-		return None
-	try:
-		dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-		if dt.tzinfo is None:
-			dt = dt.replace(tzinfo=timezone.utc)
-		return dt.astimezone(PACIFIC_TZ).isoformat()
-	except Exception:
-		return None
-
-def _require_redis() -> redis.Redis:
-	if r is None:
-		raise HTTPException(status_code=503, detail="Redis not connected")
-	return r
-
-
+tvw_helpers = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
 
 class TradingViewWebhook(BaseModel):
 	secret: str
@@ -217,68 +108,87 @@ def _startup():
 		account = api.get_account()
 		if account.trading_blocked:
 			logger.info("Account is currently restricted from trading")
-	except Exception:
+	#except Exception:
+		#logger.exception("Alpaca get_account failed during startup")
+	except Exception as exc:
 		logger.exception("Alpaca get_account failed during startup")
+		raise RuntimeError("Alpaca get_account failed during startup") from exc			
 
 @app.get("/health")
 def health():
-	rr = _require_redis()
+	rr = tvw_helpers.require_redis()
 
 	try:
 		rr.ping()
 		return {"ok": True, "redis": "up"}
-	except Exception as exc:
-		raise HTTPException(status_code=503, detail=f"Redis ping failed: {exc}")
+	#except Exception as exc:
+		#raise HTTPException(status_code=503, detail=f"Redis ping failed: {exc}")
+	except Exception:
+		logger.exception("Redis ping failed")
+		raise HTTPException(status_code=503, detail="Redis ping failed")		
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+	logger.exception("Unhandled exception")
+	return JSONResponse(
+		status_code=500,
+		content={"detail": "Internal server error"},
+	)
 
 @app.post("/webhook/tradingview")
 async def webhook_tradingview(payload: TradingViewWebhook):
-	rr = _require_redis()
+	rr = tvw_helpers.require_redis()
 
 	if payload.secret != TV_WEBHOOK_SECRET:
 		raise HTTPException(status_code=401, detail="Invalid secret")
 
-	tf = _normalize_tf(payload.timeframe)
+	tf = tvw_helpers.normalize_tf(payload.timeframe)
 	symbol = str(payload.symbol or "").upper().strip()
-	signal = _normalize_signal(payload.signal)
+	signal = tvw_helpers.normalize_signal(payload.signal)
 
 	if not tf or not symbol or not signal:
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe, symbol, or signal")
+		logger.warning(
+			"Invalid webhook payload: timeframe=%r symbol=%r signal=%r",
+			payload.timeframe,
+			payload.symbol,
+			payload.signal,
+		)
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe, symbol, or signal")		
 
-	stream_key = _stream_key(tf, symbol)
-	state_key = _state_key(tf, symbol)
+	stream_key = tvw_helpers.stream_key(tf, symbol)
+	state_key = tvw_helpers.state_key(tf, symbol)
 
-	received_at = _utc_now_iso()
-	bar_close_time_pacific = _parse_iso_to_pacific(payload.bar_close_time)
+	received_at = tvw_helpers.utc_now_iso()
+	bar_close_time_pacific = tvw_helpers.parse_iso_to_pacific(payload.bar_close_time)
 
 	stream_fields = {
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
-		"bar_close_time": _to_str(payload.bar_close_time),
-		"bar_close_time_pacific": _to_str(bar_close_time_pacific),
+		"bar_close_time": tvw_helpers.to_str(payload.bar_close_time),
+		"bar_close_time_pacific": tvw_helpers.to_str(bar_close_time_pacific),
 		"received_at": received_at,
-		"price": _to_str(payload.price),
-		"open": _to_str(payload.open),
-		"high": _to_str(payload.high),
-		"low": _to_str(payload.low),
-		"close": _to_str(payload.close),
-		"volume": _to_str(payload.volume),
+		"price": tvw_helpers.to_str(payload.price),
+		"open": tvw_helpers.to_str(payload.open),
+		"high": tvw_helpers.to_str(payload.high),
+		"low": tvw_helpers.to_str(payload.low),
+		"close": tvw_helpers.to_str(payload.close),
+		"volume": tvw_helpers.to_str(payload.volume),
 	}
 
 	state_fields = {
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
-		"bar_close_time": _to_str(payload.bar_close_time),
-		"bar_close_time_pacific": _to_str(bar_close_time_pacific),
+		"bar_close_time": tvw_helpers.to_str(payload.bar_close_time),
+		"bar_close_time_pacific": tvw_helpers.to_str(bar_close_time_pacific),
 		"received_at": received_at,
-		"price": _to_str(payload.price),
-		"open": _to_str(payload.open),
-		"high": _to_str(payload.high),
-		"low": _to_str(payload.low),
-		"close": _to_str(payload.close),
-		"volume": _to_str(payload.volume),
+		"price": tvw_helpers.to_str(payload.price),
+		"open": tvw_helpers.to_str(payload.open),
+		"high": tvw_helpers.to_str(payload.high),
+		"low": tvw_helpers.to_str(payload.low),
+		"close": tvw_helpers.to_str(payload.close),
+		"volume": tvw_helpers.to_str(payload.volume),
 		"stream_key": stream_key,
 	}
 
@@ -293,8 +203,11 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 		pipe.hset(state_key, mapping=state_fields)
 		results = pipe.execute()
 		stream_id = results[0]
-	except Exception as exc:
-		raise HTTPException(status_code=500, detail=f"Redis write failed: {exc}")
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis write failed: {exc}")
+	except Exception:
+		logger.exception("Redis write failed")
+		raise HTTPException(status_code=500, detail="Redis write failed")			
 
 	logger.info(
 		"\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_utc=%s\nbar_close_time_pacific=%s\nprice=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
@@ -312,6 +225,9 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 		payload.volume,
 	)
 
+	second_last_alert = tvw_helpers.handle_alert(symbol, tf, signal) # Str Str Str
+	logger.info("In app.py: Second last alert = %r", second_last_alert)
+
 	return {
 		"ok": True,
 		"printed": True,
@@ -325,6 +241,50 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 	}
 
 
+#@app.get("/retrieve_nth_last_alert")
+#def retrieve_nth_last_alert():
+	#ticker = request.args.get('ticker')
+	#tf = request.args.get('tf')
+	#tvw_helpers.log_nth_last_alert(ticker, tf, 1)
+
+@app.get("/retrieve_nth_last_alert")
+def retrieve_nth_last_alert(
+	ticker: str = Query(..., min_length=1),
+	tf: str = Query(..., min_length=1),
+	n: int = Query(2, ge=1),
+):
+	"""
+	Retrieves the last nth entries for the ticker/timeframe pair specified.
+	# curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+	# via Nginx on port 80: curl "http://localhost/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+	# Most recent: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=1"
+	# Normalization: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=aapl&tf=1&n=2"
+	"""
+	entry = tvw_helpers.get_nth_last_alert(ticker, tf, n)
+
+	if entry is None:
+		raise HTTPException(status_code=404, detail="Not enough alerts found")
+
+	entry_id, fields = entry
+
+	return {
+		"ticker": ticker.upper().strip(),
+		"timeframe": tvw_helpers.normalize_tf(tf),
+		"n": n,
+		"entry": {
+			"id": entry_id,
+			"fields": {
+				**fields,
+				"price": tvw_helpers.safe_float(fields.get("price")),
+				"open": tvw_helpers.safe_float(fields.get("open")),
+				"high": tvw_helpers.safe_float(fields.get("high")),
+				"low": tvw_helpers.safe_float(fields.get("low")),
+				"close": tvw_helpers.safe_float(fields.get("close")),
+				"volume": tvw_helpers.safe_float(fields.get("volume")),
+			},
+		},
+	}
+
 
 @app.get("/debug/state/{timeframe}/{symbol}")
 async def debug_state_symbol(
@@ -334,9 +294,9 @@ async def debug_state_symbol(
 		default="symbol,timeframe,signal,bar_close_time,bar_close_time_pacific,received_at,price,open,high,low,close,volume,stream_key"
 	),
 ):
-	rr = _require_redis()
+	rr = tvw_helpers.require_redis()
 
-	tf = _normalize_tf(timeframe)
+	tf = tvw_helpers.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
@@ -346,21 +306,24 @@ async def debug_state_symbol(
 	if not field_list:
 		raise HTTPException(status_code=400, detail="No fields requested")
 
-	key = _state_key(tf, sym)
+	key = tvw_helpers.state_key(tf, sym)
 
 	if not rr.exists(key):
 		raise HTTPException(status_code=404, detail="No state found for symbol/timeframe")
 
 	try:
 		values = rr.hmget(key, field_list)
-	except Exception as exc:
-		raise HTTPException(status_code=500, detail=f"Redis read failed: {exc}")
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis read failed: {exc}")
+	except Exception:
+		logger.exception("Redis read failed")
+		raise HTTPException(status_code=500, detail="Redis read failed")			
 
 	data = {field: value for field, value in zip(field_list, values)}
 
 	for numeric_field in ("price", "open", "high", "low", "close", "volume"):
 		if numeric_field in data:
-			data[numeric_field] = _safe_float(data[numeric_field])
+			data[numeric_field] = tvw_helpers.safe_float(data[numeric_field])
 
 	return {
 		"key": key,
@@ -374,20 +337,23 @@ async def debug_stream_symbol(
 	symbol: str,
 	count: int = Query(default=20, ge=1, le=500),
 ):
-	rr = _require_redis()
+	rr = tvw_helpers.require_redis()
 
-	tf = _normalize_tf(timeframe)
+	tf = tvw_helpers.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
 		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
 
-	key = _stream_key(tf, sym)
+	key = tvw_helpers.stream_key(tf, sym)
 
 	try:
 		entries = rr.xrevrange(key, max="+", min="-", count=count)
-	except Exception as exc:
-		raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	except Exception:
+		logger.exception("Redis stream read failed")
+		raise HTTPException(status_code=500, detail="Redis stream read failed")			
 
 	return {
 		"stream": key,
@@ -397,12 +363,12 @@ async def debug_stream_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"price": _safe_float(fields.get("price")),
-					"open": _safe_float(fields.get("open")),
-					"high": _safe_float(fields.get("high")),
-					"low": _safe_float(fields.get("low")),
-					"close": _safe_float(fields.get("close")),
-					"volume": _safe_float(fields.get("volume")),
+					"price": tvw_helpers.safe_float(fields.get("price")),
+					"open": tvw_helpers.safe_float(fields.get("open")),
+					"high": tvw_helpers.safe_float(fields.get("high")),
+					"low": tvw_helpers.safe_float(fields.get("low")),
+					"close": tvw_helpers.safe_float(fields.get("close")),
+					"volume": tvw_helpers.safe_float(fields.get("volume")),
 				},
 			}
 			for entry_id, fields in entries
@@ -416,20 +382,23 @@ async def debug_stream_range_symbol(
 	symbol: str,
 	count: int = Query(default=100, ge=1, le=1000),
 ):
-	rr = _require_redis()
+	rr = tvw_helpers.require_redis()
 
-	tf = _normalize_tf(timeframe)
+	tf = tvw_helpers.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
 		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
 
-	key = _stream_key(tf, sym)
+	key = tvw_helpers.stream_key(tf, sym)
 
 	try:
 		entries = rr.xrange(key, min="-", max="+", count=count)
-	except Exception as exc:
-		raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	except Exception:
+		logger.exception("Redis stream read failed")
+		raise HTTPException(status_code=500, detail="Redis stream read failed")			
 
 	return {
 		"stream": key,
@@ -439,102 +408,15 @@ async def debug_stream_range_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"price": _safe_float(fields.get("price")),
-					"open": _safe_float(fields.get("open")),
-					"high": _safe_float(fields.get("high")),
-					"low": _safe_float(fields.get("low")),
-					"close": _safe_float(fields.get("close")),
-					"volume": _safe_float(fields.get("volume")),
+					"price": tvw_helpers.safe_float(fields.get("price")),
+					"open": tvw_helpers.safe_float(fields.get("open")),
+					"high": tvw_helpers.safe_float(fields.get("high")),
+					"low": tvw_helpers.safe_float(fields.get("low")),
+					"close": tvw_helpers.safe_float(fields.get("close")),
+					"volume": tvw_helpers.safe_float(fields.get("volume")),
 				},
 			}
 			for entry_id, fields in entries
 		],
 	}
-
-
-
-
-"""
-@app.post("/webhook/tradingview")
-async def tradingview_webhook(request: Request):
-	try:
-		payload = await request.json()
-	except Exception:
-		raw = await request.body()
-		logger.warning("Bad JSON. raw=%r", raw[:500])
-		raise HTTPException(status_code=400, detail="Invalid JSON")
-
-	# 1) Auth
-	if payload.get("secret") != TV_WEBHOOK_SECRET: #Ensure secret obtained from payload matches the configured secret to preven some random payload from accessing app
-		logger.warning(
-			"Invalid webhook secret. got=%s expected=%s keys=%s",
-			_h(str(payload.get("secret"))),
-			_h(TV_WEBHOOK_SECRET),
-			sorted(payload.keys()),
-		)
-		raise HTTPException(status_code=401, detail="Invalid secret")
-
-	# 2) Parse
-	symbol = str(payload.get("symbol", "")).upper().strip()
-	timeframe = _normalize_tf(str(payload.get("timeframe", "")))
-	#signal = str(payload.get("signal", "")).lower()
-	signal = _normalize_signal(str(payload.get("signal", "")).lower().strip())
-	bar_close_time = str(payload.get("bar_close_time", "")).strip()
-
-	price = payload.get("price", None)
-	if price is not None:
-		try:
-			price = float(price)
-		except Exception:
-			pass
-
-	# 3) Validate minimal fields
-	if not symbol or not timeframe or signal not in ("buy", "sell") or not bar_close_time:
-		logger.warning(
-			"Invalid fields: symbol=%r tf=%r signal=%r bar_close_time=%r payload_keys=%s",
-			symbol, timeframe, signal, bar_close_time, sorted(payload.keys())
-		)		
-		raise HTTPException(status_code=400, detail="Missing/invalid fields")
-
-	# 4) Print nicely
-	bar_close_time_pacific = _utc_iso_to_pacific(bar_close_time)	
-	#print(
-		#f"[TV] recv_utc={_utc_now_iso()} | "
-		#f"symbol={symbol} | tf={timeframe} | signal={signal.upper()} | "
-		#f"bar_close_time={bar_close_time_pacific} | price={price}"
-	#)
-	#logger.info(
-		#"TradingView signal received",
-		#extra={
-			#"recv_utc": _utc_now_iso(),
-			#"symbol": symbol,
-			#"timeframe": timeframe,
-			#"signal": signal.upper(),
-			#"bar_close_time": bar_close_time_pacific,
-			#"price": price,
-		#},
-	#)	
-
-	logger.info(
-		"[TV] recv_utc=%s | symbol=%s | tf=%s | signal=%s | bar_close_time=%s | price=%s",
-		_utc_now_iso(),
-		symbol,
-		timeframe,
-		signal.upper(),
-		bar_close_time_pacific,
-		price,
-	)	
-
-	# Optional: print raw payload for debugging (comment out once stable)
-	# print("[TV] raw:", json.dumps(payload, indent=2, sort_keys=True))
-
-	return {"ok": True, "printed": True}
-"""
-
-
-
-#if __name__ == "__main__":
-
-	#dataframes_instance = dataframes.Dataframes(MY_TZ)
-    #_4hr_df = dataframes_instance.get_df(ticker_symbols, dataframes_instance._4hr_time_frame, start_date, end_date)
 
