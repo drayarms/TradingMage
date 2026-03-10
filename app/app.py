@@ -144,7 +144,8 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 
 	tf = tvw_helpers.normalize_tf(payload.timeframe)
 	symbol = str(payload.symbol or "").upper().strip()
-	signal = tvw_helpers.normalize_signal(payload.signal)
+	#signal = tvw_helpers.normalize_signal(payload.signal)
+	signal = payload.signal
 
 	if not tf or not symbol or not signal:
 		logger.warning(
