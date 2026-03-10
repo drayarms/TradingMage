@@ -32,6 +32,11 @@ jobs:
             app:
               - 'app/**'
 
+      - name: Debug detected changes
+        run: |
+          echo "infra_changed='${{ steps.filter.outputs.infra }}'"
+          echo "app_changed='${{ steps.filter.outputs.app }}'"
+
   terraform:
     runs-on: ubuntu-latest
     needs: changes
@@ -68,22 +73,32 @@ jobs:
         id: tfout
         working-directory: basic_infra/infrastructure
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update
+          sudo apt-get install -y jq
           echo "ecr_repo_url=$(terraform output -raw ecr_repo_url)" >> "$GITHUB_OUTPUT"
           echo "ec2_ip=$(terraform output -json ec2_public_ips | jq -r '.[0]')" >> "$GITHUB_OUTPUT"
 
       - name: Debug Terraform outputs
         run: |
-          echo "ECR URL = '${{ steps.tfout.outputs.ecr_repo_url }}'"
-          echo "EC2 IP = '${{ steps.tfout.outputs.ec2_ip }}'"
+          echo "ECR URL='${{ steps.tfout.outputs.ecr_repo_url }}'"
+          echo "EC2 IP='${{ steps.tfout.outputs.ec2_ip }}'"
 
   build_push_deploy:
     runs-on: ubuntu-latest
     needs: [changes, terraform]
-    if: needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.infra_changed == 'true'
+    if: >
+      always() &&
+      (needs.changes.outputs.app_changed == 'true' || needs.changes.outputs.infra_changed == 'true') &&
+      (needs.terraform.result == 'success' || needs.terraform.result == 'skipped')
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug job gating
+        run: |
+          echo "infra_changed='${{ needs.changes.outputs.infra_changed }}'"
+          echo "app_changed='${{ needs.changes.outputs.app_changed }}'"
+          echo "terraform_result='${{ needs.terraform.result }}'"
 
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -104,7 +119,8 @@ jobs:
         id: infraout
         working-directory: basic_infra/infrastructure
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update
+          sudo apt-get install -y jq
           echo "ecr_repo_url=$(terraform output -raw ecr_repo_url)" >> "$GITHUB_OUTPUT"
           echo "ec2_ip=$(terraform output -json ec2_public_ips | jq -r '.[0]')" >> "$GITHUB_OUTPUT"
 
@@ -112,8 +128,6 @@ jobs:
         run: |
           echo "ECR='${{ steps.infraout.outputs.ecr_repo_url }}'"
           echo "EC2_IP='${{ steps.infraout.outputs.ec2_ip }}'"
-          echo "INFRA_CHANGED='${{ needs.changes.outputs.infra_changed }}'"
-          echo "APP_CHANGED='${{ needs.changes.outputs.app_changed }}'"
 
       - name: Build & Push image to ECR
         working-directory: app

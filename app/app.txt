@@ -535,4 +535,4 @@ async def tradingview_webhook(request: Request):
 
 	#dataframes_instance = dataframes.Dataframes(MY_TZ)
     #_4hr_df = dataframes_instance.get_df(ticker_symbols, dataframes_instance._4hr_time_frame, start_date, end_date)
-
+    #Nice and convenient for changes
