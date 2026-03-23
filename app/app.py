@@ -64,7 +64,7 @@ trade_recs = trade_records.TradeRecords(tvw_helpers)
 stgs = strategies.Strategies(tvw_helpers, trade_recs)
 plotter = plot.Plot()
 
-#SECURITIES = ["AAPL", "TSLA", "XOM"]
+#SECURITIES = ["AAPL", "MSFT", "TSLA", "XOM"]
 
 class TradingViewWebhook(BaseModel):
 	secret: str
