@@ -783,4 +783,3 @@ def run_all_pnl_snapshots():
 
 	return result	
 
-bar_close_time_eastern = tvw_helpers.parse_iso_to_eastern(bar_close_time_raw)
