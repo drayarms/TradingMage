@@ -37,7 +37,7 @@ logger.propagate = True # Logs from tv-webhook -> also sent to parent (root logg
 # Logs appear in docker logs, systemd journal.
 
 # These env vars are injected via the user_data.sh shell script when the EC2 instance is created.
-TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # required
+TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # Required
 # Example optional vars:
 APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
 APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
