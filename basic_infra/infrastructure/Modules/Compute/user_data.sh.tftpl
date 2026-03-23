@@ -125,7 +125,7 @@ if [ -z "$REDIS_DEV" ]; then
 	exit 1
 fi
 
-# Format only if it doesn't already have a filesystem
+# Format only if it doesn't already have a filesystem.
 if ! blkid "$REDIS_DEV" >/dev/null 2>&1; then # If blkid fails, then the device likely has no filesystem. So, format it.
 	echo "Formatting Redis device $REDIS_DEV as ext4"
 	mkfs.ext4 -F "$REDIS_DEV" 
