@@ -1042,7 +1042,7 @@ class TradeRecords:
 		_, score = items[0]
 		return datetime.fromtimestamp(score, timezone.utc).isoformat()	
 
-num_shares
+
 	def get_trade_records_between(self, start_iso: str, end_iso: str, tickers=None):
 		"""
 		Retrieves records between the dates and tickers specified.
