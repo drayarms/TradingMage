@@ -54,7 +54,7 @@ alpaca_api = tradeapi.REST(
     key_id=APCA_API_KEY_ID,
     secret_key=APCA_API_SECRET_KEY
 )
-POSITION_SIZE = 200
+POSITION_SIZE = 10000
 
 app = FastAPI(title="TradingView Webhook")
 
