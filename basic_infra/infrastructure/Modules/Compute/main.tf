@@ -50,10 +50,6 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   role = aws_iam_role.ec2_ecr_pull.name
 }
 
-
-
-
-
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners = ["099720109477"] #Canonical

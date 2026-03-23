@@ -1,0 +1,1951 @@
+app.py:
+"""
+Author: Matthew Akofu
+Date Created: Feb 12, 2026
+"""
+
+from zoneinfo import ZoneInfo
+import os
+from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi.responses import JSONResponse, StreamingResponse
+import logging
+import sys
+import alpaca_trade_api as tradeapi
+import trading_view_webhook_helpers 
+import strategies
+import trade_records
+import plot
+from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
+from typing import Optional
+from pydantic import BaseModel
+from datetime import datetime
+
+# All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
+# Redis indexes use epoch timestamps derived from those timezone-aware values.
+
+# Configure the root logger.
+# logging.INFO Sets the minimum severity level to log. sys.stdout sends logs to stdout. 
+logging.basicConfig(
+  level=logging.INFO,
+  stream=sys.stdout,
+  format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("tv-webhook") # Creates a named logger. Akin to a namespace for logs. Helps ID src of logs. 
+# So logs will show tv-webhook: message here
+logger.setLevel(logging.INFO) # Root logger is already INFO. Ensures this logger also respects INFO.
+logger.propagate = True # Logs from tv-webhook -> also sent to parent (root logger) -> stdout. False means logs don't reach root logger.
+# Logs appear in docker logs, systemd journal.
+
+# These env vars are injected via the user_data.sh shell script when the EC2 instance is created.
+TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # required
+# Example optional vars:
+APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
+APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
+APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
+
+#PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+#EASTERN_TZ = ZoneInfo("America/New_York")
+#MY_TZ = EASTERN_TZ
+
+api = tradeapi.REST(
+    base_url=APCA_API_BASE_URL,
+    key_id=APCA_API_KEY_ID,
+    secret_key=APCA_API_SECRET_KEY
+)
+
+app = FastAPI(title="TradingView Webhook")
+
+# Instantiate external classes.
+tvw_helpers = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
+trade_recs = trade_records.TradeRecords(tvw_helpers)
+stgs = strategies.Strategies(tvw_helpers, trade_recs)
+plotter = plot.Plot()
+
+#SECURITIES = ["AAPL", "TSLA", "XOM"]
+
+class TradingViewWebhook(BaseModel):
+  secret: str
+  symbol: str
+  timeframe: str
+  signal: str
+  bar_close_time: str
+  price: Optional[float] = None
+  open: Optional[float] = None
+  high: Optional[float] = None
+  low: Optional[float] = None
+  close: Optional[float] = None
+  volume: Optional[float] = None
+
+
+# When app starts, this function runs once
+#systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
+@app.on_event("startup")
+def _startup():
+  try:
+    account = api.get_account()
+    if account.trading_blocked:
+      logger.info("Account is currently restricted from trading")
+  except Exception as exc:
+    logger.exception("Alpaca get_account failed during startup")
+    raise RuntimeError("Alpaca get_account failed during startup") from exc     
+
+@app.get("/health")
+def health():
+  rr = tvw_helpers.require_redis()
+  try:
+    rr.ping()
+    return {"ok": True, "redis": "up"}
+  except Exception:
+    logger.exception("Redis ping failed")
+    raise HTTPException(status_code=503, detail="Redis ping failed")    
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+  logger.exception("Unhandled exception")
+  return JSONResponse(
+    status_code=500,
+    content={"detail": "Internal server error"},
+  )
+
+@app.post("/webhook/tradingview")
+async def webhook_tradingview(payload: TradingViewWebhook):
+  """
+  Handles the TV webhook when it is received by this FastAPI app.
+  """
+  rr = tvw_helpers.require_redis()
+
+  if payload.secret != TV_WEBHOOK_SECRET: # Ensure secret embedded in TV payload matches our env secret
+    raise HTTPException(status_code=401, detail="Invalid secret")
+
+  tf = tvw_helpers.normalize_tf(payload.timeframe)
+  symbol = str(payload.symbol or "").upper().strip()
+  #signal = tvw_helpers.normalize_signal(payload.signal)
+  signal = payload.signal
+  bar_close_time_raw = str(payload.bar_close_time or "").strip()
+
+  if not tf or not symbol or not signal or not bar_close_time_raw:
+  #if not tf or not symbol or not signal:
+    logger.warning(
+      "Invalid webhook payload: timeframe=%r symbol=%r signal=%r bar_close_time=%r",
+      payload.timeframe,
+      payload.symbol,
+      payload.signal,
+    )
+    raise HTTPException(status_code=400, detail="Missing/invalid timeframe, symbol, or signal or bar close time")   
+
+  acquired, dedupe_key = tvw_helpers.acquire_alert_idempotency(
+    symbol=symbol,
+    timeframe=tf,
+    signal=signal,
+    bar_close_time=bar_close_time_raw,
+  )
+
+  if not acquired:
+    logger.info(
+      "Duplicate TradingView alert ignored: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s",
+      symbol,
+      tf,
+      signal,
+      bar_close_time_raw,
+      dedupe_key,
+    )
+    return {
+      "ok": True,
+      "duplicate": True,
+      "processed": False,
+      "symbol": symbol,
+      "timeframe": tf,
+      "signal": signal,
+      "bar_close_time": bar_close_time_raw,
+    }
+  
+  stream_key = tvw_helpers.stream_key(tf, symbol)
+  state_key = tvw_helpers.state_key(tf, symbol)
+
+  received_at = tvw_helpers.utc_now_iso()
+  bar_close_time_eastern = tvw_helpers.parse_iso_to_eastern(payload.bar_close_time)
+
+  stream_fields = {
+    "symbol": symbol,
+    "timeframe": tf,
+    "signal": signal,
+    "bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
+    "received_at": received_at,
+    "price": tvw_helpers.to_str(payload.price),
+    "open": tvw_helpers.to_str(payload.open),
+    "high": tvw_helpers.to_str(payload.high),
+    "low": tvw_helpers.to_str(payload.low),
+    "close": tvw_helpers.to_str(payload.close),
+    "volume": tvw_helpers.to_str(payload.volume),
+  }
+
+  state_fields = {
+    "symbol": symbol,
+    "timeframe": tf,
+    "signal": signal,
+    "bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
+    "received_at": received_at,
+    "price": tvw_helpers.to_str(payload.price),
+    "open": tvw_helpers.to_str(payload.open),
+    "high": tvw_helpers.to_str(payload.high),
+    "low": tvw_helpers.to_str(payload.low),
+    "close": tvw_helpers.to_str(payload.close),
+    "volume": tvw_helpers.to_str(payload.volume),
+    "stream_key": stream_key,
+  }
+
+  try:
+    pipe = rr.pipeline()
+    pipe.xadd(# Add fields specified by the stream key (e.g. tv:stream:1m:AAPL) to history
+      name=stream_key,
+      fields=stream_fields,
+      maxlen=TV_MAXLEN,
+      approximate=True,
+    )
+    pipe.hset(state_key, mapping=state_fields)
+    results = pipe.execute()
+    stream_id = results[0]
+    rr.set(dedupe_key, stream_id, xx=True, ex=tvw_helpers.alert_dedupe_ttl_seconds)
+  except Exception:
+    try:
+      rr.delete(dedupe_key)
+    except Exception:
+      logger.exception("Failed to clear idempotency key after processing failure")    
+    
+    logger.exception("Redis write failed")
+    raise HTTPException(status_code=500, detail="Redis write failed")     
+
+  logger.info(
+    "\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_eastern=%s\nprice=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
+    received_at,
+    symbol,
+    tf,
+    signal.upper(),
+    bar_close_time_eastern,
+    payload.price,
+    payload.open,
+    payload.high,
+    payload.low,
+    payload.close,
+    payload.volume,
+  )
+
+  #second_last_alert = tvw_helpers.handle_alert(symbol, tf, signal) # Str Str Str
+  #logger.info("In app.py: Second last alert = %r", second_last_alert)
+  #market_prices = trade_recs.get_market_prices(SECURITIES, api)
+  #stgs.implement_simple_strategy("simple strategy", True, signal, market_prices.get(symbol, {}).get("market"), symbol, tf)
+
+  stgs.implement_simple_strategy("simple strategy", True, signal, payload.price, symbol, tf)
+
+  return {
+    "ok": True,
+    "printed": True,
+    "symbol": symbol,
+    "timeframe": tf,
+    "signal": signal,
+    "stream": stream_key,
+    "state": state_key,
+    "stream_id": stream_id,
+    "maxlen": TV_MAXLEN,
+  }
+
+
+#@app.get("/retrieve_nth_last_alert")
+#def retrieve_nth_last_alert():
+  #ticker = request.args.get('ticker')
+  #tf = request.args.get('tf')
+  #tvw_helpers.log_nth_last_alert(ticker, tf, 1)
+
+@app.get("/retrieve_nth_last_alert")  
+def retrieve_nth_last_alert(
+  ticker: str = Query(..., min_length=1),
+  tf: str = Query(..., min_length=1),
+  n: int = Query(2, ge=1),
+):
+  """
+  Retrieves the last nth alert received from TV for the ticker/timeframe pair specified (default, 2nd to the last entry).
+  ticker is required. Must be a string of at least 1 char.
+  tf is requrired. Must be a non-empty string.
+  n is optional because default is 2. Must be >= 1.
+  curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+  via Nginx on port 80 get second to the last entry: curl "http://localhost/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+  Most recent: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=1"
+  Normalization: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=aapl&tf=1&n=2"
+  """
+  entry = tvw_helpers.get_nth_last_alert(ticker, tf, n)
+
+  if entry is None:
+    raise HTTPException(status_code=404, detail="Not enough alerts found")
+
+  entry_id, fields = entry
+
+  return {
+    "ticker": ticker.upper().strip(),
+    "timeframe": tvw_helpers.normalize_tf(tf),
+    "n": n,
+    "entry": {
+      "id": entry_id,
+      "fields": {
+        **fields,
+        "price": tvw_helpers.safe_float(fields.get("price")),
+        "open": tvw_helpers.safe_float(fields.get("open")),
+        "high": tvw_helpers.safe_float(fields.get("high")),
+        "low": tvw_helpers.safe_float(fields.get("low")),
+        "close": tvw_helpers.safe_float(fields.get("close")),
+        "volume": tvw_helpers.safe_float(fields.get("volume")),
+      },
+    },
+  }
+
+@app.get("/trades")
+def get_trades(
+  #start: Optional[datetime] = Query(None),
+  #end: Optional[datetime] = Query(None),
+  start: Optional[str] = Query(None, description="ISO start datetime"),
+  end: Optional[str] = Query(None, description="ISO end datetime"), 
+  tickers: Optional[list[str]] = Query(None, description="Ticker filter"),
+):
+  """
+  Returns trade records between dates and tickers specified.
+    start (str iso format!): Optional. Start date.
+    end (str iso format!): Optional. End date.
+    tickers (list): List of ticker symbols.
+  Example call: 
+    curl "http://localhost:8000/trades?start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z&tickers=AAPL&tickers=MSFT"
+  """
+  try:
+    # If start missing -> get earliest trade
+    if start is None:
+      start = trade_recs.get_first_trade_time()
+
+    # If end missing -> get latest trade
+    if end is None:
+      end = trade_recs.get_last_trade_time()
+
+    if not start or not end:
+      return {
+        "start": start,
+        "end": end,
+        "count": 0,
+        "records": []
+      }     
+
+    records = trade_recs.get_trade_records_between(start, end, tickers=tickers)
+
+  except ValueError:
+    raise HTTPException(status_code=400, detail="Invalid ISO date range")
+
+  return {
+    "start": start,
+    "end": end,
+    "count": len(records),
+    "records": records,
+  } 
+
+@app.get("/debug/state/{timeframe}/{symbol}")
+async def debug_state_symbol(
+  timeframe: str,
+  symbol: str,
+  fields: str = Query(
+    default="symbol,timeframe,signal,bar_close_time,bar_close_time_eastern,received_at,price,open,high,low,close,volume,stream_key"
+  ),
+):
+  """
+  Debug endpoint that lets us query the current Redis “state” for a symbol/timeframe, and optionally choose which fields to return.
+  Good for debugging webhook ingestion, verifying Redis writes, checking latest signal, inspecting OHLC data.
+  Example calls:
+    From EC2:
+      curl "http://localhost:8000/debug/state/15m/AAPL" uses default fiels: symbol,timeframe,signal,bar_close_time,...
+      curl "http://localhost:8000/debug/state/15m/AAPL?fields=price,signal"  specifies custom fields
+    From laptop:
+      curl "http://<EC2_PUBLIC_IP>/debug/state/15m/AAPL?fields=price,signal"
+  """
+  rr = tvw_helpers.require_redis()
+
+  tf = tvw_helpers.normalize_tf(timeframe)
+  sym = str(symbol or "").upper().strip()
+
+  if not tf or not sym:
+    raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
+
+  field_list = [f.strip() for f in fields.split(",") if f.strip()]
+  if not field_list:
+    raise HTTPException(status_code=400, detail="No fields requested")
+
+  key = tvw_helpers.state_key(tf, sym)
+
+  if not rr.exists(key):
+    raise HTTPException(status_code=404, detail="No state found for symbol/timeframe")
+
+  try:
+    values = rr.hmget(key, field_list)
+  except Exception:
+    logger.exception("Redis read failed")
+    raise HTTPException(status_code=500, detail="Redis read failed")      
+
+  data = {field: value for field, value in zip(field_list, values)}
+
+  for numeric_field in ("price", "open", "high", "low", "close", "volume"):
+    if numeric_field in data:
+      data[numeric_field] = tvw_helpers.safe_float(data[numeric_field])
+
+  return {
+    "key": key,
+    "data": data,
+  }
+
+
+@app.get("/debug/stream/{timeframe}/{symbol}")
+async def debug_stream_symbol(
+  timeframe: str,
+  symbol: str,
+  count: int = Query(default=20, ge=1, le=500),
+):
+  """
+  Returns the most recent events (history) -last N- from a Redis stream for a given timeframe/ticker pair.
+  Good for debuging webhook ingestion, inspecting signal history, verifying ordering of events, 
+  replaying recent trades mentally, validating Redis stream integrity.
+  Example calls:
+    From EC2:
+      curl "http://localhost/debug/stream/15m/AAPL"
+    From laptop:
+      curl "http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL"
+      curl "http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL?count=5"
+    From Browser:
+      http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL?count=10
+  """
+  rr = tvw_helpers.require_redis()
+
+  tf = tvw_helpers.normalize_tf(timeframe)
+  sym = str(symbol or "").upper().strip()
+
+  if not tf or not sym:
+    raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")    
+
+  key = tvw_helpers.stream_key(tf, sym)
+
+  if not rr.exists(key):
+    raise HTTPException(404, "Stream not found")  
+
+  try:
+    entries = rr.xrevrange(key, max="+", min="-", count=count)
+  except Exception:
+    logger.exception("Redis stream read failed")
+    raise HTTPException(status_code=500, detail="Redis stream read failed")     
+
+  return {
+    "stream": key,
+    "count": len(entries),
+    "entries": [
+      {
+        "id": entry_id,
+        "fields": {
+          **fields,
+          "price": tvw_helpers.safe_float(fields.get("price")),
+          "open": tvw_helpers.safe_float(fields.get("open")),
+          "high": tvw_helpers.safe_float(fields.get("high")),
+          "low": tvw_helpers.safe_float(fields.get("low")),
+          "close": tvw_helpers.safe_float(fields.get("close")),
+          "volume": tvw_helpers.safe_float(fields.get("volume")),
+        },
+      }
+      for entry_id, fields in entries
+    ],
+  }
+
+
+@app.get("/debug/stream-range/{timeframe}/{symbol}")
+async def debug_stream_range_symbol(
+  timeframe: str,
+  symbol: str,
+  count: int = Query(default=100, ge=1, le=1000),
+):
+  """
+  Returns historical events from the Redis stream (oldest -> newest) for a given timeframe/ticker pair.
+  Useful instead of /debug/stream when we want earliest events, chronological order, to replay from the beginning
+  to inspect initial signals.
+  Example calls:
+    From EC2:
+      curl "http://localhost/debug/stream-range/15m/AAPL"
+    From laptop:
+      curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL"
+      curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=10"
+    From browser:
+      http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=50
+  """
+  rr = tvw_helpers.require_redis()
+
+  tf = tvw_helpers.normalize_tf(timeframe)
+  sym = str(symbol or "").upper().strip()
+
+  if not tf or not sym:
+    raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
+
+  key = tvw_helpers.stream_key(tf, sym)
+
+  if not rr.exists(key):
+    raise HTTPException(404, "Stream not found")  
+
+  try:
+    entries = rr.xrange(key, min="-", max="+", count=count)
+  except Exception:
+    logger.exception("Redis stream read failed")
+    raise HTTPException(status_code=500, detail="Redis stream read failed")     
+
+  return {
+    "stream": key,
+    "count": len(entries),
+    "entries": [
+      {
+        "id": entry_id,
+        "fields": {
+          **fields,
+          "price": tvw_helpers.safe_float(fields.get("price")),
+          "open": tvw_helpers.safe_float(fields.get("open")),
+          "high": tvw_helpers.safe_float(fields.get("high")),
+          "low": tvw_helpers.safe_float(fields.get("low")),
+          "close": tvw_helpers.safe_float(fields.get("close")),
+          "volume": tvw_helpers.safe_float(fields.get("volume")),
+        },
+      }
+      for entry_id, fields in entries
+    ],
+  }
+
+
+
+@app.post("/pnl/snapshot/run")
+def run_pnl_snapshot(
+  strategy_name: str = Query(..., min_length=1),
+):
+  """
+  Triggers a PnL snapshot calculation for a given strategy. Used to manually trigger PnL calculation,
+  test our strategy performance, debug pricing + trade records, verify our cron job behavior.
+  Example calls:
+    From EC2:
+      curl -X POST "http://localhost/pnl/snapshot/run?strategy_name=simple%20strategy"
+    From laptop:
+      curl -X POST "http://<EC2_PUBLIC_IP>/pnl/snapshot/run?strategy_name=simple%20strategy"
+  """
+  try:
+    result = trade_recs.snapshot_pnl(strategy_name, api)
+  except Exception:
+    logger.exception("PnL snapshot failed")
+    raise HTTPException(status_code=500, detail="PnL snapshot failed")
+
+  return result
+
+
+@app.get("/pnl/history")
+def get_pnl_history(
+  strategy_name: str = Query(..., min_length=1),
+  start: Optional[str] = Query(default=None),
+  end: Optional[str] = Query(default=None),
+  ticker: Optional[str] = Query(default=None),
+):
+  """
+  Retrieves historical PnL snapshots for a given strategy, with optional filters.
+  Example calls:
+    From laptop:
+      Basic call (all history):
+        curl "http://<EC2_PUBLIC_IP>/pnl/history?strategy_name=simple%20strategy"   
+      With time range:
+        curl "http://<EC2_PUBLIC_IP>/pnl/history?strategy_name=simple%20strategy&start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z"
+      Filter by ticker:
+        curl "http://<EC2_PUBLIC_IP>/pnl/history?strategy_name=simple%20strategy&ticker=AAPL"
+      Combine tickers:
+        curl "http://<EC2_PUBLIC_IP>/pnl/history?strategy_name=simple%20strategy&start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z&ticker=AAPL"
+    From EC2:
+      basic call:
+        curl "http://localhost/pnl/history?strategy_name=simple%20strategy"
+      Agg history for a date range
+        curl "http://localhost:8000/pnl/history?strategy_name=simple%20strategy&start=2026-03-01T00:00:00Z&end=2026-03-13T23:59:59Z"  
+  """
+  try:
+    history = trade_recs.get_pnl_history(
+      strategy_name=strategy_name,
+      start=start,
+      end=end,
+      ticker=ticker,
+    )
+  except ValueError:
+    raise HTTPException(status_code=400, detail="Invalid ISO date range")
+  except Exception:
+    logger.exception("PnL history retrieval failed")
+    raise HTTPException(status_code=500, detail="PnL history retrieval failed")
+
+  return {
+    "strategy_name": strategy_name,
+    "start": start,
+    "end": end,
+    "ticker": ticker,
+    "count": len(history),
+    "history": history,
+  }
+
+
+@app.get("/pnl/plot")
+def get_pnl_plot(
+  strategy_name: str = Query(..., min_length=1),
+  start: Optional[str] = Query(default=None),
+  end: Optional[str] = Query(default=None),
+  ticker: Optional[str] = Query(default=None),
+):
+  """
+  Plot aggregate PNL
+  curl "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy" --output pnl.png
+  """
+  try:
+    history = trade_recs.get_pnl_history(
+      strategy_name=strategy_name,
+      start=start,
+      end=end,
+      ticker=ticker,
+    )
+  except ValueError:
+    raise HTTPException(status_code=400, detail="Invalid ISO date range")
+  except Exception:
+    logger.exception("PnL plot history retrieval failed")
+    raise HTTPException(status_code=500, detail="PnL plot history retrieval failed")
+
+  if not history:
+    raise HTTPException(status_code=404, detail="No PnL history found for requested filters")
+
+  title = f"PnL History - {strategy_name}"
+  if ticker:
+    title = f"PnL History - {strategy_name} - {ticker.upper().strip()}"
+  else:
+    title = f"PnL History - {strategy_name} - Aggregate"
+
+  try:
+    image_buffer = plotter.plot_pnl_history(history, title=title)
+  except Exception:
+    logger.exception("PnL plot generation failed")
+    raise HTTPException(status_code=500, detail="PnL plot generation failed")
+
+  return StreamingResponse(image_buffer, media_type="image/png")
+
+
+@app.get("/trade-events")
+def get_trade_events(
+  strategy_name: Optional[str] = Query(default=None),
+  ticker: Optional[str] = Query(default=None),
+  start: Optional[str] = Query(default=None),
+  end: Optional[str] = Query(default=None),
+):  
+  """
+  Get individual trade events
+  curl "http://localhost:8000/trade-events?strategy_name=simple%20strategy&ticker=AAPL"
+  """
+  try:
+    events = trade_recs.get_trade_events(
+      strategy_name=strategy_name,
+      ticker=ticker,
+      start=start,
+      end=end,
+    )
+  except ValueError:
+    raise HTTPException(status_code=400, detail="Invalid ISO date range")
+  except Exception:
+    logger.exception("Trade event retrieval failed")
+    raise HTTPException(status_code=500, detail="Trade event retrieval failed")
+
+  return {
+    "strategy_name": strategy_name,
+    "ticker": ticker,
+    "start": start,
+    "end": end,
+    "count": len(events),
+    "events": events,
+  }
+
+
+@app.post("/debug/reset-redis")
+def reset_redis():
+  """
+  Reset all app redis data
+  curl -X POST "http://localhost:8000/debug/reset-redis"
+  """
+  try:
+    result = trade_recs.reset_tv_data()
+  except Exception:
+    logger.exception("Redis reset failed")
+    raise HTTPException(status_code=500, detail="Redis reset failed")
+
+  return {
+    "ok": True,
+    **result,
+  }
+
+@app.post("/pnl/snapshot/run-all")
+def run_all_pnl_snapshots():
+  """
+  ssh into EC2
+  crontab -e
+  0,15,30,45 * * * * curl -fsS -X POST "http://localhost/pnl/snapshot/run-all" >/tmp/trading-mage-pnl-cron.log 2>&1
+  0,15,30,45 * * * * curl -fsS -X POST "http://localhost/pnl/snapshot/run-all" >>/var/log/trading-mage-pnl-cron.log 2>&1  
+  Second version is slightly better as it appends instead of overwrites. But must first create the file:
+  touch /var/log/trading-mage-pnl-cron.log
+  
+  Or better yet, use this simple version to avoid permission issues:
+  crontab -e
+  0,15,30,45 * * * * curl -fsS -X POST "http://localhost/pnl/snapshot/run-all" >>/home/ubuntu/trading-mage-pnl-cron.log 2>&1
+  Then verity cron loaded
+  crontab -l
+  Check cron service: sudo systemctl status cron  Or Ubuntu if needed: sudo systemctl enable --now cron
+  Test manually b4 waiting 15 minutes:
+  curl -X POST "http://localhost/pnl/snapshot/run-all"
+  Then inspect Redis back history through API
+  curl "http://localhost/pnl/history?strategy_name=simple%20strategy"
+  And trade events
+  curl "http://localhost/trade-events?strategy_name=simple%20strategy"
+  """
+  try:
+    result = trade_recs.snapshot_all_pnl(api)
+  except Exception:
+    logger.exception("All-strategy PnL snapshot failed")
+    raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")
+
+  return result 
+
+trading_view_webhook_helpers.py:
+from datetime import datetime, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+import hashlib
+import redis
+from fastapi import HTTPException
+
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+class TradingViewWebhookHelpers:
+  def __init__(self, tv_webhook_secret: str, redis_url: str):
+    self.tv_webhook_secret = tv_webhook_secret
+    self.redis_module = redis
+    self.redis_url = redis_url
+    self.eastern_tz = ZoneInfo("America/New_York")
+    self.pacific_tz = ZoneInfo("America/Los_Angeles")
+    self.alert_dedupe_ttl_seconds = 60 * 60 * 24 * 7  # 7 days
+
+    try:
+      self.r = redis.Redis.from_url(redis_url, decode_responses=True)
+      self.r.ping()
+    except Exception:
+      logger.exception("Redis initialization failed")
+      self.r = None
+          
+    if not tv_webhook_secret:
+      raise RuntimeError("Missing TV_WEBHOOK_SECRET environment variable")
+
+  def build_alert_idempotency_key(
+    self,
+    symbol: str,
+    timeframe: str,
+    signal: str,
+    bar_close_time: str,
+  ) -> str:
+    """
+    Builds a unique fingerpirnt for each alert so that can be compared against an already executed
+    alert to ensure idempotency (same alert doesn't trigger an actioin more than once).
+    Parameters:
+
+    Returns:
+    """
+    sym = str(symbol or "").upper().strip()
+    tf = self.normalize_tf(timeframe)
+    sig = self.normalize_signal(signal)
+    bar_time = str(bar_close_time or "").strip()
+
+    fingerprint = f"{sym}|{tf}|{sig}|{bar_time}"
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+    return f"tv:idempotency:{digest}"
+
+  def acquire_alert_idempotency(
+    self,
+    symbol: str,
+    timeframe: str,
+    signal: str,
+    bar_close_time: str,
+    ttl_seconds: Optional[int] = None,
+  ) -> tuple[bool, str]:
+    """
+    Retrieves the idempotency fingerprint for a specific alert as specified by the parameters passed, 
+    if an alert with that specific fingerprint doesn't exist yet otherwise, fails to retrieve it.
+    Parameters:
+      symbol (str):
+      timeframe (str):
+      signal (str):
+      bar_close_time (str):
+      ttl_seconds (int):
+    Returns:
+      bool, key (tuple):
+    """
+    r = self.require_redis()
+
+    key = self.build_alert_idempotency_key(
+      symbol=symbol,
+      timeframe=timeframe,
+      signal=signal,
+      bar_close_time=bar_close_time,
+    )
+
+    ttl = ttl_seconds or self.alert_dedupe_ttl_seconds
+
+    acquired = r.set(
+      name=key,
+      value="1",
+      nx=True,
+      ex=ttl,
+    )
+
+    return bool(acquired), key
+
+  def utc_now_iso(self) -> str:
+    """
+    Returns the current time in UTC (Coordinated Universal Time) e.g 2026-03-18T06:52:31.123456+00:00
+    2026-03-18        date (YYYY-MM-DD)
+    T           separator (ISO 8601 standard)
+    06:52:31.123456     time (HH:MM:SS.microseconds)
+    +00:00          UTC offset    
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+  def normalize_tf(self, timeframe: str) -> str:
+    """
+    Standardizes timeframe format.
+    Parameters:
+      timeframe (str): Timeframe
+    Returns:
+      (str): Standardized timeframe. 
+    """
+    tf = str(timeframe or "").strip().lower()
+
+    aliases = {
+      "1": "1m",
+      "3": "3m",
+      "5": "5m",
+      "15": "15m",
+      "30": "30m",
+      "45": "45m",
+      "60": "1h",
+      "120": "2h",
+      "240": "4h",
+      "d": "1d",
+      "1d": "1d",
+      "w": "1w",
+      "1w": "1w",
+    }
+
+    return aliases.get(tf, tf)
+
+  def utc_iso_to_pacific(self, iso_str: str) -> str:
+    if not iso_str:
+      return ""
+
+    if iso_str.endswith("Z"):
+      iso_str = iso_str.replace("Z", "+00:00")
+
+    try:
+      dt_utc = datetime.fromisoformat(iso_str)
+      return dt_utc.astimezone(self.pacific_tz).isoformat()
+    except Exception:
+      logger.warning("Time conversion failed")
+      return iso_str
+
+  def utc_iso_to_eastern(self, iso_str: str) -> str:
+    if not iso_str:
+      return ""
+
+    if iso_str.endswith("Z"):
+      iso_str = iso_str.replace("Z", "+00:00")
+
+    try:
+      dt_utc = datetime.fromisoformat(iso_str)
+      return dt_utc.astimezone(self.eastern_tz).isoformat()
+    except Exception:
+      logger.warning("Time conversion failed")
+      return iso_str      
+
+  def normalize_signal(self, sig: str) -> str:
+    """
+    Normalized strings like "buy+" and "sell+" to just "buy" and "sell" respectively.
+    Parameters:
+      sig (str): Signal: Potential values -> "buy", "sell", "buy+", "sell+".
+    Returns:
+      s (str): Normalized string, "buy" or "sell".
+    """
+    s = (sig or "").strip().lower()
+    if s.startswith("buy"):
+      return "buy"
+    if s.startswith("sell"):
+      return "sell"
+    return s
+
+  def h(self, s: str) -> str:
+    return hashlib.sha256((s or "").encode()).hexdigest()[:12]
+
+  def stream_key(self, timeframe: str, symbol: str) -> str:
+    """
+    Returns a structured Redis key for storing streaming data for a specific timeframe and symbol.
+    Used to log event histories by appending new data to the stream e.g TV alerts, price updates over time, trade exec logs.
+    E.g.
+    tv                    The namespace
+    └── stream            
+      └── 15m
+        └── AAPL
+    Parameters:
+      timeframe (str)
+      symbol (str)
+    Returns:
+      str 
+    """
+    tf = self.normalize_tf(timeframe)
+    sym = str(symbol or "").upper().strip()
+    return f"tv:stream:{tf}:{sym}"
+
+  def state_key(self, timeframe: str, symbol: str) -> str:
+    """
+    Returns a structured Redis key for logging the current snapshot (latest state) for a specific timeframe and symbol.
+    Overwrites prev vals. Only stores lates. Fast lookups. No history. Used for latesst signal per ticker, current position
+    state, most recent ohlcv data.
+    E.g.
+    tv                    The namespace
+    └── state           
+      └── 15m
+        └── AAPL
+    Parameters:
+      timeframe (str)
+      symbol (str)
+    Returns:
+      str         
+    """
+    tf = self.normalize_tf(timeframe)
+    sym = str(symbol or "").upper().strip()
+    return f"tv:state:{tf}:{sym}"
+
+  def to_str(self, value: Any) -> str:
+    """
+    Converts passed argument to string.
+    Parameters:
+      value (Any): Value to be converted to string.
+    Returns:
+      value (str): Value converted to a string or empty string if "None" was passed.
+    """
+    if value is None:
+      return ""
+    return str(value)
+
+  def safe_float(self, value: Optional[str]) -> Optional[float]:
+    """
+    Converts passed argument to float.
+    Parameters:
+      value (Any): Value to be converted to float.
+    Returns:
+      value (float): Value converted to a float or None.    
+    """
+    if value in (None, ""):
+      return None
+    try:
+      return float(value)
+    except (TypeError, ValueError):
+      logger.warning("Float conversion failed for value=%r", value)
+      return None
+
+  def parse_iso_to_pacific(self, iso_str: Optional[str]) -> Optional[str]:
+    """
+    Converts iso formated UTC date to PST
+    Parameter:
+      iso_str (str): iso formated UTC date
+    """
+    if not iso_str:
+      return None
+    try:
+      dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+      if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+      return dt.astimezone(self.pacific_tz).isoformat()
+    except Exception:
+      logger.warning("Datetime conversion failed for iso_str=%r", iso_str)
+      return None 
+
+  def parse_iso_to_eastern(self, iso_str: Optional[str]) -> Optional[str]:
+    """
+    Converts iso formated UTC date to EST
+    Parameter:
+      iso_str (str): iso formated UTC date
+    """   
+    if not iso_str:
+      return None
+    try:
+      dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+      if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+      return dt.astimezone(self.eastern_tz).isoformat()
+    except Exception:
+      logger.warning("Datetime conversion failed for iso_str=%r", iso_str)
+      return None   
+
+  def require_redis(self):
+    """
+    Returns the Redis client instance.
+    """
+    if self.r is None:
+      raise HTTPException(status_code=503, detail="Redis not connected")
+    return self.r
+
+
+  def log_nth_last_alert(self, symbol, timeframe, n):
+    r = self.require_redis()
+    stream = self.stream_key(timeframe, symbol) # E.g. "tv:stream:15m:AAPL"
+    entries = r.xrevrange(stream, count=n) # Reads entries from a Redis stream in reverse order (newest -> oldest)
+
+    if len(entries) < n:
+      logger.info("No %sth entry for %r:%r", n, symbol, timeframe)
+      return None
+
+    entry = entries[n - 1]
+    logger.info("Nth last alert for %r:%r => %r", symbol, timeframe, entry)
+    return entry
+
+
+  def get_nth_last_alert(self, symbol, timeframe, n):
+    """
+    Retrieves the last nth alert received from TV for the ticker/timeframe pair specified.
+    Parameters:
+      symbol (str): The ticker symbol
+      timeframe (str): The timeframe
+      n (int): The last nth position
+    Returns:
+      entries[n - 1] (tuple): The alert ID and a dictionary containing imformation about the price 
+      and ohlcv data for the symbol/timeframe pair.
+    """
+    r = self.require_redis()
+    stream = self.stream_key(timeframe, symbol) # E.g. "tv:stream:15m:AAPL"
+    entries = r.xrevrange(stream, count=n) # Reads entries from a Redis stream in reverse order (newest -> oldest)
+
+    if len(entries) < n:
+      return None
+
+    return entries[n - 1]
+
+
+  def handle_alert(self, ticker, tf, signal):
+    """
+    This function just tests the correctness of the get_nth_last_alert() function by comparing the output to that
+    actually sent by TV.
+    Parameters:
+      ticker (str): The ticker symbol.
+      tf (str): The timeframe.
+      signal (str): The signal, "buy", "sell", "buy+", or "sell+".
+    Returns:
+      last_alert (tuple): The alert ID and a dictionary containing imformation about the price 
+      and ohlcv data for the symbol/timeframe pair.
+    """
+    last_alert = self.get_nth_last_alert(ticker, tf, 2)
+    logger.info(
+      "Handling Ticker=%r TF=%r Signal=%r SecondLastAlert=%r",
+      ticker, tf, signal, last_alert
+    )
+    return last_alert
+
+
+strategies.py:
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+class Strategies:
+  def __init__(self, trading_view_webhook_helpers, trade_records):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.require_redis()
+    self.trade_records = trade_records
+    
+
+  def implement_simple_strategy(self, strategy_name, simulation_only, signal, market_price, ticker, timeframe):
+    
+    if timeframe != "1m":
+      return None
+
+    num_shares = 5
+
+    last_1m_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+    last_15m_alert = self.tvw_helpers.get_nth_last_alert(ticker, "15m", 1)
+
+    if last_1m_alert is None or last_15m_alert is None:
+      logger.info("Strategy skipped: missing alert context for %r", ticker)
+      return None
+
+    _, last_1m_fields = last_1m_alert
+    _, last_15m_fields = last_15m_alert
+
+    last_1m_signal = self.tvw_helpers.normalize_signal(last_1m_fields.get("signal"))
+    last_15m_signal = self.tvw_helpers.normalize_signal(last_15m_fields.get("signal"))
+    last_1m_close = self.tvw_helpers.safe_float(last_1m_fields.get("close"))
+    last_1m_date = last_1m_fields.get("bar_close_time_eastern")
+
+    if last_1m_close is None or not last_1m_date:
+      logger.info("Strategy skipped: incomplete 1m alert fields for %r", ticker)
+      return None
+
+    if market_price is None:
+      market_price = last_1m_close
+    
+    if last_15m_signal == "buy" and last_1m_signal == "buy":
+      return self.place_long_order(simulation_only, strategy_name, ticker, last_1m_date, market_price, num_shares)
+
+    if last_15m_signal == "sell" and last_1m_signal == "sell":
+      return self.place_short_order(simulation_only, strategy_name, ticker, last_1m_date, market_price, num_shares)
+
+    logger.info(
+      "No trade condition met for %r | 1m=%r 15m=%r",
+      ticker, last_1m_signal, last_15m_signal
+    )
+    return None
+
+  def place_long_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "long")
+    logger.info("Placing buy order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
+
+  def place_short_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "short")
+    logger.info("Placing sell order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
+
+trade_records.py:
+import os
+import threading
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger("tv-webhook")
+
+class TradeRecords:
+  def __init__(self, trading_view_webhook_helpers):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.require_redis()
+    self.stream_maxlen = int(os.getenv("TV_MAXLEN", "500"))
+    self.trade_event_maxlen = int(os.getenv("TV_TRADE_EVENT_MAXLEN", str(self.stream_maxlen)))
+    self.pnl_stream_maxlen = int(os.getenv("TV_PNL_MAXLEN", str(self.stream_maxlen)))   
+
+  def _normalize_strategy(self, strategy_name: str) -> str:
+    return str(strategy_name or "").strip()
+
+  def _normalize_ticker(self, ticker: str) -> str:
+    return str(ticker or "").upper().strip()
+
+  def _position_key(self, strategy_name: str, ticker: str) -> str:
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    return f"tv:position:{strat}:{sym}"
+
+  def _strategy_positions_key(self, strategy_name: str) -> str:
+    strat = self._normalize_strategy(strategy_name)
+    return f"tv:positions:{strat}"
+
+  def _positions_index_key(self) -> str:
+    return "tv:positions:index"
+
+  def _trade_event_stream_key(self) -> str:
+    return "tv:trade_events"
+
+  def _trade_index_key(self) -> str:
+    return "tv:trades:index"    
+
+  def _trade_event_pair_stream_key(self, strategy_name: str, ticker: str) -> str:
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    return f"tv:trade_events:{strat}:{sym}"
+
+  def _pnl_stream_key(self, strategy_name: str, ticker: str) -> str:
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    return f"tv:pnl:{strat}:{sym}"
+
+  def _aggregate_pnl_stream_key(self, strategy_name: str) -> str:
+    strat = self._normalize_strategy(strategy_name)
+    return f"tv:pnl:{strat}:ALL"
+
+  def _parse_float(self, value, default=0.0) -> float:
+    try:
+      if value in (None, ""):
+        return float(default)
+      return float(value)
+    except (TypeError, ValueError):
+      return float(default)
+
+  def _parse_int(self, value, default=0) -> int:
+    try:
+      if value in (None, ""):
+        return int(default)
+      return int(value)
+    except (TypeError, ValueError):
+      return int(default)
+
+  def _to_timestamp(self, iso_str: str) -> float:
+    return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).timestamp()
+
+  def _iso_now(self) -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+  def _to_eastern_iso(self, iso_str: str) -> str:
+    dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+      dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(self.tvw_helpers.eastern_tz).isoformat()   
+
+  def _compute_unrealized_pnl(self, side: str, avg_price_per_share: float, market_price: float, num_shares: int) -> float:
+    if num_shares <= 0:
+      return 0.0
+
+    if side == "long":
+      return (market_price - avg_price_per_share) * num_shares
+
+    if side == "short":
+      return (avg_price_per_share - market_price) * num_shares
+
+    raise ValueError(f"Invalid side: {side}")
+
+  def _compute_realized_delta(self, side: str, avg_price_per_share: float, fill_price: float, close_qty: int) -> float:
+    if close_qty <= 0:
+      return 0.0
+
+    if side == "long":
+      return (fill_price - avg_price_per_share) * close_qty
+
+    if side == "short":
+      return (avg_price_per_share - fill_price) * close_qty
+
+    raise ValueError(f"Invalid side: {side}")
+
+  def _load_position(self, strategy_name: str, ticker: str):
+    key = self._position_key(strategy_name, ticker)
+    if not self.r.exists(key):
+      return None
+
+    fields = self.r.hgetall(key)
+    if not fields:
+      return None
+
+    return {
+      "key": key,
+      "strategy_name": fields.get("strategy_name"),
+      "ticker": fields.get("ticker"),
+      "side": fields.get("side"),
+      "entry_date": fields.get("entry_date"),
+      "entry_price": self._parse_float(fields.get("entry_price")),
+      "entry_price_per_share": self._parse_float(fields.get("entry_price_per_share")),
+      "avg_price_per_share": self._parse_float(fields.get("avg_price_per_share")),
+      "last_market_price": self._parse_float(fields.get("last_market_price")),
+      "num_shares": self._parse_int(fields.get("num_shares")),
+      "unrealized_pnl": self._parse_float(fields.get("unrealized_pnl")),
+      "realized_pnl": self._parse_float(fields.get("realized_pnl")),
+    }
+
+  def get_position(self, strategy_name: str, ticker: str):
+    return self._load_position(strategy_name, ticker)
+
+  def record_trade_event(
+    self,
+    strategy_name: str,
+    ticker: str,
+    event_type: str,
+    event_time: str,
+    price: float,
+    num_shares: int,
+    side: str,
+    old_num_shares: int,
+    new_num_shares: int,
+    realized_delta: float,
+    cumulative_realized_pnl: float,
+  ):
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    event_time = self._to_eastern_iso(event_time or self._iso_now())
+
+    fields = {
+      "strategy_name": strat,
+      "ticker": sym,
+      "event_type": str(event_type or "").strip().lower(),
+      "event_time": event_time,
+      "price": self.tvw_helpers.to_str(price),
+      "num_shares": self.tvw_helpers.to_str(num_shares),
+      "side": str(side or "").strip().lower(),
+      "old_num_shares": self.tvw_helpers.to_str(old_num_shares),
+      "new_num_shares": self.tvw_helpers.to_str(new_num_shares),
+      "realized_delta": self.tvw_helpers.to_str(realized_delta),
+      "cumulative_realized_pnl": self.tvw_helpers.to_str(cumulative_realized_pnl),
+    }
+
+    global_stream = self._trade_event_stream_key()
+    pair_stream = self._trade_event_pair_stream_key(strat, sym)
+
+    pipe = self.r.pipeline()
+    pipe.xadd(
+      global_stream,
+      fields,
+      maxlen=self.trade_event_maxlen,
+      approximate=True,
+    )
+    pipe.xadd(
+      pair_stream,
+      fields,
+      maxlen=self.trade_event_maxlen,
+      approximate=True,
+    )
+    results = pipe.execute()
+
+    return {
+      "global_stream": global_stream,
+      "global_stream_id": results[0],
+      "pair_stream": pair_stream,
+      "pair_stream_id": results[1],
+      "fields": fields,
+    }
+
+  def _strategies_index_key(self) -> str:
+    return "tv:strategies:index"
+
+  def create_trade_record(self, strategy_name, ticker, date, price, num_shares, side):
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    side = str(side or "").strip().lower()
+
+    if side not in {"long", "short"}:
+      raise ValueError(f"Invalid trade side: {side}")
+
+    num_shares = self._parse_int(num_shares)
+    if num_shares <= 0:
+      raise ValueError("num_shares must be > 0")
+
+    price = self._parse_float(price)
+    if price <= 0:
+      raise ValueError("price must be > 0")
+
+    iso_dt = self._to_eastern_iso(date or self._iso_now())
+
+    existing = self._load_position(strat, sym)
+    if existing is not None and existing["num_shares"] > 0:
+      raise ValueError("Open position already exists for strategy/ticker. Use modify_trade_record.")
+
+    carry_realized_pnl = 0.0
+    if existing is not None:
+      carry_realized_pnl = existing["realized_pnl"]
+
+    record = {
+      "strategy_name": strat,
+      "ticker": sym,
+      "side": side,
+      "entry_date": iso_dt,
+      "entry_price": self.tvw_helpers.to_str(price),
+      "entry_price_per_share": self.tvw_helpers.to_str(price),
+      "avg_price_per_share": self.tvw_helpers.to_str(price),
+      "last_market_price": self.tvw_helpers.to_str(price),
+      "num_shares": self.tvw_helpers.to_str(num_shares),
+      "unrealized_pnl": self.tvw_helpers.to_str(0.0),
+      "realized_pnl": self.tvw_helpers.to_str(carry_realized_pnl),
+    }
+
+    position_key = self._position_key(strat, sym)
+    strategy_positions_key = self._strategy_positions_key(strat)
+    global_index_key = self._positions_index_key()
+    strategies_index_key = self._strategies_index_key()
+
+    # Write position 
+    pipe = self.r.pipeline()
+    pipe.hset(position_key, mapping=record)
+    pipe.sadd(strategy_positions_key, sym)
+    pipe.sadd(global_index_key, f"{strat}|{sym}")
+    pipe.sadd(strategies_index_key, strat)    
+    pipe.execute()
+
+    # Create event before ZADD
+    event_type = "open"
+    if existing is not None and existing["num_shares"] == 0:
+      event_type = "reopen"
+
+    event = self.record_trade_event(
+      strategy_name=strat,
+      ticker=sym,
+      event_type=event_type,
+      event_time=iso_dt,
+      price=price,
+      num_shares=num_shares,
+      side=side,
+      old_num_shares=0,
+      new_num_shares=num_shares,
+      realized_delta=0.0,
+      cumulative_realized_pnl=carry_realized_pnl,
+    )
+
+    # Compute timestamp
+    ts = datetime.fromisoformat(iso_dt).timestamp()
+
+    # Add to index
+    trade_index_key = self._trade_index_key()   
+
+    self.r.zadd(trade_index_key, {
+      f"{strat}|{sym}|{event['global_stream_id']}": ts
+    })
+
+    logger.info("Created trade record for strategy=%r ticker=%r side=%r qty=%r", 
+      strat, 
+      sym, 
+      side, 
+      num_shares
+    )
+
+    return {
+      "position": self.get_position(strat, sym),
+      "event": event,
+    }
+
+  
+
+  def snapshot_all_pnl(self, api):
+    strategies = sorted(self.r.smembers(self._strategies_index_key()))
+    results = []
+
+    for strategy_name in strategies:
+      try:
+        result = self.snapshot_pnl(strategy_name, api)
+        results.append({
+          "strategy_name": strategy_name,
+          "ok": True,
+          "result": result,
+        })
+      except Exception as exc:
+        logger.exception("PnL snapshot failed for strategy=%r", strategy_name)
+        results.append({
+          "strategy_name": strategy_name,
+          "ok": False,
+          "error": str(exc),
+        })
+
+    return {
+      "count": len(results),
+      "results": results,
+    }   
+
+  def modify_trade_record(self, strategy_name, ticker, date, price, num_shares, action):
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker)
+    action = str(action or "").strip().lower()
+
+    if action not in {"add", "reduce"}:
+      raise ValueError(f"Invalid action: {action}")
+
+    num_shares = self._parse_int(num_shares)
+    if num_shares <= 0:
+      raise ValueError("num_shares must be > 0")
+
+    price = self._parse_float(price)
+    if price <= 0:
+      raise ValueError("price must be > 0")
+
+    iso_dt = self._to_eastern_iso(date or self._iso_now())
+
+    existing = self._load_position(strat, sym)
+    if existing is None:
+      raise ValueError("No record exists for strategy/ticker. Use create_trade_record first.")
+
+    old_qty = existing["num_shares"]
+    side = existing["side"]
+    old_avg = existing["avg_price_per_share"]
+    old_realized = existing["realized_pnl"]
+    old_entry_date = existing["entry_date"]
+    old_entry_price = existing["entry_price"]
+    old_entry_price_per_share = existing["entry_price_per_share"]
+
+    if side not in {"long", "short"}:
+      raise ValueError(f"Invalid stored side: {side}")
+
+    if old_qty == 0:
+      if action == "reduce":
+        raise ValueError("Cannot reduce a closed position.")
+      return self.create_trade_record(
+        strategy_name=strat,
+        ticker=sym,
+        date=iso_dt,
+        price=price,
+        num_shares=num_shares,
+        side=side,
+      )
+
+    if action == "add":
+      new_qty = old_qty + num_shares
+      new_avg = ((old_avg * old_qty) + (price * num_shares)) / new_qty
+      new_last_market_price = price
+      new_unrealized = self._compute_unrealized_pnl(side, new_avg, new_last_market_price, new_qty)
+      new_realized = old_realized
+      realized_delta = 0.0
+      event_type = "add"
+
+    else:
+      if num_shares > old_qty:
+        raise ValueError("Cannot reduce more shares than currently open.")
+
+      realized_delta = self._compute_realized_delta(side, old_avg, price, num_shares)
+      new_realized = old_realized + realized_delta
+      new_qty = old_qty - num_shares
+      new_avg = old_avg
+      new_last_market_price = price
+
+      if new_qty == 0:
+        new_unrealized = 0.0
+        event_type = "close"
+      else:
+        new_unrealized = self._compute_unrealized_pnl(side, new_avg, new_last_market_price, new_qty)
+        event_type = "reduce"
+
+    updated = {
+      "strategy_name": strat,
+      "ticker": sym,
+      "side": side,
+      "entry_date": old_entry_date,
+      "entry_price": self.tvw_helpers.to_str(old_entry_price),
+      "entry_price_per_share": self.tvw_helpers.to_str(old_entry_price_per_share),
+      "avg_price_per_share": self.tvw_helpers.to_str(new_avg),
+      "last_market_price": self.tvw_helpers.to_str(new_last_market_price),
+      "num_shares": self.tvw_helpers.to_str(new_qty),
+      "unrealized_pnl": self.tvw_helpers.to_str(new_unrealized),
+      "realized_pnl": self.tvw_helpers.to_str(new_realized),
+    }
+
+    position_key = self._position_key(strat, sym)
+    self.r.hset(position_key, mapping=updated)
+
+    event = self.record_trade_event(
+      strategy_name=strat,
+      ticker=sym,
+      event_type=event_type,
+      event_time=iso_dt,
+      price=price,
+      num_shares=num_shares,
+      side=side,
+      old_num_shares=old_qty,
+      new_num_shares=new_qty,
+      realized_delta=realized_delta,
+      cumulative_realized_pnl=new_realized,
+    )
+
+    logger.info(
+      "Modified trade record for strategy=%r ticker=%r action=%r old_qty=%r new_qty=%r",
+      strat,
+      sym,
+      action,
+      old_qty,
+      new_qty,
+    )
+
+    return {
+      "position": self.get_position(strat, sym),
+      "event": event,
+    }
+
+  def get_market_prices(self, tickers, api):
+    market_prices = {
+      ticker: {
+        "ticker": ticker,
+        "ask": None,
+        "bid": None,
+        "market": None,
+      }
+      for ticker in tickers
+    }
+
+    def get_prices(ticker):
+      trial = 0
+
+      while trial < 3:
+        try:
+          last_quote = api.get_latest_quote(ticker)
+          ask = last_quote.ap
+          bid = last_quote.bp
+
+          if ask is None or bid is None:
+            raise ValueError(f"Missing ask/bid for {ticker}: ask={ask}, bid={bid}")
+
+          market = (ask + bid) / 2.0
+
+          market_prices[ticker]["ask"] = ask
+          market_prices[ticker]["bid"] = bid
+          market_prices[ticker]["market"] = market
+          return
+
+        except Exception as e:
+          trial += 1
+          logger.info(
+            "Unable to obtain market price for %s on attempt %d: %s",
+            ticker,
+            trial,
+            e,
+          )
+
+    threads = []
+    for ticker in tickers:
+      t = threading.Thread(target=get_prices, args=(ticker,))
+      threads.append(t)
+
+    for t in threads:
+      t.start()
+
+    for t in threads:
+      t.join()
+
+    return market_prices
+
+  def snapshot_pnl(self, strategy_name: str, api):
+    strat = self._normalize_strategy(strategy_name)
+    tickers = sorted(self.r.smembers(self._strategy_positions_key(strat)))
+    snapshot_time = self._to_eastern_iso(self._iso_now())
+
+    if not tickers:
+      aggregate_fields = {
+        "snapshot_time": snapshot_time,
+        "strategy_name": strat,
+        "total_pnl": self.tvw_helpers.to_str(0.0),
+        "total_unrealized_pnl": self.tvw_helpers.to_str(0.0),
+        "total_realized_pnl": self.tvw_helpers.to_str(0.0),
+        "tracked_tickers": self.tvw_helpers.to_str(0),
+        "open_positions": self.tvw_helpers.to_str(0),
+      }
+      self.r.xadd(
+        self._aggregate_pnl_stream_key(strat),
+        aggregate_fields,
+        maxlen=self.pnl_stream_maxlen,
+        approximate=True,
+      )
+      return {
+        "strategy_name": strat,
+        "snapshot_time": snapshot_time,
+        "tracked_tickers": 0,
+        "open_positions": 0,
+        "total_realized_pnl": 0.0,
+        "total_unrealized_pnl": 0.0,
+        "total_pnl": 0.0,
+        "records": [],
+      }
+
+    positions = []
+    open_tickers = []
+
+    for ticker in tickers:
+      pos = self.get_position(strat, ticker)
+      if pos is None:
+        continue
+
+      positions.append(pos)
+      if pos["num_shares"] > 0:
+        open_tickers.append(ticker)
+
+    price_map = self.get_market_prices(open_tickers, api) if open_tickers else {}
+
+    records = []
+    total_realized = 0.0
+    total_unrealized = 0.0
+    open_positions = 0
+
+    for pos in positions:
+      ticker = pos["ticker"]
+      side = pos["side"]
+      num_shares = pos["num_shares"]
+      avg_price_per_share = pos["avg_price_per_share"]
+      realized_pnl = pos["realized_pnl"]
+      last_market_price = pos["last_market_price"]
+
+      if num_shares > 0:
+        open_positions += 1
+        market_price = price_map.get(ticker, {}).get("market")
+        if market_price is not None:
+          last_market_price = float(market_price)
+
+        unrealized_pnl = self._compute_unrealized_pnl(
+          side,
+          avg_price_per_share,
+          last_market_price,
+          num_shares,
+        )
+      else:
+        unrealized_pnl = 0.0
+
+      total_pnl = realized_pnl + unrealized_pnl
+
+      self.r.hset(
+        self._position_key(strat, ticker),
+        mapping={
+          "last_market_price": self.tvw_helpers.to_str(last_market_price),
+          "unrealized_pnl": self.tvw_helpers.to_str(unrealized_pnl),
+          "realized_pnl": self.tvw_helpers.to_str(realized_pnl),
+        },
+      )
+
+      fields = {
+        "snapshot_time": snapshot_time,
+        "strategy_name": strat,
+        "ticker": ticker,
+        "side": side,
+        "num_shares": self.tvw_helpers.to_str(num_shares),
+        "avg_price_per_share": self.tvw_helpers.to_str(avg_price_per_share),
+        "last_market_price": self.tvw_helpers.to_str(last_market_price),
+        "realized_pnl": self.tvw_helpers.to_str(realized_pnl),
+        "unrealized_pnl": self.tvw_helpers.to_str(unrealized_pnl),
+        "total_pnl": self.tvw_helpers.to_str(total_pnl),
+      }
+
+      self.r.xadd(
+        self._pnl_stream_key(strat, ticker),
+        fields,
+        maxlen=self.pnl_stream_maxlen,
+        approximate=True,
+      )
+
+      records.append({
+        "ticker": ticker,
+        "side": side,
+        "num_shares": num_shares,
+        "avg_price_per_share": avg_price_per_share,
+        "last_market_price": last_market_price,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+      })
+
+      total_realized += realized_pnl
+      total_unrealized += unrealized_pnl
+
+    aggregate_total = total_realized + total_unrealized
+    aggregate_fields = {
+      "snapshot_time": snapshot_time,
+      "strategy_name": strat,
+      "total_pnl": self.tvw_helpers.to_str(aggregate_total),
+      "total_unrealized_pnl": self.tvw_helpers.to_str(total_unrealized),
+      "total_realized_pnl": self.tvw_helpers.to_str(total_realized),
+      "tracked_tickers": self.tvw_helpers.to_str(len(records)),
+      "open_positions": self.tvw_helpers.to_str(open_positions),
+    }
+
+    self.r.xadd(
+      self._aggregate_pnl_stream_key(strat),
+      aggregate_fields,
+      maxlen=self.pnl_stream_maxlen,
+      approximate=True,
+    )
+
+    return {
+      "strategy_name": strat,
+      "snapshot_time": snapshot_time,
+      "tracked_tickers": len(records),
+      "open_positions": open_positions,
+      "total_realized_pnl": total_realized,
+      "total_unrealized_pnl": total_unrealized,
+      "total_pnl": aggregate_total,
+      "records": records,
+    }
+
+  def _entry_in_range(self, snapshot_time: str, start: str = None, end: str = None) -> bool:
+    entry_ts = self._to_timestamp(snapshot_time)
+
+    if start:
+      start_ts = self._to_timestamp(start)
+      if entry_ts < start_ts:
+        return False
+
+    if end:
+      end_ts = self._to_timestamp(end)
+      if entry_ts > end_ts:
+        return False
+
+    return True
+
+  def get_pnl_history(self, strategy_name: str, start: str = None, end: str = None, ticker: str = None):
+    strat = self._normalize_strategy(strategy_name)
+    sym = self._normalize_ticker(ticker) if ticker else None
+
+    if sym:
+      key = self._pnl_stream_key(strat, sym)
+    else:
+      key = self._aggregate_pnl_stream_key(strat)
+
+    entries = self.r.xrange(key, min="-", max="+")
+    history = []
+
+    for entry_id, fields in entries:
+      snapshot_time = fields.get("snapshot_time")
+      if not snapshot_time:
+        continue
+
+      if not self._entry_in_range(snapshot_time, start, end):
+        continue
+
+      history.append({
+        "id": entry_id,
+        "snapshot_time": snapshot_time,
+        "strategy_name": fields.get("strategy_name"),
+        "ticker": fields.get("ticker"),
+        "side": fields.get("side"),
+        "num_shares": self._parse_int(fields.get("num_shares")),
+        "avg_price_per_share": self._parse_float(fields.get("avg_price_per_share")),
+        "last_market_price": self._parse_float(fields.get("last_market_price")),
+        "realized_pnl": self._parse_float(fields.get("realized_pnl")),
+        "unrealized_pnl": self._parse_float(fields.get("unrealized_pnl")),
+        "total_pnl": self._parse_float(fields.get("total_pnl")),
+        "tracked_tickers": self._parse_int(fields.get("tracked_tickers")),
+        "open_positions": self._parse_int(fields.get("open_positions")),
+        "total_unrealized_pnl": self._parse_float(fields.get("total_unrealized_pnl")),
+        "total_realized_pnl": self._parse_float(fields.get("total_realized_pnl")),
+      })
+
+    return history
+
+  def get_trade_events(self, strategy_name: str = None, ticker: str = None, start: str = None, end: str = None):
+    if strategy_name and ticker:
+      key = self._trade_event_pair_stream_key(strategy_name, ticker)
+    else:
+      key = self._trade_event_stream_key()
+
+    entries = self.r.xrange(key, min="-", max="+")
+    events = []
+
+    for entry_id, fields in entries:
+      event_time = fields.get("event_time")
+      if not event_time:
+        continue
+
+      if start or end:
+        if not self._entry_in_range(event_time, start, end):
+          continue
+
+      if strategy_name and fields.get("strategy_name") != self._normalize_strategy(strategy_name):
+        continue
+
+      if ticker and fields.get("ticker") != self._normalize_ticker(ticker):
+        continue
+
+      events.append({
+        "id": entry_id,
+        "strategy_name": fields.get("strategy_name"),
+        "ticker": fields.get("ticker"),
+        "event_type": fields.get("event_type"),
+        "entry_date": event_time,
+        "price": self._parse_float(fields.get("price")),
+        "num_shares": self._parse_int(fields.get("num_shares")),
+        "side": fields.get("side"),
+        "old_num_shares": self._parse_int(fields.get("old_num_shares")),
+        "new_num_shares": self._parse_int(fields.get("new_num_shares")),
+        "realized_delta": self._parse_float(fields.get("realized_delta")),
+        "cumulative_realized_pnl": self._parse_float(fields.get("cumulative_realized_pnl")),
+      })
+
+    return events
+
+  def reset_tv_data(self):
+    deleted = 0
+    batch = []
+
+    for key in self.r.scan_iter("tv:*"):
+      batch.append(key)
+
+      if len(batch) >= 500:
+        deleted += self.r.delete(*batch)
+        batch = []
+
+    if batch:
+      deleted += self.r.delete(*batch)
+
+    logger.warning("Deleted %d Redis keys under namespace tv:*", deleted)
+    return {"deleted_keys": deleted}
+
+
+  def get_first_trade_time(self):
+    """
+    Returns date of the first recorded trade from Redis.
+    """
+    items = self.r.zrange(self._trade_index_key(), 0, 0, withscores=True)
+    if not items:
+      return None
+
+    _, score = items[0]
+    return datetime.fromtimestamp(score, timezone.utc).isoformat()    
+
+
+  def get_last_trade_time(self):
+    """
+    Returns date of the last recorded trade from Redis.
+    """   
+    items = self.r.zrevrange(self._trade_index_key(), 0, 0, withscores=True)
+    if not items:
+      return None
+
+    _, score = items[0]
+    return datetime.fromtimestamp(score, timezone.utc).isoformat()  
+
+
+  def get_trade_records_between(self, start_iso: str, end_iso: str, tickers=None):
+    """
+    Retrieves records between the dates and tickers specified.
+    Parameters:
+      start_iso (str): Start date in iso format.
+      end_iso (str): End date in iso format.
+      tickers (list): List of tickers.
+    Returns:
+      records (dictionary): fields of each record matching the query.
+    """ 
+    try:
+      start_ts = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).timestamp()
+      end_ts = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).timestamp()
+    except Exception as exc:
+      raise ValueError("Invalid ISO date range") from exc
+
+    if start_ts > end_ts:
+      raise ValueError("start must be <= end")
+
+    ticker_set = None
+    if tickers:
+      ticker_set = {str(t).upper().strip() for t in tickers if str(t).strip()}
+
+    members = self.r.zrangebyscore(self._trade_index_key(), start_ts, end_ts)
+
+    records = []
+    for member in members:
+      strat, ticker, stream_id = member.split("|", 2)
+      ticker = ticker.upper().strip()
+
+      if ticker_set is not None and ticker not in ticker_set:
+        continue
+
+      stream_key = self._trade_event_pair_stream_key(strat, ticker)
+
+      entry = self.r.xrange(stream_key, min=stream_id, max=stream_id, count=1)
+      if not entry:
+        continue
+
+      entry_id, fields = entry[0]
+      records.append({
+        "id": entry_id,
+        "strategy_name": fields.get("strategy_name"),
+        "ticker": fields.get("ticker"),
+        "entry_date": fields.get("event_time"),
+        "entry_price": self._parse_float(fields.get("price")),
+        "num_shares": fields.get("num_shares"),
+        "side": fields.get("side"),
+      })
+
+    return records    
+
+

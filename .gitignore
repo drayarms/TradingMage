@@ -1,5 +1,6 @@
 .venv/
 app/config.py
+app/test_app.py
 TV alt codes
 
 aws_creds.cvs

@@ -1,0 +1,843 @@
+Here's the current configuration of the app:
+
+app.py:
+
+from zoneinfo import ZoneInfo
+#import time
+#import config 
+##REMOVE CONFIG FIRST !!!!!! import dataframes
+import os
+#import redis
+
+#import json
+#from datetime import datetime, timezone
+
+from fastapi import FastAPI, Request, HTTPException, Query
+#from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+import logging
+import sys
+
+import alpaca_trade_api as tradeapi
+
+import trading_view_webhook_helpers 
+import strategies
+import trade_records
+
+#import hashlib
+
+from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
+
+from typing import Optional
+
+from pydantic import BaseModel
+
+logging.basicConfig(
+	level=logging.INFO,
+	stream=sys.stdout,
+	format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("tv-webhook")
+logger.setLevel(logging.INFO)
+logger.propagate = True
+
+TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # required
+# Example optional vars:
+APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
+APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
+APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
+
+
+#PACIFIC_TZ = timezone('US/Pacific')
+#EASTERN_TZ = timezone('US/Eastern')
+PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+EASTERN_TZ = ZoneInfo("America/New_York")
+MY_TZ = EASTERN_TZ
+
+api = tradeapi.REST(
+    base_url=APCA_API_BASE_URL,
+    key_id=APCA_API_KEY_ID,
+    secret_key=APCA_API_SECRET_KEY
+)
+
+#import os
+#import os.path
+
+SECURITIES = []
+
+#import math
+
+
+# Get our account information.
+#account = api.get_account()
+
+# Check if our account is restricted from trading.
+#if account.trading_blocked:
+    #print('Account is currently restricted from trading.')
+    #logger.info("Account is currently restricted from trading")
+
+
+app = FastAPI(title="TradingView Webhook - Print Signals Only")
+
+tvw_helpers = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
+trade_recs = trade_records.TradeRecords(tvw_helpers)
+stgs = strategies.Strategies(tvw_helpers, trade_recs)
+
+class TradingViewWebhook(BaseModel):
+	secret: str
+	symbol: str
+	timeframe: str
+	signal: str
+	bar_close_time: str
+	price: Optional[float] = None
+	open: Optional[float] = None
+	high: Optional[float] = None
+	low: Optional[float] = None
+	close: Optional[float] = None
+	volume: Optional[float] = None
+
+
+# When app starts, this function runs once
+#systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
+@app.on_event("startup")
+def _startup():
+	try:
+		account = api.get_account()
+		if account.trading_blocked:
+			logger.info("Account is currently restricted from trading")
+	#except Exception:
+		#logger.exception("Alpaca get_account failed during startup")
+	except Exception as exc:
+		logger.exception("Alpaca get_account failed during startup")
+		raise RuntimeError("Alpaca get_account failed during startup") from exc			
+
+@app.get("/health")
+def health():
+	rr = tvw_helpers.require_redis()
+
+	try:
+		rr.ping()
+		return {"ok": True, "redis": "up"}
+	#except Exception as exc:
+		#raise HTTPException(status_code=503, detail=f"Redis ping failed: {exc}")
+	except Exception:
+		logger.exception("Redis ping failed")
+		raise HTTPException(status_code=503, detail="Redis ping failed")		
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+	logger.exception("Unhandled exception")
+	return JSONResponse(
+		status_code=500,
+		content={"detail": "Internal server error"},
+	)
+
+@app.post("/webhook/tradingview")
+async def webhook_tradingview(payload: TradingViewWebhook):
+	rr = tvw_helpers.require_redis()
+
+	if payload.secret != TV_WEBHOOK_SECRET:
+		raise HTTPException(status_code=401, detail="Invalid secret")
+
+	tf = tvw_helpers.normalize_tf(payload.timeframe)
+	symbol = str(payload.symbol or "").upper().strip()
+	#signal = tvw_helpers.normalize_signal(payload.signal)
+	signal = payload.signal
+
+	if not tf or not symbol or not signal:
+		logger.warning(
+			"Invalid webhook payload: timeframe=%r symbol=%r signal=%r",
+			payload.timeframe,
+			payload.symbol,
+			payload.signal,
+		)
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe, symbol, or signal")		
+
+	stream_key = tvw_helpers.stream_key(tf, symbol)
+	state_key = tvw_helpers.state_key(tf, symbol)
+
+	received_at = tvw_helpers.utc_now_iso()
+	bar_close_time_pacific = tvw_helpers.parse_iso_to_pacific(payload.bar_close_time)
+
+	stream_fields = {
+		"symbol": symbol,
+		"timeframe": tf,
+		"signal": signal,
+		"bar_close_time": tvw_helpers.to_str(payload.bar_close_time),
+		"bar_close_time_pacific": tvw_helpers.to_str(bar_close_time_pacific),
+		"received_at": received_at,
+		"price": tvw_helpers.to_str(payload.price),
+		"open": tvw_helpers.to_str(payload.open),
+		"high": tvw_helpers.to_str(payload.high),
+		"low": tvw_helpers.to_str(payload.low),
+		"close": tvw_helpers.to_str(payload.close),
+		"volume": tvw_helpers.to_str(payload.volume),
+	}
+
+	state_fields = {
+		"symbol": symbol,
+		"timeframe": tf,
+		"signal": signal,
+		"bar_close_time": tvw_helpers.to_str(payload.bar_close_time),
+		"bar_close_time_pacific": tvw_helpers.to_str(bar_close_time_pacific),
+		"received_at": received_at,
+		"price": tvw_helpers.to_str(payload.price),
+		"open": tvw_helpers.to_str(payload.open),
+		"high": tvw_helpers.to_str(payload.high),
+		"low": tvw_helpers.to_str(payload.low),
+		"close": tvw_helpers.to_str(payload.close),
+		"volume": tvw_helpers.to_str(payload.volume),
+		"stream_key": stream_key,
+	}
+
+	try:
+		pipe = rr.pipeline()
+		pipe.xadd(
+			name=stream_key,
+			fields=stream_fields,
+			maxlen=TV_MAXLEN,
+			approximate=True,
+		)
+		pipe.hset(state_key, mapping=state_fields)
+		results = pipe.execute()
+		stream_id = results[0]
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis write failed: {exc}")
+	except Exception:
+		logger.exception("Redis write failed")
+		raise HTTPException(status_code=500, detail="Redis write failed")			
+
+	logger.info(
+		"\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_utc=%s\nbar_close_time_pacific=%s\nprice=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
+		received_at,
+		symbol,
+		tf,
+		signal.upper(),
+		payload.bar_close_time,
+		bar_close_time_pacific,
+		payload.price,
+		payload.open,
+		payload.high,
+		payload.low,
+		payload.close,
+		payload.volume,
+	)
+
+	#second_last_alert = tvw_helpers.handle_alert(symbol, tf, signal) # Str Str Str
+	#logger.info("In app.py: Second last alert = %r", second_last_alert)
+
+	stgs.implement_simple_strategy(True, "simple strategy", signal, symbol, tf)
+
+	return {
+		"ok": True,
+		"printed": True,
+		"symbol": symbol,
+		"timeframe": tf,
+		"signal": signal,
+		"stream": stream_key,
+		"state": state_key,
+		"stream_id": stream_id,
+		"maxlen": TV_MAXLEN,
+	}
+
+
+#@app.get("/retrieve_nth_last_alert")
+#def retrieve_nth_last_alert():
+	#ticker = request.args.get('ticker')
+	#tf = request.args.get('tf')
+	#tvw_helpers.log_nth_last_alert(ticker, tf, 1)
+
+@app.get("/retrieve_nth_last_alert")
+def retrieve_nth_last_alert(
+	ticker: str = Query(..., min_length=1),
+	tf: str = Query(..., min_length=1),
+	n: int = Query(2, ge=1),
+):
+	"""
+	Retrieves the last nth entries for the ticker/timeframe pair specified.
+	# curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+	# via Nginx on port 80: curl "http://localhost/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
+	# Most recent: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=1"
+	# Normalization: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=aapl&tf=1&n=2"
+	"""
+	entry = tvw_helpers.get_nth_last_alert(ticker, tf, n)
+
+	if entry is None:
+		raise HTTPException(status_code=404, detail="Not enough alerts found")
+
+	entry_id, fields = entry
+
+	return {
+		"ticker": ticker.upper().strip(),
+		"timeframe": tvw_helpers.normalize_tf(tf),
+		"n": n,
+		"entry": {
+			"id": entry_id,
+			"fields": {
+				**fields,
+				"price": tvw_helpers.safe_float(fields.get("price")),
+				"open": tvw_helpers.safe_float(fields.get("open")),
+				"high": tvw_helpers.safe_float(fields.get("high")),
+				"low": tvw_helpers.safe_float(fields.get("low")),
+				"close": tvw_helpers.safe_float(fields.get("close")),
+				"volume": tvw_helpers.safe_float(fields.get("volume")),
+			},
+		},
+	}
+
+@app.get("/trades")
+def get_trades(
+	start: str = Query(..., description="ISO start datetime"),
+	end: str = Query(..., description="ISO end datetime"),
+):
+	# Example call: curl "http://localhost:8000/trades?start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z"
+	try:
+		records = trade_recs.get_trade_records_between(start, end)
+	except ValueError:
+		raise HTTPException(status_code=400, detail="Invalid ISO date range")
+
+	return {
+		"start": start,
+		"end": end,
+		"count": len(records),
+		"records": records,
+	}
+
+@app.get("/debug/state/{timeframe}/{symbol}")
+async def debug_state_symbol(
+	timeframe: str,
+	symbol: str,
+	fields: str = Query(
+		default="symbol,timeframe,signal,bar_close_time,bar_close_time_pacific,received_at,price,open,high,low,close,volume,stream_key"
+	),
+):
+	rr = tvw_helpers.require_redis()
+
+	tf = tvw_helpers.normalize_tf(timeframe)
+	sym = str(symbol or "").upper().strip()
+
+	if not tf or not sym:
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
+
+	field_list = [f.strip() for f in fields.split(",") if f.strip()]
+	if not field_list:
+		raise HTTPException(status_code=400, detail="No fields requested")
+
+	key = tvw_helpers.state_key(tf, sym)
+
+	if not rr.exists(key):
+		raise HTTPException(status_code=404, detail="No state found for symbol/timeframe")
+
+	try:
+		values = rr.hmget(key, field_list)
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis read failed: {exc}")
+	except Exception:
+		logger.exception("Redis read failed")
+		raise HTTPException(status_code=500, detail="Redis read failed")			
+
+	data = {field: value for field, value in zip(field_list, values)}
+
+	for numeric_field in ("price", "open", "high", "low", "close", "volume"):
+		if numeric_field in data:
+			data[numeric_field] = tvw_helpers.safe_float(data[numeric_field])
+
+	return {
+		"key": key,
+		"data": data,
+	}
+
+
+@app.get("/debug/stream/{timeframe}/{symbol}")
+async def debug_stream_symbol(
+	timeframe: str,
+	symbol: str,
+	count: int = Query(default=20, ge=1, le=500),
+):
+	rr = tvw_helpers.require_redis()
+
+	tf = tvw_helpers.normalize_tf(timeframe)
+	sym = str(symbol or "").upper().strip()
+
+	if not tf or not sym:
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
+
+	key = tvw_helpers.stream_key(tf, sym)
+
+	try:
+		entries = rr.xrevrange(key, max="+", min="-", count=count)
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	except Exception:
+		logger.exception("Redis stream read failed")
+		raise HTTPException(status_code=500, detail="Redis stream read failed")			
+
+	return {
+		"stream": key,
+		"count": len(entries),
+		"entries": [
+			{
+				"id": entry_id,
+				"fields": {
+					**fields,
+					"price": tvw_helpers.safe_float(fields.get("price")),
+					"open": tvw_helpers.safe_float(fields.get("open")),
+					"high": tvw_helpers.safe_float(fields.get("high")),
+					"low": tvw_helpers.safe_float(fields.get("low")),
+					"close": tvw_helpers.safe_float(fields.get("close")),
+					"volume": tvw_helpers.safe_float(fields.get("volume")),
+				},
+			}
+			for entry_id, fields in entries
+		],
+	}
+
+
+@app.get("/debug/stream-range/{timeframe}/{symbol}")
+async def debug_stream_range_symbol(
+	timeframe: str,
+	symbol: str,
+	count: int = Query(default=100, ge=1, le=1000),
+):
+	rr = tvw_helpers.require_redis()
+
+	tf = tvw_helpers.normalize_tf(timeframe)
+	sym = str(symbol or "").upper().strip()
+
+	if not tf or not sym:
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
+
+	key = tvw_helpers.stream_key(tf, sym)
+
+	try:
+		entries = rr.xrange(key, min="-", max="+", count=count)
+	#except Exception as exc:
+		#raise HTTPException(status_code=500, detail=f"Redis stream read failed: {exc}")
+	except Exception:
+		logger.exception("Redis stream read failed")
+		raise HTTPException(status_code=500, detail="Redis stream read failed")			
+
+	return {
+		"stream": key,
+		"count": len(entries),
+		"entries": [
+			{
+				"id": entry_id,
+				"fields": {
+					**fields,
+					"price": tvw_helpers.safe_float(fields.get("price")),
+					"open": tvw_helpers.safe_float(fields.get("open")),
+					"high": tvw_helpers.safe_float(fields.get("high")),
+					"low": tvw_helpers.safe_float(fields.get("low")),
+					"close": tvw_helpers.safe_float(fields.get("close")),
+					"volume": tvw_helpers.safe_float(fields.get("volume")),
+				},
+			}
+			for entry_id, fields in entries
+		],
+	}
+
+
+trading_view_webhook_helpers.py:
+
+from datetime import datetime, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+import hashlib
+import redis
+from fastapi import HTTPException
+
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+class TradingViewWebhookHelpers:
+	def __init__(self, tv_webhook_secret: str, redis_url: str):
+		self.tv_webhook_secret = tv_webhook_secret
+		self.redis_module = redis
+		self.redis_url = redis_url
+		self.pacific_tz = ZoneInfo("America/Los_Angeles")
+
+		try:
+			self.r = redis.Redis.from_url(redis_url, decode_responses=True)
+			self.r.ping()
+		except Exception:
+			logger.exception("Redis initialization failed")
+			self.r = None
+					
+
+		if not tv_webhook_secret:
+			raise RuntimeError("Missing TV_WEBHOOK_SECRET environment variable")
+
+	def utc_now_iso(self) -> str:
+		return datetime.now(timezone.utc).isoformat()
+
+	def normalize_tf(self, timeframe: str) -> str:
+		tf = str(timeframe or "").strip().lower()
+
+		aliases = {
+			"1": "1m",
+			"3": "3m",
+			"5": "5m",
+			"15": "15m",
+			"30": "30m",
+			"45": "45m",
+			"60": "1h",
+			"120": "2h",
+			"240": "4h",
+			"d": "1d",
+			"1d": "1d",
+			"w": "1w",
+			"1w": "1w",
+		}
+
+		return aliases.get(tf, tf)
+
+	def utc_iso_to_pacific(self, iso_str: str) -> str:
+		if not iso_str:
+			return ""
+
+		if iso_str.endswith("Z"):
+			iso_str = iso_str.replace("Z", "+00:00")
+
+		try:
+			dt_utc = datetime.fromisoformat(iso_str)
+			return dt_utc.astimezone(self.pacific_tz).isoformat()
+		except Exception:
+			logger.warning("Time conversion failed")
+			return iso_str
+
+	def normalize_signal(self, sig: str) -> str:
+		s = (sig or "").strip().lower()
+		if s.startswith("buy"):
+			return "buy"
+		if s.startswith("sell"):
+			return "sell"
+		return s
+
+	def h(self, s: str) -> str:
+		return hashlib.sha256((s or "").encode()).hexdigest()[:12]
+
+	def stream_key(self, timeframe: str, symbol: str) -> str:
+		tf = self.normalize_tf(timeframe)
+		sym = str(symbol or "").upper().strip()
+		return f"tv:stream:{tf}:{sym}"
+
+	def state_key(self, timeframe: str, symbol: str) -> str:
+		tf = self.normalize_tf(timeframe)
+		sym = str(symbol or "").upper().strip()
+		return f"tv:state:{tf}:{sym}"
+
+	def to_str(self, value: Any) -> str:
+		if value is None:
+			return ""
+		return str(value)
+
+	def safe_float(self, value: Optional[str]) -> Optional[float]:
+		if value in (None, ""):
+			return None
+		try:
+			return float(value)
+		except (TypeError, ValueError):
+			logger.warning("Float conversion failed for value=%r", value)
+			return None
+
+	def parse_iso_to_pacific(self, iso_str: Optional[str]) -> Optional[str]:
+		if not iso_str:
+			return None
+		try:
+			dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+			if dt.tzinfo is None:
+				dt = dt.replace(tzinfo=timezone.utc)
+			return dt.astimezone(self.pacific_tz).isoformat()
+		except Exception:
+			logger.warning("Datetime conversion failed for iso_str=%r", iso_str)
+			return None		
+
+	def require_redis(self):
+		if self.r is None:
+			raise HTTPException(status_code=503, detail="Redis not connected")
+		return self.r
+
+
+	def log_nth_last_alert(self, symbol, timeframe, n):
+		r = self.require_redis()
+		stream = self.stream_key(timeframe, symbol)
+		entries = r.xrevrange(stream, count=n)
+
+		if len(entries) < n:
+			logger.info("No %sth entry for %r:%r", n, symbol, timeframe)
+			return None
+
+		entry = entries[n - 1]
+		logger.info("Nth last alert for %r:%r => %r", symbol, timeframe, entry)
+		return entry
+
+
+	def get_nth_last_alert(self, symbol, timeframe, n):
+		r = self.require_redis()
+		stream = self.stream_key(timeframe, symbol)
+		entries = r.xrevrange(stream, count=n)
+
+		if len(entries) < n:
+			return None
+
+		return entries[n - 1]
+
+
+	def handle_alert(self, ticker, tf, signal):
+		last_alert = self.get_nth_last_alert(ticker, tf, 2)
+		logger.info(
+			"Handling Ticker=%r TF=%r Signal=%r SecondLastAlert=%r",
+			ticker, tf, signal, last_alert
+		)
+		return last_alert
+
+
+strategies.py:
+
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+
+class Strategies:
+  def __init__(self, trading_view_webhook_helpers, trade_records):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.require_redis()
+    self.trade_records = trade_records
+
+  def implement_simple_strategy(self, strategy_name, simulation_only, signal, ticker, timeframe):
+    
+    if timeframe != "1m":
+      return None
+
+    num_shares = 5
+
+    last_1m_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+    last_15m_alert = self.tvw_helpers.get_nth_last_alert(ticker, "15m", 1)
+
+    if last_1m_alert is None or last_15m_alert is None:
+      logger.info("Strategy skipped: missing alert context for %r", ticker)
+      return None
+
+    _, last_1m_fields = last_1m_alert
+    _, last_15m_fields = last_15m_alert
+
+    last_1m_signal = self.tvw_helpers.normalize_signal(last_1m_fields.get("signal"))
+    last_15m_signal = self.tvw_helpers.normalize_signal(last_15m_fields.get("signal"))
+    last_1m_close = self.tvw_helpers.safe_float(last_1m_fields.get("close"))
+    last_1m_date = last_1m_fields.get("received_at")
+
+    if last_1m_close is None or not last_1m_date:
+      logger.info("Strategy skipped: incomplete 1m alert fields for %r", ticker)
+      return None
+
+    
+    if last_15m_signal == "buy" and last_1m_signal == "buy":
+      return self.place_long_order(simulation_only, strategy_name, ticker, last_1m_date, last_1m_close, num_shares) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+    if last_15m_signal == "sell" and last_1m_signal == "sell":
+      return self.place_short_order(simulation_only, strategy_name, ticker, last_1m_date, last_1m_close, num_shares) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+    logger.info(
+      "No trade condition met for %r | 1m=%r 15m=%r",
+      ticker, last_1m_signal, last_15m_signal
+    )
+    return None
+
+  def place_long_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "buy")
+    logger.info("Placing buy order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
+
+  def place_short_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "short")
+    logger.info("Placing sell order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
+
+
+
+trade_records.py:
+
+import threading
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger("tv-webhook")
+
+
+class TradeRecords:
+  def __init__(self, trading_view_webhook_helpers):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.require_redis()
+
+  def _trade_stream_key(self, ticker: str) -> str:
+    sym = str(ticker or "").upper().strip()
+    return f"tv:trades:{sym}"
+
+  def _trade_index_key(self) -> str:
+    return "tv:trades:index"
+
+  def _active_tickers_key(self) -> str:
+    return "tv:tickers:active"
+
+  def _price_stream_key(self, ticker: str) -> str:
+    sym = str(ticker or "").upper().strip()
+    return f"tv:mtm:{sym}"
+
+  def create_trade_record(self, strategy_name, ticker, date, price, num_shares, side):
+    sym = str(ticker or "").upper().strip()
+    side = str(side or "").lower().strip()
+
+    if side not in {"buy", "sell"}:
+      raise ValueError(f"Invalid trade side: {side}")
+
+    iso_dt = str(date or "").strip()
+    if not iso_dt:
+      iso_dt = datetime.now(timezone.utc).isoformat()
+
+    try:
+      ts_score = datetime.fromisoformat(iso_dt.replace("Z", "+00:00")).timestamp()
+    except Exception:
+      ts_score = datetime.now(timezone.utc).timestamp()
+
+    record = {
+      "strategy_name" :strategy_name,
+      "ticker": sym,
+      "entry_date": iso_dt,
+      "entry_price": self.tvw_helpers.to_str(price),
+      "num_shares": num_shares,
+      "side": side,
+    }
+
+    stream_key = self._trade_stream_key(sym)
+    index_key = self._trade_index_key()
+    active_key = self._active_tickers_key()
+
+    pipe = self.r.pipeline()
+    pipe.xadd(stream_key, record)
+    results = pipe.execute()
+    stream_id = results[0]
+
+    member = f"{sym}|{stream_id}"
+    self.r.zadd(index_key, {member: ts_score})
+    self.r.sadd(active_key, sym)
+
+    logger.info("Redis trade record created for %r %r id=%s", sym, side, stream_id)
+
+    return {
+      "stream": stream_key,
+      "stream_id": stream_id,
+      "record": {
+        **record,
+        "price": self.tvw_helpers.safe_float(record["price"]),
+      },
+    }
+
+  def get_trade_records_between(self, start_iso: str, end_iso: str):
+    try:
+      start_ts = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).timestamp()
+      end_ts = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).timestamp()
+    except Exception as exc:
+      raise ValueError("Invalid ISO date range") from exc
+
+    members = self.r.zrangebyscore(self._trade_index_key(), start_ts, end_ts)
+
+    records = []
+    for member in members:
+      ticker, stream_id = member.split("|", 1)
+      stream_key = self._trade_stream_key(ticker)
+
+      entry = self.r.xrange(stream_key, min=stream_id, max=stream_id, count=1)
+      if not entry:
+        continue
+
+      entry_id, fields = entry[0]
+      records.append({
+        "id": entry_id,
+        "strategy_name": fields.get("strategy_name"),
+        "ticker": fields.get("ticker"),
+        "entry_date": fields.get("entry_date"),
+        "entry_price": self.tvw_helpers.safe_float(fields.get("entry_price")),
+        "num_shares": fields.get("num_shares")
+        "side": fields.get("side"),
+      })
+
+    return records
+
+
+def get_market_prices(self, tickers, api):
+
+  market_prices = {
+    ticker: {
+      "ticker": ticker,
+      "ask": None,
+      "bid": None,
+      "market": None,
+    }
+    for ticker in tickers
+  }
+
+  def get_prices(ticker):
+    trial = 0
+
+    while trial < 3:
+      try:
+        last_quote = api.get_latest_quote(ticker)
+        ask = last_quote.ap
+        bid = last_quote.bp
+
+        if ask is None or bid is None:
+          raise ValueError(f"Missing ask/bid for {ticker}: ask={ask}, bid={bid}")
+
+        market = (ask + bid) / 2
+
+        market_prices[ticker]["ask"] = ask
+        market_prices[ticker]["bid"] = bid
+        market_prices[ticker]["market"] = market
+        return
+
+      except Exception as e:
+        trial += 1
+        logger.info(
+          "Unable to obtain market price for %s on attempt %d: %s",
+          ticker,
+          trial,
+          e,
+        )
+
+  threads = []
+  for ticker in tickers:
+    t = threading.Thread(target=get_prices, args=(ticker,))
+    threads.append(t)
+
+  for t in threads:
+    t.start()
+
+  for t in threads:
+    t.join()
+
+  return market_prices
+
+
+
+
+  Now, I want to start by modifying create_trade_record(self, strategy_name, ticker, date, price, side) function such that it not only stores the fields "strategy_name", "ticker", "entry_date", "entry_price", "side", num_shares, but also "entry_price_per_share", "current_price_per_share", "unrealized_pnl", "realized_pnl". entry_price_per_share should be entry_price. current_price_per_share should also be entry_price. unrealized_pnl should be 0 and so should realized_pnl. So there will be a maximum of 1 recored for each strategy/ticker pair. Hence, this function will also first check if no record already exists for given strategy and ticker before being executed. Now, when more shares are bought or shorted for a strategy/ticker pair that already exists, a new functio which you should create called modify_trade_record, should run. The fields should be modified as follows: strategy_name, ticker, entry_date and entry_price should obviously stay the same. So should side (I'll add checks elsewhere to ensure that a long can't be taken while there's an open short position and vice versa). entry_price_per_share should also remain the same. current_price_per_share should be ((old current_price_per_share * old num_shares) + (price * num_shares))/(old num_shares + num_shares). Note that the old values I'm referring to here are the values retrived from the Redis database. num_shares can then be updated to old num_shares + num_shares. unrealized_pnl should be (the newly computed current_price_per_share * newly computed num_shares) - (entry_price_per_share * newly computed num_shares). If the side is "short", that figure should be multiplied by -1. The realized_pnl remains 0 unless the newly computed num_shares is now 0 in which case, realized_pnl should be the unrealized_pnl. Once the newly computed num_shares reaches 0, any new record of the same ticker/strategy pair should have the fields initialized as a record that's being newly created, except that the realized_pnl wouldn't change. When the record reaches 0 again, the newly computed realized_pnl should be added to the old one to update it. We don't want to delete a record once created becuase at any time, we could be tracking the pnl. Next, we want a function also in TradeRecords class, that will run every 15 minutes, and track the pnl for each security in our list, and also the aggregate pnl for all securities, and store this data in Redis. It should use current market price for each ticker, the current_price_per_share and the num_shares to figure out the unrealized_pnl portion, then combine the unrealized_pnl and realized_pnl as we did above to figure the ticker's pnl. So essentially, we will be storing a date/pnl series, for each ticker, then one for all tickers collectively. Next I want a function also in TradeRecords class, that will take a strategy name as argument, a start date, an end date, and a ticker, to grab all date vs pnl that match the arguments. If the start date is None, records should start from the very first entry. If end date is None, records will include up to the last entry. If ticker is none, all recoreds for all tickers will be included. For now, we are only interested in retrieving the records for the aggregate date vs pnl not individual ticker date vs pnl entries. A date vs pnl list or dicitionary or whatever data structure is most suitable will be returned and passed into a plot function (which we should implement in a new class Plot) and plotted. We should have an endpoint that will trigger this function that will grab this date vs pnl data and pass to the plot function. Tell me if I am missing something or if my methodology is flawed.  Also finally, I need an endpoint that will nuke all data stored in Redis, as a reset function of sorts.
+
+
+  
+
+

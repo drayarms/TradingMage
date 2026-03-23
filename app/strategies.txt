@@ -1,0 +1,121 @@
+"""
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+class Strategies:
+  def __init__(self, trading_view_webhook_helpers, trade_records):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.r
+    self.trade_records = trade_records
+
+
+  def implement_simple_strategy(self, simulation_only, signal, ticker, timeframe):
+
+    if timeframe == "1m":
+      last_1m_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+      last_15m_alert = self.tvw_helpers.get_nth_last_alert(ticker, "15m", 1)
+
+      last_1m_id, last_1m_fields = last_1m_alert
+      last_15m_id, last_15m_fields = last_15m_alert      
+
+      if self.tvw_helpers.normalize_signal(last_15m_fields["signal"]) == "buy":
+        if self.tvw_helpers.normalize_signal(last_1m_fields["signal"]) == "buy":
+          self.place_buy_order(simulation_only, ticker, last_1m_fields["received_at"], last_1m_fields["close"]) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+      if self.tvw_helpers.normalize_signal(last_15m_fields["signal"]) == "sell":
+        if self.tvw_helpers.normalize_signal(last_1m_fields["signal"]) == "sell":
+          self.place_sell_order(simulation_only, ticker, last_1m_fields["received_at"], last_1m_fields["close"]) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+
+  def place_buy_order(self, simulation_only, ticker, date, price):
+
+    self.trade_records.create_trade_record(ticker, date, price, "buy")
+
+    logger.info("Placing buy order for %r", ticker)
+
+    if not simulation_only:
+      #Place an actual buy order in Alpaca
+      pass
+
+
+  def place_sell_order(self, simulation_only, ticker, date, price):
+
+    self.trade_records.create_trade_record(ticker, date, price, "sell")
+
+    logger.info("Placing sell order for %r", ticker)
+
+    if not simulation_only:
+      #Place an actual sell order in Alpaca
+      pass      
+
+"""
+
+
+import logging
+
+logger = logging.getLogger("tv-webhook")
+
+
+class Strategies:
+  def __init__(self, trading_view_webhook_helpers, trade_records):
+    self.tvw_helpers = trading_view_webhook_helpers
+    self.r = trading_view_webhook_helpers.require_redis()
+    self.trade_records = trade_records
+
+  def implement_simple_strategy(self, strategy_name, simulation_only, signal, ticker, timeframe):
+    
+    if timeframe != "1m":
+      return None
+
+    num_shares = 5
+
+    last_1m_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+    last_15m_alert = self.tvw_helpers.get_nth_last_alert(ticker, "15m", 1)
+
+    if last_1m_alert is None or last_15m_alert is None:
+      logger.info("Strategy skipped: missing alert context for %r", ticker)
+      return None
+
+    _, last_1m_fields = last_1m_alert
+    _, last_15m_fields = last_15m_alert
+
+    last_1m_signal = self.tvw_helpers.normalize_signal(last_1m_fields.get("signal"))
+    last_15m_signal = self.tvw_helpers.normalize_signal(last_15m_fields.get("signal"))
+    last_1m_close = self.tvw_helpers.safe_float(last_1m_fields.get("close"))
+    last_1m_date = last_1m_fields.get("received_at")
+
+    if last_1m_close is None or not last_1m_date:
+      logger.info("Strategy skipped: incomplete 1m alert fields for %r", ticker)
+      return None
+
+    
+    if last_15m_signal == "buy" and last_1m_signal == "buy":
+      return self.place_long_order(simulation_only, strategy_name, ticker, last_1m_date, last_1m_close, num_shares) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+    if last_15m_signal == "sell" and last_1m_signal == "sell":
+      return self.place_short_order(simulation_only, strategy_name, ticker, last_1m_date, last_1m_close, num_shares) # LATER CHANGE 4TH ARG TO ACTUAL MARKET PRICE FROM ALPACA
+
+    logger.info(
+      "No trade condition met for %r | 1m=%r 15m=%r",
+      ticker, last_1m_signal, last_15m_signal
+    )
+    return None
+
+  def place_long_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "buy")
+    logger.info("Placing buy order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
+
+  def place_short_order(self, simulation_only, strategy_name, ticker, date, price, num_shares):
+    record = self.trade_records.create_trade_record(strategy_name, ticker, date, price, num_shares, "short")
+    logger.info("Placing sell order for %r", ticker)
+
+    if not simulation_only:
+      pass
+
+    return record
