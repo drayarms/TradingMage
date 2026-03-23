@@ -47,7 +47,7 @@ TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
 
 #PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 #EASTERN_TZ = ZoneInfo("America/New_York")
-#MY_TZ = EASTERN_TZ
+#MY_TZ = EASTERN_TZ :)
 
 alpaca_api = tradeapi.REST(
     base_url=APCA_API_BASE_URL,

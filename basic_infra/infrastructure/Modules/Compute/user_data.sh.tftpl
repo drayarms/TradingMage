@@ -89,7 +89,7 @@ docker network create trading-mage-net || true
 ###############
 # Assumes a separate EBS vol is attached for REDIS data. 
 # We look for a non-root whole disk that is currently unmounted
-mkdir -p "$REDIS_DATA_DIR" # -p flag creates the entire path if if doesn't already exist
+mkdir -p "$REDIS_DATA_DIR" # -p flag creates the entire path if if doesn't already exist.
 
 
 ROOT_SOURCE="$(findmnt -n -o SOURCE / || true)" # Run the command inside the parentheses and store its output in the variable ROOT_SOURCE.
