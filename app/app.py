@@ -304,7 +304,7 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 			if market_price is None or market_price <= 0:
 				raise HTTPException(status_code=400, detail="Invalid price")
 
-			NUM_SHARES = POSITION_SIZE/market_price
+			NUM_SHARES = POSITION_SIZE / market_price
 			
 			stgs.entry_strategy1("strategy1", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api) 
 			stgs.exit_strategy1("strategy1", False, now_et, signal, prices, symbol, tf, alpaca_api)
@@ -541,7 +541,7 @@ async def debug_stream_range_symbol(
 	to inspect initial signals.
 	Example calls:
 		From EC2:
-			curl "http://localhost/debug/stream-range/15m/AAPL"
+			curl "http://localhost:8000/debug/stream-range/15m/AAPL"
 		From laptop:
 			curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL"
 			curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=10"
@@ -598,7 +598,7 @@ def run_pnl_snapshot(
 	test our strategy performance, debug pricing + trade records, verify our cron job behavior.
 	Example calls:
 		From EC2:
-			curl -X POST "http://localhost/pnl/snapshot/run?strategy_name=simple%20strategy"
+			curl -X POST "http://localhost:8000/pnl/snapshot/run?strategy_name=simple%20strategy"
 		From laptop:
 			curl -X POST "http://<EC2_PUBLIC_IP>/pnl/snapshot/run?strategy_name=simple%20strategy"
 	"""
@@ -632,7 +632,7 @@ def get_pnl_history(
 				curl "http://<EC2_PUBLIC_IP>/pnl/history?strategy_name=simple%20strategy&start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z&ticker=AAPL"
 		From EC2:
 			basic call:
-				curl "http://localhost/pnl/history?strategy_name=simple%20strategy"
+				curl "http://localhost:8000/pnl/history?strategy_name=simple%20strategy"
 			Agg history for a date range
 				curl "http://localhost:8000/pnl/history?strategy_name=simple%20strategy&start=2026-03-01T00:00:00Z&end=2026-03-13T23:59:59Z"  
 	"""
@@ -669,6 +669,9 @@ def get_pnl_plot(
 	"""
 	Plot aggregate PNL
 	curl "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy" --output pnl.png
+
+	Laptop:
+		ssh -i ~/.ssh/my-aws-ec2-key ubuntu@<EC2_PUBLIC_IP> 'curl -s "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy"' > pnl.png
 	"""
 	try:
 		history = trade_recs.get_pnl_history(

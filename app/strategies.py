@@ -129,13 +129,32 @@ class Strategies:
 		)
 
 		if last_4h_signal not in {"buy", "sell"}:
+			logger.info(
+				"4h vs 1h check: INVALID last_4h_signal=%r for ticker=%r",
+				last_4h_signal,
+				sym,
+			)			
 			return False
 
 		# Check opposite
-		return (
+		#return (
+			#(current_side == "buy" and last_4h_signal == "sell") or
+			#(current_side == "sell" and last_4h_signal == "buy")
+		#)
+		is_opposite = (
 			(current_side == "buy" and last_4h_signal == "sell") or
 			(current_side == "sell" and last_4h_signal == "buy")
-		)		
+		)
+
+		logger.info(
+			"4h vs 1h check: ticker=%r last_4h_signal=%r current_signal=%r result=%r",
+			sym,
+			last_4h_signal,
+			current_side,
+			is_opposite
+		)
+
+		return is_opposite				
 
 
 	def is_5m_opposite_of_last_15m(self, ticker, signal, timeframe):
@@ -212,6 +231,7 @@ class Strategies:
 		return None		
 
 
+	"""
 	def exit_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
 
 		if self.is_1h_opposite_of_last_4h(ticker, signal, timeframe):
@@ -241,7 +261,182 @@ class Strategies:
 				return self.sell_long_order(simulation_only, strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
 
 			else:
-				logger.info("Latest 1h signal is invalid/unknown for %r: %r", ticker, signal_1h)			
+				logger.info("Latest 1h signal is invalid/unknown for %r: %r", ticker, signal_1h)
+	"""
+
+
+	def exit_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
+
+		logger.info(
+			"exit_strategy1 check: strategy=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
+			strategy_name,
+			ticker,
+			timeframe,
+			signal,
+			self.tvw_helpers.normalize_signal(signal),
+		)
+
+		is_opposite = self.is_1h_opposite_of_last_4h(ticker, signal, timeframe)
+		logger.info("exit_strategy1 opposite-check for %r => %r", ticker, is_opposite)
+
+		if not is_opposite:
+			return None
+
+		redis_position = None
+		try:
+			redis_position = self.trade_records.get_position(strategy_name, ticker)
+			logger.info("exit_strategy1 Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
+		except Exception:
+			logger.exception("exit_strategy1 failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)
+
+		alpaca_position = None
+		try:
+			alpaca_position = alpaca_api.get_position(ticker)
+			logger.info(
+				"exit_strategy1 Alpaca position for %r => qty=%r side=%r avg_entry_price=%r",
+				ticker,
+				getattr(alpaca_position, "qty", None),
+				getattr(alpaca_position, "side", None),
+				getattr(alpaca_position, "avg_entry_price", None),
+			)
+		except Exception:
+			logger.exception("exit_strategy1 failed to fetch Alpaca position for %r", ticker)
+
+		redis_position_qty = 0.0
+		redis_position_side = None
+		if redis_position is not None:
+			try:
+				redis_position_qty = float(redis_position.get("num_shares") or 0.0)
+			except Exception:
+				redis_position_qty = 0.0
+			redis_position_side = str(redis_position.get("side") or "").strip().lower()
+
+		alpaca_position_qty = 0.0
+		if alpaca_position is not None:
+			try:
+				alpaca_position_qty = float(alpaca_position.qty)
+			except Exception:
+				alpaca_position_qty = 0.0
+
+		redis_num_shares = abs(redis_position_qty)
+		alpaca_num_shares = abs(alpaca_position_qty)
+
+		last_1h_alert = self.tvw_helpers.get_nth_last_alert(ticker, "1h", 1)
+		if last_1h_alert is None:
+			logger.info("No 1h signal found for %r", ticker)
+			return None
+
+		_, last_1h_fields = last_1h_alert
+		signal_1h = self.tvw_helpers.normalize_signal(last_1h_fields.get("signal"))
+
+		logger.info(
+			"exit_strategy1 signal context: ticker=%r signal_1h=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
+			ticker,
+			signal_1h,
+			redis_position_side,
+			redis_num_shares,
+			alpaca_num_shares,
+		)
+
+		if signal_1h == "buy":
+			if redis_position_side == "short" and redis_num_shares > 0:
+				logger.info(
+					"exit_strategy1 Redis bookkeeping cover for %r using redis_num_shares=%r",
+					ticker,
+					redis_num_shares,
+				)
+				try:
+					self.trade_records.create_trade_record(
+						strategy_name,
+						ticker,
+						date,
+						prices.get(ticker, {}).get("market"),
+						redis_num_shares,
+						"cover",
+						False,
+					)
+				except Exception:
+					logger.exception(
+						"exit_strategy1 Redis bookkeeping cover failed for strategy=%r ticker=%r qty=%r",
+						strategy_name,
+						ticker,
+						redis_num_shares,
+					)
+
+			if alpaca_position_qty < 0 and alpaca_num_shares > 0:
+				logger.info(
+					"exit_strategy1 Alpaca cover for %r using alpaca_num_shares=%r",
+					ticker,
+					alpaca_num_shares,
+				)
+				return self.cover_short_order(
+					simulation_only,
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+				)
+
+			logger.info(
+				"exit_strategy1 no Alpaca short position to cover for %r; alpaca_qty=%r",
+				ticker,
+				alpaca_position_qty,
+			)
+			return None
+
+		elif signal_1h == "sell":
+			if redis_position_side == "long" and redis_num_shares > 0:
+				logger.info(
+					"exit_strategy1 Redis bookkeeping sell for %r using redis_num_shares=%r",
+					ticker,
+					redis_num_shares,
+				)
+				try:
+					self.trade_records.create_trade_record(
+						strategy_name,
+						ticker,
+						date,
+						prices.get(ticker, {}).get("market"),
+						redis_num_shares,
+						"sell",
+						False,
+					)
+				except Exception:
+					logger.exception(
+						"exit_strategy1 Redis bookkeeping sell failed for strategy=%r ticker=%r qty=%r",
+						strategy_name,
+						ticker,
+						redis_num_shares,
+					)
+
+			if alpaca_position_qty > 0 and alpaca_num_shares > 0:
+				logger.info(
+					"exit_strategy1 Alpaca sell for %r using alpaca_num_shares=%r",
+					ticker,
+					alpaca_num_shares,
+				)
+				return self.sell_long_order(
+					simulation_only,
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+				)
+
+			logger.info(
+				"exit_strategy1 no Alpaca long position to sell for %r; alpaca_qty=%r",
+				ticker,
+				alpaca_position_qty,
+			)
+			return None
+
+		else:
+			logger.info("Latest 1h signal is invalid/unknown for %r: %r", ticker, signal_1h)
+			return None							
 			
 
 	def entry_strategy2(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
@@ -277,6 +472,7 @@ class Strategies:
 		return None
 
 
+	"""
 	def exit_strategy2(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
 				
 		if self.is_5m_opposite_of_last_15m(ticker, signal, timeframe):
@@ -303,8 +499,182 @@ class Strategies:
 				return self.cover_short_order(simulation_only, strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
 			if signal_5m == "sell" and position_qty > 0:
 				return self.sell_long_order(simulation_only, strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)				
+	"""
 
+	def exit_strategy2(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
 
+		logger.info(
+			"exit_strategy2 check: strategy=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
+			strategy_name,
+			ticker,
+			timeframe,
+			signal,
+			self.tvw_helpers.normalize_signal(signal),
+		)
+
+		is_opposite = self.is_5m_opposite_of_last_15m(ticker, signal, timeframe)
+		logger.info("exit_strategy2 opposite-check for %r => %r", ticker, is_opposite)
+
+		if not is_opposite:
+			return None
+
+		redis_position = None
+		try:
+			redis_position = self.trade_records.get_position(strategy_name, ticker)
+			logger.info("exit_strategy2 Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
+		except Exception:
+			logger.exception("exit_strategy2 failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)
+
+		alpaca_position = None
+		try:
+			alpaca_position = alpaca_api.get_position(ticker)
+			logger.info(
+				"exit_strategy2 Alpaca position for %r => qty=%r side=%r avg_entry_price=%r",
+				ticker,
+				getattr(alpaca_position, "qty", None),
+				getattr(alpaca_position, "side", None),
+				getattr(alpaca_position, "avg_entry_price", None),
+			)
+		except Exception:
+			logger.exception("exit_strategy2 failed to fetch Alpaca position for %r", ticker)
+
+		redis_position_qty = 0.0
+		redis_position_side = None
+		if redis_position is not None:
+			try:
+				redis_position_qty = float(redis_position.get("num_shares") or 0.0)
+			except Exception:
+				redis_position_qty = 0.0
+			redis_position_side = str(redis_position.get("side") or "").strip().lower()
+
+		alpaca_position_qty = 0.0
+		if alpaca_position is not None:
+			try:
+				alpaca_position_qty = float(alpaca_position.qty)
+			except Exception:
+				alpaca_position_qty = 0.0
+
+		redis_num_shares = abs(redis_position_qty)
+		alpaca_num_shares = abs(alpaca_position_qty)
+
+		last_5m_alert = self.tvw_helpers.get_nth_last_alert(ticker, "5m", 1)
+		if last_5m_alert is None:
+			logger.info("No 5m signal found for %r", ticker)
+			return None
+
+		_, last_5m_fields = last_5m_alert
+		signal_5m = self.tvw_helpers.normalize_signal(last_5m_fields.get("signal"))
+
+		logger.info(
+			"exit_strategy2 signal context: ticker=%r signal_5m=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
+			ticker,
+			signal_5m,
+			redis_position_side,
+			redis_num_shares,
+			alpaca_num_shares,
+		)
+
+		if signal_5m == "buy":
+			if redis_position_side == "short" and redis_num_shares > 0:
+				logger.info(
+					"exit_strategy2 Redis bookkeeping cover for %r using redis_num_shares=%r",
+					ticker,
+					redis_num_shares,
+				)
+				try:
+					self.trade_records.create_trade_record(
+						strategy_name,
+						ticker,
+						date,
+						prices.get(ticker, {}).get("market"),
+						redis_num_shares,
+						"cover",
+						False,
+					)
+				except Exception:
+					logger.exception(
+						"exit_strategy2 Redis bookkeeping cover failed for strategy=%r ticker=%r qty=%r",
+						strategy_name,
+						ticker,
+						redis_num_shares,
+					)
+
+			if alpaca_position_qty < 0 and alpaca_num_shares > 0:
+				logger.info(
+					"exit_strategy2 Alpaca cover for %r using alpaca_num_shares=%r",
+					ticker,
+					alpaca_num_shares,
+				)
+				return self.cover_short_order(
+					simulation_only,
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+				)
+
+			logger.info(
+				"exit_strategy2 no Alpaca short position to cover for %r; alpaca_qty=%r",
+				ticker,
+				alpaca_position_qty,
+			)
+			return None
+
+		elif signal_5m == "sell":
+			if redis_position_side == "long" and redis_num_shares > 0:
+				logger.info(
+					"exit_strategy2 Redis bookkeeping sell for %r using redis_num_shares=%r",
+					ticker,
+					redis_num_shares,
+				)
+				try:
+					self.trade_records.create_trade_record(
+						strategy_name,
+						ticker,
+						date,
+						prices.get(ticker, {}).get("market"),
+						redis_num_shares,
+						"sell",
+						False,
+					)
+				except Exception:
+					logger.exception(
+						"exit_strategy2 Redis bookkeeping sell failed for strategy=%r ticker=%r qty=%r",
+						strategy_name,
+						ticker,
+						redis_num_shares,
+					)
+
+			if alpaca_position_qty > 0 and alpaca_num_shares > 0:
+				logger.info(
+					"exit_strategy2 Alpaca sell for %r using alpaca_num_shares=%r",
+					ticker,
+					alpaca_num_shares,
+				)
+				return self.sell_long_order(
+					simulation_only,
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+				)
+
+			logger.info(
+				"exit_strategy2 no Alpaca long position to sell for %r; alpaca_qty=%r",
+				ticker,
+				alpaca_position_qty,
+			)
+			return None
+
+		else:
+			logger.info("Latest 5m signal is invalid/unknown for %r: %r", ticker, signal_5m)
+			return None	
+
+	"""
 	def place_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, order_type):
 
 		side = None
@@ -382,8 +752,266 @@ class Strategies:
 						time.sleep(0.5)			
 
 		return record	
+	"""
+
+	def place_order(
+		self,
+		simulation_only,
+		strategy_name,
+		ticker,
+		date,
+		prices,
+		num_shares,
+		alpaca_api,
+		order_type,
+		do_redis_bookkeeping=True,
+	):
+
+		order_type = str(order_type or "").strip().lower()
+		ticker = str(ticker or "").upper().strip()
+
+		if order_type not in {"long", "short", "sell", "cover"}:
+			logger.info("Invalid order_type=%r for ticker=%r", order_type, ticker)
+			return None
+
+		broker_side = None
+		if order_type in {"long", "cover"}:
+			broker_side = "buy"
+		elif order_type in {"short", "sell"}:
+			broker_side = "sell"
+
+		price = prices.get(ticker, {}).get("market")
+		if price is None:
+			logger.info("No market price available for %r order_type=%r", ticker, order_type)
+			return None
+
+		if order_type == "short" and not self.tvw_helpers.is_symbol_shortable(alpaca_api, ticker):
+			logger.info("Ticker %r is not shortable; skipping short order", ticker)
+			return None
+
+		is_regular_hours = self.tvw_helpers._is_regular_hours_et()
+
+		if not is_regular_hours:
+			if order_type in {"long", "cover"}:
+				ask = prices.get(ticker, {}).get("ask")
+				if ask is None:
+					logger.info("No ask price available for off-hours %r order_type=%r", ticker, order_type)
+					return None
+				price = ask + 0.01
+
+			elif order_type in {"short", "sell"}:
+				bid = prices.get(ticker, {}).get("bid")
+				if bid is None:
+					logger.info("No bid price available for off-hours %r order_type=%r", ticker, order_type)
+					return None
+				price = bid - 0.01
+
+		if price <= 0:
+			logger.info("Invalid computed price=%r for ticker=%r order_type=%r", price, ticker, order_type)
+			return None
+
+		try:
+			num_shares = float(num_shares)
+		except Exception:
+			logger.info("Invalid num_shares=%r for ticker=%r order_type=%r", num_shares, ticker, order_type)
+			return None
+
+		if num_shares <= 0:
+			logger.info("Non-positive num_shares=%r for ticker=%r order_type=%r", num_shares, ticker, order_type)
+			return None
+
+		redis_position = None
+		try:
+			redis_position = self.trade_records.get_position(strategy_name, ticker)
+			logger.info(
+				"Redis position before order: strategy=%r ticker=%r order_type=%r redis_position=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				redis_position,
+			)
+		except Exception:
+			logger.exception(
+				"Failed retrieving Redis position before order: strategy=%r ticker=%r order_type=%r",
+				strategy_name,
+				ticker,
+				order_type,
+			)
+
+		alpaca_position = None
+		try:
+			alpaca_position = alpaca_api.get_position(ticker)
+			logger.info(
+				"Alpaca position before order: ticker=%r qty=%r side=%r avg_entry_price=%r",
+				ticker,
+				getattr(alpaca_position, "qty", None),
+				getattr(alpaca_position, "side", None),
+				getattr(alpaca_position, "avg_entry_price", None),
+			)
+		except Exception:
+			logger.exception(
+				"Failed retrieving Alpaca position before order for ticker=%r order_type=%r",
+				ticker,
+				order_type,
+			)
+
+		execution_qty = num_shares
+
+		if order_type in {"long", "short"} and redis_position is not None:
+			redis_side = str(redis_position.get("side") or "").strip().lower()
+			redis_open_qty = float(redis_position.get("num_shares", 0) or 0)
+
+			if redis_open_qty > 0 and redis_side == order_type:
+				execution_qty = num_shares * 0.25
+
+		if execution_qty <= 0:
+			logger.info(
+				"Computed execution_qty is non-positive: strategy=%r ticker=%r order_type=%r base_qty=%r execution_qty=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				num_shares,
+				execution_qty,
+			)
+			return None
+
+		record = None
+
+		if do_redis_bookkeeping:
+			try:
+				logger.info(
+					"Recording strategy trade before broker execution: strategy=%r ticker=%r order_type=%r base_qty=%r execution_qty=%r price=%r can_add_to_existing_position=%r",
+					strategy_name,
+					ticker,
+					order_type,
+					num_shares,
+					execution_qty,
+					price,
+					True,
+				)
+
+				record = self.trade_records.create_trade_record(
+					strategy_name,
+					ticker,
+					date,
+					price,
+					execution_qty,
+					order_type,
+					True,
+				)
+
+				logger.info(
+					"Recorded strategy trade successfully: strategy=%r ticker=%r order_type=%r execution_qty=%r price=%r",
+					strategy_name,
+					ticker,
+					order_type,
+					execution_qty,
+					price,
+				)
+
+			except Exception:
+				logger.exception(
+					"Failed to record strategy trade before broker execution: strategy=%r ticker=%r order_type=%r execution_qty=%r price=%r",
+					strategy_name,
+					ticker,
+					order_type,
+					execution_qty,
+					price,
+				)
+				return None
+		else:
+			logger.info(
+				"Skipping Redis bookkeeping in place_order: strategy=%r ticker=%r order_type=%r execution_qty=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				execution_qty,
+			)
+
+		logger.info(
+			"About to submit Alpaca order: strategy=%r ticker=%r order_type=%r broker_side=%r base_qty=%r execution_qty=%r price=%r regular_hours=%r simulation_only=%r",
+			strategy_name,
+			ticker,
+			order_type,
+			broker_side,
+			num_shares,
+			execution_qty,
+			price,
+			is_regular_hours,
+			simulation_only,
+		)
+
+		if not simulation_only:
+			if is_regular_hours:
+				for attempt in range(1, 4):
+					try:
+						alpaca_api.submit_order(
+							symbol=ticker,
+							qty=execution_qty,
+							side=broker_side,
+							type="market",
+							time_in_force="day",
+						)
+						logger.info(
+							"Alpaca market order submitted successfully: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r attempt=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							broker_side,
+							execution_qty,
+							attempt,
+						)
+						break
+					except Exception:
+						logger.exception(
+							"Failed to execute Alpaca market order: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r attempt=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							broker_side,
+							execution_qty,
+							attempt,
+						)
+						time.sleep(0.5)
+			else:
+				for attempt in range(1, 4):
+					try:
+						alpaca_api.submit_order(
+							symbol=ticker,
+							qty=execution_qty,
+							side=broker_side,
+							type="limit",
+							time_in_force="day",
+							limit_price=price,
+						)
+						logger.info(
+							"Alpaca limit order submitted successfully: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r limit_price=%r attempt=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							broker_side,
+							execution_qty,
+							price,
+							attempt,
+						)
+						break
+					except Exception:
+						logger.exception(
+							"Failed to execute Alpaca limit order: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r limit_price=%r attempt=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							broker_side,
+							execution_qty,
+							price,
+							attempt,
+						)
+						time.sleep(0.5)
+
+		return record
 
 
+	"""
 	def place_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, "long")
 
@@ -395,5 +1023,57 @@ class Strategies:
 
 	def cover_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, "cover")
+	"""
 
 
+	def place_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+		return self.place_order(
+			simulation_only,
+			strategy_name,
+			ticker,
+			date,
+			prices,
+			num_shares,
+			alpaca_api,
+			"long",
+			True,
+		)
+
+	def place_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+		return self.place_order(
+			simulation_only,
+			strategy_name,
+			ticker,
+			date,
+			prices,
+			num_shares,
+			alpaca_api,
+			"short",
+			True,
+		)
+
+	def sell_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+		return self.place_order(
+			simulation_only,
+			strategy_name,
+			ticker,
+			date,
+			prices,
+			num_shares,
+			alpaca_api,
+			"sell",
+			False,
+		)
+
+	def cover_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+		return self.place_order(
+			simulation_only,
+			strategy_name,
+			ticker,
+			date,
+			prices,
+			num_shares,
+			alpaca_api,
+			"cover",
+			False,
+		)	

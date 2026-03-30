@@ -33,6 +33,9 @@ terraform.rc
 *.tfvars
 *.tfvars.json
 
+# Image files
+*.png
+
 # Explicit examples (if you use them)
 terraform.tfvars
 terraform.tfvars.json
