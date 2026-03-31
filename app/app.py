@@ -713,7 +713,7 @@ def get_trade_events(
 ):	
 	"""
 	Get individual trade events
-	curl "http://localhost:8000/trade-events?strategy_name=simple%20strategy&ticker=AAPL"
+	curl "http://localhost:8000/trade-events?strategy_name=simple%20strategy&ticker=TSLA"
 	"""
 	try:
 		events = trade_recs.get_trade_events(

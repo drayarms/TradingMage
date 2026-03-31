@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime
 
 logger = logging.getLogger("tv-webhook")
 
@@ -190,6 +191,212 @@ class Strategies:
 		return current_side != last_15m_side
 
 
+	def has_opposite_1h_signal_since_last_same_side_4h(self, ticker, signal, max_scan_4h=500, max_scan_1h=1000):
+		"""
+		Return True if there exists an opposite-side 1h signal that occurred after the
+		most recent valid same-side 4h signal for the given ticker/signal side.
+
+		Definitions:
+			- Same-side 4h signal:
+				The most recent valid 4h signal whose normalized side matches the incoming
+				signal side, as determined by get_latest_valid_4h_same_side_signal(...).
+			- Opposite-side 1h signal:
+				A 1h signal whose normalized side is opposite to the incoming signal side.
+
+		Behavior:
+			- If no valid same-side 4h anchor exists, return False.
+			- If the anchor 4h signal lacks a parseable bar_close_time_eastern, return False.
+			- Scan recent 1h alerts for the ticker.
+			- Return True if any opposite-side 1h signal has bar_close_time_eastern strictly
+			  later than the anchor 4h signal time.
+			- Otherwise return False.
+
+		Parameters:
+			ticker (str): Ticker symbol, e.g. "AAPL".
+			signal (str): Current incoming signal, e.g. "buy", "buy+", "sell", or "sell+".
+			max_scan_4h (int): Max number of recent 4h entries to inspect when locating the anchor.
+			max_scan_1h (int): Max number of recent 1h entries to inspect.
+
+		Returns:
+			bool: True if an opposite-side 1h signal exists after the anchor same-side 4h signal;
+			False otherwise.
+		"""
+		sym = str(ticker or "").upper().strip()
+		target_side = self.tvw_helpers.normalize_signal(signal)
+
+		if target_side not in {"buy", "sell"}:
+			logger.info(
+				"Invalid signal passed to has_opposite_1h_signal_since_last_same_side_4h: %r",
+				signal,
+			)
+			return False
+
+		anchor_4h = self.get_latest_valid_4h_same_side_signal(sym, signal, max_scan=max_scan_4h)
+		if not anchor_4h:
+			logger.info("No same-side valid 4h anchor found for %r", sym)
+			return False
+
+		anchor_time_str = anchor_4h.get("bar_close_time_eastern")
+		if not anchor_time_str:
+			logger.info("Anchor 4h signal for %r is missing bar_close_time_eastern", sym)
+			return False
+
+		try:
+			anchor_time = datetime.fromisoformat(anchor_time_str)
+		except Exception:
+			logger.exception("Failed parsing anchor 4h time for %r: %r", sym, anchor_time_str)
+			return False
+
+		opposite_side = "sell" if target_side == "buy" else "buy"
+		stream_key = self.tvw_helpers.stream_key("1h", sym)
+
+		try:
+			entries = self.r.xrevrange(stream_key, count=max_scan_1h)
+		except Exception:
+			logger.exception("Failed reading 1h stream for %r", sym)
+			return False
+
+		if not entries:
+			logger.info("No 1h entries found for %r", sym)
+			return False
+
+		for entry_id, fields in entries:
+			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+			if entry_side != opposite_side:
+				continue
+
+			entry_time_str = fields.get("bar_close_time_eastern")
+			if not entry_time_str:
+				continue
+
+			try:
+				entry_time = datetime.fromisoformat(entry_time_str)
+			except Exception:
+				logger.exception(
+					"Failed parsing 1h signal time for %r entry_id=%r value=%r",
+					sym,
+					entry_id,
+					entry_time_str,
+				)
+				continue
+
+			if entry_time > anchor_time:
+				logger.info(
+					"Found opposite-side 1h signal after anchor 4h for %r: opposite_side=%r entry_id=%r entry_time=%r anchor_time=%r",
+					sym,
+					opposite_side,
+					entry_id,
+					entry_time_str,
+					anchor_time_str,
+				)
+				return True
+
+		return False		
+
+
+	def entry_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
+
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		if tf not in {"1m", "15m"}:
+			return None
+
+		num_shares = NUM_SHARES
+
+		signal_4h = self.get_latest_valid_4h_same_side_signal(ticker, signal)
+		if not signal_4h:
+			logger.info("No valid 4h context")
+			return None
+
+		# Extra constraint only for 1m entries:
+		# block entry if an opposite-side 1h signal exists after the anchor 4h signal.
+		if tf == "1m":
+			if self.has_opposite_1h_signal_since_last_same_side_4h(ticker, signal):
+				logger.info(
+					"Blocked Strategy 1 1m entry for %r because an opposite-side 1h signal exists after the anchor 4h signal",
+					ticker,
+				)
+				return None
+
+		open_price = signal_4h["open"]
+		close_price = signal_4h["close"]
+
+		if open_price is None or close_price is None:
+			return None
+
+		_4h_hi = max(open_price, close_price)
+		_4h_lo = min(open_price, close_price)
+		signal_4h_len = _4h_hi - _4h_lo
+
+		max_deviation_from_4hr_peak_to_4hr_len_ratio = 0.75
+
+		market_price = prices.get(ticker, {}).get("market")
+		if market_price is None:
+			return None
+
+		current_side = self.tvw_helpers.normalize_signal(signal)
+
+		if current_side == "buy":
+			if market_price < (_4h_hi - (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+				return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+
+		if current_side == "sell":
+			if market_price > (_4h_lo + (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+				return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+
+		logger.info("No trade condition met for Strategy 1 for %r", ticker)
+		return None
+
+
+	"""
+	def entry_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
+		
+		if timeframe != "1m" and timeframe != "15m":
+			return None
+
+		num_shares = NUM_SHARES
+
+		signal_4h = self.get_latest_valid_4h_same_side_signal(ticker, signal)
+
+		if not signal_4h:
+			logger.info("No valid 4h context")
+			return None
+
+		open_price = signal_4h["open"]
+		close_price = signal_4h["close"]
+
+		if open_price is None or close_price is None:
+			return None		
+		
+		_4h_hi = max(open_price, close_price)	
+		_4h_lo = min(open_price, close_price)
+		signal_4h_len = _4h_hi - _4h_lo
+
+		max_deviation_from_4hr_peak_to_4hr_len_ratio = 0.75
+		
+		market_price = prices.get(ticker, {}).get("market")
+		if market_price is None:
+			return None
+
+		if (
+			(
+				(timeframe != "1m") and 
+				(self.has_opposite_1h_signal_since_last_same_side_4h(ticker, signal))
+			) or
+			(timeframe != "15m")
+		):
+			if self.tvw_helpers.normalize_signal(signal) == "buy":
+				if market_price < (_4h_hi - (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+					return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+
+			if self.tvw_helpers.normalize_signal(signal) == "sell":
+				if market_price > (_4h_lo + (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+					return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+
+		logger.info("No trade condition met for Strategy 1 for %r", ticker)
+		return None		
+	"""
+
+	"""
 	def entry_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
 		
 		if timeframe != "1m":
@@ -229,7 +436,7 @@ class Strategies:
 
 		logger.info("No trade condition met for Strategy 1 for %r", ticker)
 		return None		
-
+	"""
 
 	"""
 	def exit_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
