@@ -95,6 +95,68 @@ class Strategies:
 		return None
 
 
+	def lower_tf_confirms_1h_opposite_of_4h(self, ticker, signal, timeframe):
+		"""
+		Returns True if:
+			- current timeframe is 1m, 5m, or 15m
+			- current signal side matches the most recent 1h signal side
+			- the most recent 1h signal side is opposite of the most recent 4h signal side
+		"""
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		if tf not in {"1m", "5m", "15m"}:
+			return False
+
+		sym = str(ticker or "").upper().strip()
+		current_side = self.tvw_helpers.normalize_signal(signal)
+
+		if current_side not in {"buy", "sell"}:
+			return False
+
+		last_1h_alert = self.tvw_helpers.get_nth_last_alert(sym, "1h", 1)
+		if last_1h_alert is None:
+			return False
+
+		last_4h_alert = self.tvw_helpers.get_nth_last_alert(sym, "4h", 1)
+		if last_4h_alert is None:
+			return False
+
+		_, last_1h_fields = last_1h_alert
+		_, last_4h_fields = last_4h_alert
+
+		last_1h_signal = self.tvw_helpers.normalize_signal(last_1h_fields.get("signal"))
+		last_4h_signal = self.tvw_helpers.normalize_signal(last_4h_fields.get("signal"))
+
+		if last_1h_signal not in {"buy", "sell"}:
+			logger.info(
+				"lower-tf confirms 1h vs 4h: INVALID last_1h_signal=%r for ticker=%r",
+				last_1h_signal,
+				sym,
+			)
+			return False
+
+		if last_4h_signal not in {"buy", "sell"}:
+			logger.info(
+				"lower-tf confirms 1h vs 4h: INVALID last_4h_signal=%r for ticker=%r",
+				last_4h_signal,
+				sym,
+			)
+			return False
+
+		is_true = (current_side == last_1h_signal) and (last_1h_signal != last_4h_signal)
+
+		logger.info(
+			"lower-tf confirms 1h vs 4h: ticker=%r tf=%r current=%r last_1h=%r last_4h=%r result=%r",
+			sym,
+			tf,
+			current_side,
+			last_1h_signal,
+			last_4h_signal,
+			is_true,
+		)
+
+		return is_true
+
+
 	def is_1h_opposite_of_last_4h(self, ticker, signal, timeframe):
 		"""
 		Returns True if:
@@ -483,7 +545,7 @@ class Strategies:
 			self.tvw_helpers.normalize_signal(signal),
 		)
 
-		is_opposite = self.is_1h_opposite_of_last_4h(ticker, signal, timeframe)
+		is_opposite = self.is_1h_opposite_of_last_4h(ticker, signal, timeframe) or self.lower_tf_confirms_1h_opposite_of_4h(ticker, signal, timeframe)
 		logger.info("exit_strategy1 opposite-check for %r => %r", ticker, is_opposite)
 
 		if not is_opposite:
@@ -647,8 +709,9 @@ class Strategies:
 			
 
 	def entry_strategy2(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
-		
-		if timeframe != "1m":
+	
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		if tf != "1m":
 			return None
 
 		num_shares = NUM_SHARES
