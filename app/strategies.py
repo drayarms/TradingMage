@@ -336,12 +336,12 @@ class Strategies:
 		current_side = self.tvw_helpers.normalize_signal(signal)
 
 		if current_side == "buy":
-			if market_price < (_4h_hi - (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
-				return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+			#if market_price < (_4h_hi - (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+			return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		if current_side == "sell":
-			if market_price > (_4h_lo + (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
-				return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+			#if market_price > (_4h_lo + (max_deviation_from_4hr_peak_to_4hr_len_ratio * signal_4h_len)):
+			return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		logger.info("No trade condition met for Strategy 1 for %r", ticker)
 		return None
