@@ -308,10 +308,10 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 			
 			stgs.entry_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api) 
 			stgs.exit_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, alpaca_api)
-			stgs.entry_strategy2("strategy2", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
-			stgs.exit_strategy2("strategy2", True, now_et, signal, prices, symbol, tf, alpaca_api)
-			stgs.entry_strategy3("strategy3", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
-			stgs.exit_strategy3("strategy3", False, now_et, signal, prices, symbol, tf, alpaca_api)			
+			stgs.entry_strategy2("strategy2", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
+			stgs.exit_strategy2("strategy2", False, now_et, signal, prices, symbol, tf, alpaca_api)
+			stgs.entry_strategy3("strategy3", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
+			stgs.exit_strategy3("strategy3", True, now_et, signal, prices, symbol, tf, alpaca_api)			
 
 
 	return {
