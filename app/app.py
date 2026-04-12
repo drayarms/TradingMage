@@ -306,10 +306,12 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 
 			NUM_SHARES = POSITION_SIZE / market_price
 			
-			stgs.entry_strategy1("strategy1", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api) 
-			stgs.exit_strategy1("strategy1", False, now_et, signal, prices, symbol, tf, alpaca_api)
+			stgs.entry_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api) 
+			stgs.exit_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, alpaca_api)
 			stgs.entry_strategy2("strategy2", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
 			stgs.exit_strategy2("strategy2", True, now_et, signal, prices, symbol, tf, alpaca_api)
+			stgs.entry_strategy3("strategy3", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
+			stgs.exit_strategy3("strategy3", False, now_et, signal, prices, symbol, tf, alpaca_api)			
 
 
 	return {
@@ -671,7 +673,7 @@ def get_pnl_plot(
 	curl "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy" --output pnl.png
 
 	Laptop:
-		ssh -i ~/.ssh/my-aws-ec2-key ubuntu@<EC2_PUBLIC_IP> 'curl -s "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy"' > pnl.png
+		ssh -i ~/.ssh/my-aws-ec2-key ubuntu@<EC2_PUBLIC_IP> 'curl -s "http://localhost:8000/pnl/plot?strategy_name=strategy1"' > pnl1.png
 	"""
 	try:
 		history = trade_recs.get_pnl_history(
@@ -759,11 +761,14 @@ def reset_redis():
 def run_all_pnl_snapshots():
 	"""
 	ssh into EC2
-	crontab -e
-	0,15,30,45 * * * * curl -fsS -X POST "http://localhost/pnl/snapshot/run-all" >/tmp/trading-mage-pnl-cron.log 2>&1
-	0,15,30,45 * * * * curl -fsS -X POST "http://localhost/pnl/snapshot/run-all" >>/var/log/trading-mage-pnl-cron.log 2>&1  
+	crontab -e 
+	0,15,30,45 * * * * /usr/bin/curl -fsS -X POST "http://localhost:8000/pnl/snapshot/run-all" >/tmp/trading-mage-pnl-cron.log 2>&1
+	0,15,30,45 * * * * /usr/bin/curl -fsS -X POST "http://localhost:8000/pnl/snapshot/run-all" >> /home/ubuntu/trading-mage-pnl-cron.log 2>&1
 	Second version is slightly better as it appends instead of overwrites. But must first create the file:
-	touch /var/log/trading-mage-pnl-cron.log
+	touch /var/log/trading-mage-pnl-cron.log -actually will be created automatically as long as /home/ubuntu exists-
+
+	Or every 5 minutes
+	*/5 * * * * /usr/bin/curl -fsS -X POST "http://localhost:8000/pnl/snapshot/run-all" >> /home/ubuntu/trading-mage-pnl-cron.log 2>&1
 	
 	Or better yet, use this simple version to avoid permission issues:
 	crontab -e
