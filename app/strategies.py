@@ -771,7 +771,7 @@ class Strategies:
 			
 
 	def entry_strategy2(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
-	
+
 		tf = self.tvw_helpers.normalize_tf(timeframe)
 		if tf != "1m":
 			return None
@@ -791,16 +791,39 @@ class Strategies:
 		last_1m_signal = self.tvw_helpers.normalize_signal(last_1m_fields.get("signal"))
 		last_15m_signal = self.tvw_helpers.normalize_signal(last_15m_fields.get("signal"))
 
+		if last_1m_signal not in {"buy", "sell"} or last_15m_signal not in {"buy", "sell"}:
+			logger.info(
+				"Strategy skipped: invalid signal context for %r | 1m=%r 15m=%r",
+				ticker,
+				last_1m_signal,
+				last_15m_signal,
+			)
+			return None
+
+		# Block entry if an opposite-side 5m signal occurred after the
+		# last valid same-side 15m anchor signal.
 		if last_15m_signal == "buy" and last_1m_signal == "buy":
+			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
+				ticker, "buy", "5m", "15m", 1000, 500
+			):
+				logger.info("Blocked Strategy 2 long entry for %r due to opposite 5m after anchor 15m", ticker)
+				return None
 			return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		if last_15m_signal == "sell" and last_1m_signal == "sell":
+			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
+				ticker, "sell", "5m", "15m", 1000, 500
+			):
+				logger.info("Blocked Strategy 2 short entry for %r due to opposite 5m after anchor 15m", ticker)
+				return None
 			return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
-
 		logger.info(
 			"No trade condition met for %r | 1m=%r 15m=%r",
-			ticker, last_1m_signal, last_15m_signal
+			ticker,
+			last_1m_signal,
+			last_15m_signal,
 		)
+
 		return None
 
 
