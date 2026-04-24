@@ -9,6 +9,7 @@ class Strategies:
 		self.tvw_helpers = trading_view_webhook_helpers
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.trade_records = trade_records
+		self.SMALLEST_SHARE_SIZE = 0.25
 		
 
 	def is_tf_relative_to_last_higher_tf(
@@ -534,6 +535,76 @@ class Strategies:
 		return False
 
 
+	def get_progressive_entry_size(self, strategy_name, ticker, side, base_num_shares, smallest_share_size):
+		"""
+		Computes progressively smaller same-side entry sizes for an open position
+		lifecycle, resetting after a full close.
+
+		Sizing rule:
+			entry_sequence_count = 0 -> next size = base_num_shares
+			entry_sequence_count = 1 -> next size = base_num_shares / 2
+			entry_sequence_count = 2 -> next size = base_num_shares / 4
+			entry_sequence_count = 3 -> next size = base_num_shares / 8
+			...
+
+		If the computed size is less than smallest share size, returns 0.
+
+		Parameters:
+			strategy_name (str): Strategy name.
+			ticker (str): Ticker symbol.
+			side (str): "long" or "short".
+			base_num_shares (float): Original unscaled entry size.
+			smallest_share_size (float): Smallest num shares that can be bought/shorted
+
+		Returns:
+			float: Computed execution quantity, or 0 if below smallest share size.
+		"""
+		side = str(side or "").strip().lower()
+
+		if side not in {"long", "short"}:
+			return 0.0
+
+		try:
+			base_num_shares = float(base_num_shares)
+		except Exception:
+			return 0.0
+
+		if base_num_shares <= 0:
+			return 0.0
+
+		position = None
+		try:
+			position = self.trade_records.get_position(strategy_name, ticker)
+		except Exception:
+			logger.exception(
+				"Failed retrieving position for progressive sizing: strategy=%r ticker=%r side=%r",
+				strategy_name,
+				ticker,
+				side,
+			)
+			return 0.0
+
+		entry_sequence_count = 0
+
+		if position is not None:
+			position_side = str(position.get("side") or "").strip().lower()
+			position_qty = float(position.get("num_shares") or 0.0)
+			try:
+				stored_sequence = max(0, int(float(position.get("entry_sequence_count") or 0)))
+			except Exception:
+				stored_sequence = 0
+
+			if position_qty > 0 and position_side == side:
+				entry_sequence_count = stored_sequence
+
+		execution_qty = base_num_shares / (2 ** entry_sequence_count)
+
+		if execution_qty < smallest_share_size:
+			return 0.0
+
+		return execution_qty
+
+
 	def entry_strategy1(self, strategy_name, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
 
 		tf = self.tvw_helpers.normalize_tf(timeframe)
@@ -670,7 +741,8 @@ class Strategies:
 		)
 
 		if signal_1h == "buy":
-			if redis_position_side == "short" and redis_num_shares > 0:
+			#if redis_position_side == "short" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "short" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy1 Redis bookkeeping cover for %r using redis_num_shares=%r",
 					ticker,
@@ -708,6 +780,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -718,7 +791,8 @@ class Strategies:
 			return None
 
 		elif signal_1h == "sell":
-			if redis_position_side == "long" and redis_num_shares > 0:
+			#if redis_position_side == "long" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "long" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy1 Redis bookkeeping sell for %r using redis_num_shares=%r",
 					ticker,
@@ -756,6 +830,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -902,7 +977,8 @@ class Strategies:
 		)
 
 		if signal_5m == "buy":
-			if redis_position_side == "short" and redis_num_shares > 0:
+			#if redis_position_side == "short" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "short" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy2 Redis bookkeeping cover for %r using redis_num_shares=%r",
 					ticker,
@@ -940,6 +1016,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -950,7 +1027,8 @@ class Strategies:
 			return None
 
 		elif signal_5m == "sell":
-			if redis_position_side == "long" and redis_num_shares > 0:
+			#if redis_position_side == "long" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "long" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy2 Redis bookkeeping sell for %r using redis_num_shares=%r",
 					ticker,
@@ -988,6 +1066,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -1122,7 +1201,8 @@ class Strategies:
 		)
 
 		if signal_15m == "buy":
-			if redis_position_side == "short" and redis_num_shares > 0:
+			#if redis_position_side == "short" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "short" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy3 Redis bookkeeping cover for %r using redis_num_shares=%r",
 					ticker,
@@ -1160,6 +1240,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -1170,7 +1251,8 @@ class Strategies:
 			return None
 
 		elif signal_15m == "sell":
-			if redis_position_side == "long" and redis_num_shares > 0:
+			#if redis_position_side == "long" and redis_num_shares > 0:
+			if simulation_only and redis_position_side == "long" and redis_num_shares > 0:
 				logger.info(
 					"exit_strategy3 Redis bookkeeping sell for %r using redis_num_shares=%r",
 					ticker,
@@ -1208,6 +1290,7 @@ class Strategies:
 					prices,
 					alpaca_num_shares,
 					alpaca_api,
+					do_redis_bookkeeping=not simulation_only,
 				)
 
 			logger.info(
@@ -1234,7 +1317,6 @@ class Strategies:
 		order_type,
 		do_redis_bookkeeping=True,
 	):
-
 		order_type = str(order_type or "").strip().lower()
 		ticker = str(ticker or "").upper().strip()
 
@@ -1309,6 +1391,7 @@ class Strategies:
 		alpaca_position = None
 		try:
 			alpaca_position = alpaca_api.get_position(ticker)
+			alpaca_position_qty = float(alpaca_position.qty)
 			logger.info(
 				"Alpaca position before order: ticker=%r qty=%r side=%r avg_entry_price=%r",
 				ticker,
@@ -1317,6 +1400,8 @@ class Strategies:
 				getattr(alpaca_position, "avg_entry_price", None),
 			)
 		except Exception:
+			alpaca_position = None
+			alpaca_position_qty = 0.0			
 			logger.exception(
 				"Failed retrieving Alpaca position before order for ticker=%r order_type=%r",
 				ticker,
@@ -1325,12 +1410,123 @@ class Strategies:
 
 		execution_qty = num_shares
 
-		if order_type in {"long", "short"} and redis_position is not None:
-			redis_side = str(redis_position.get("side") or "").strip().lower()
-			redis_open_qty = float(redis_position.get("num_shares", 0) or 0)
+		def submit_to_alpaca_and_wait_for_fill(timeout_seconds=10, poll_interval=0.5):
+			order_type_name = "market" if is_regular_hours else "limit"
+			submitted_order = None
 
-			if redis_open_qty > 0 and redis_side == order_type:
-				execution_qty = num_shares * 0.25
+			for attempt in range(1, 4):
+				try:
+					if is_regular_hours:
+						submitted_order = alpaca_api.submit_order(
+							symbol=ticker,
+							qty=execution_qty,
+							side=broker_side,
+							type="market",
+							time_in_force="day",
+						)
+					else:
+						submitted_order = alpaca_api.submit_order(
+							symbol=ticker,
+							qty=execution_qty,
+							side=broker_side,
+							type="limit",
+							time_in_force="day",
+							limit_price=price,
+						)
+
+					logger.info(
+						"Alpaca %s order submitted: strategy=%r ticker=%r order_type=%r qty=%r order_id=%r",
+						order_type_name,
+						strategy_name,
+						ticker,
+						order_type,
+						execution_qty,
+						getattr(submitted_order, "id", None),
+					)
+					break
+
+				except Exception:
+					logger.exception(
+						"Failed submitting Alpaca %s order: strategy=%r ticker=%r order_type=%r qty=%r attempt=%r",
+						order_type_name,
+						strategy_name,
+						ticker,
+						order_type,
+						execution_qty,
+						attempt,
+					)
+					time.sleep(0.5)
+
+			if submitted_order is None:
+				return None
+
+			order_id = getattr(submitted_order, "id", None)
+			if not order_id:
+				logger.info("Submitted Alpaca order missing order id for %r", ticker)
+				return None
+
+			deadline = time.time() + timeout_seconds
+			terminal_bad_statuses = {
+				"canceled",
+				"expired",
+				"rejected",
+				"suspended",
+				"stopped",
+			}
+
+			while time.time() < deadline:
+				try:
+					order = alpaca_api.get_order(order_id)
+					status = str(getattr(order, "status", "") or "").lower()
+
+					logger.info(
+						"Alpaca order status check: ticker=%r order_id=%r status=%r filled_qty=%r avg_fill_price=%r",
+						ticker,
+						order_id,
+						status,
+						getattr(order, "filled_qty", None),
+						getattr(order, "filled_avg_price", None),
+					)
+
+					if status == "filled":
+						return order
+
+					if status in terminal_bad_statuses:
+						return None
+
+				except Exception:
+					logger.exception("Failed polling Alpaca order status: ticker=%r order_id=%r", ticker, order_id)
+
+				time.sleep(poll_interval)
+
+			logger.info(
+				"Alpaca order not filled before timeout: ticker=%r order_id=%r timeout_seconds=%r",
+				ticker,
+				order_id,
+				timeout_seconds,
+			)
+			return None
+
+		if order_type in {"long", "short"}:
+			execution_qty = self.get_progressive_entry_size(
+				strategy_name,
+				ticker,
+				order_type,
+				num_shares,
+				self.SMALLEST_SHARE_SIZE
+			)
+
+			if execution_qty < self.SMALLEST_SHARE_SIZE:
+				logger.info(
+					"Progressive entry size below %r shares; skipping entry: strategy=%r ticker=%r order_type=%r base_qty=%r computed_qty=%r",
+					self.SMALLEST_SHARE_SIZE,
+					strategy_name,
+					ticker,
+					order_type,
+					num_shares,
+					execution_qty,
+				)
+				return None
 
 		if execution_qty <= 0:
 			logger.info(
@@ -1343,22 +1539,9 @@ class Strategies:
 			)
 			return None
 
-		record = None
-
-		if do_redis_bookkeeping:
-			try:
-				logger.info(
-					"Recording strategy trade before broker execution: strategy=%r ticker=%r order_type=%r base_qty=%r execution_qty=%r price=%r can_add_to_existing_position=%r",
-					strategy_name,
-					ticker,
-					order_type,
-					num_shares,
-					execution_qty,
-					price,
-					True,
-				)
-
-				record = self.trade_records.create_trade_record(
+		if simulation_only: # No Alpaca execution
+			if do_redis_bookkeeping:
+				return self.trade_records.create_trade_record(
 					strategy_name,
 					ticker,
 					date,
@@ -1367,116 +1550,49 @@ class Strategies:
 					order_type,
 					True,
 				)
+			return None
 
-				logger.info(
-					"Recorded strategy trade successfully: strategy=%r ticker=%r order_type=%r execution_qty=%r price=%r",
-					strategy_name,
-					ticker,
-					order_type,
-					execution_qty,
-					price,
-				)
+		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca execution
 
-			except Exception:
-				logger.exception(
-					"Failed to record strategy trade before broker execution: strategy=%r ticker=%r order_type=%r execution_qty=%r price=%r",
-					strategy_name,
-					ticker,
-					order_type,
-					execution_qty,
-					price,
-				)
-				return None
-		else:
+		if filled_order is None:
 			logger.info(
-				"Skipping Redis bookkeeping in place_order: strategy=%r ticker=%r order_type=%r execution_qty=%r",
+				"Skipping Redis bookkeeping because Alpaca order was not filled: strategy=%r ticker=%r order_type=%r qty=%r",
 				strategy_name,
 				ticker,
 				order_type,
 				execution_qty,
 			)
+			return None
 
-		logger.info(
-			"About to submit Alpaca order: strategy=%r ticker=%r order_type=%r broker_side=%r base_qty=%r execution_qty=%r price=%r regular_hours=%r simulation_only=%r",
-			strategy_name,
-			ticker,
-			order_type,
-			broker_side,
-			num_shares,
-			execution_qty,
-			price,
-			is_regular_hours,
-			simulation_only,
-		)
+		time.sleep(0.5)
+		try:
+			position = alpaca_api.get_position(ticker)
+			logger.info(
+				"Post-fill Alpaca position check: ticker=%r qty=%r side=%r",
+				ticker,
+				getattr(position, "qty", None),
+				getattr(position, "side", None),
+			)
+		except Exception:
+			logger.info("No Alpaca position found after fill for ticker=%r order_type=%r", ticker, order_type)
 
-		if not simulation_only:
-			if is_regular_hours:
-				for attempt in range(1, 4):
-					try:
-						alpaca_api.submit_order(
-							symbol=ticker,
-							qty=execution_qty,
-							side=broker_side,
-							type="market",
-							time_in_force="day",
-						)
-						logger.info(
-							"Alpaca market order submitted successfully: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r attempt=%r",
-							strategy_name,
-							ticker,
-							order_type,
-							broker_side,
-							execution_qty,
-							attempt,
-						)
-						break
-					except Exception:
-						logger.exception(
-							"Failed to execute Alpaca market order: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r attempt=%r",
-							strategy_name,
-							ticker,
-							order_type,
-							broker_side,
-							execution_qty,
-							attempt,
-						)
-						time.sleep(0.5)
-			else:
-				for attempt in range(1, 4):
-					try:
-						alpaca_api.submit_order(
-							symbol=ticker,
-							qty=execution_qty,
-							side=broker_side,
-							type="limit",
-							time_in_force="day",
-							limit_price=price,
-						)
-						logger.info(
-							"Alpaca limit order submitted successfully: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r limit_price=%r attempt=%r",
-							strategy_name,
-							ticker,
-							order_type,
-							broker_side,
-							execution_qty,
-							price,
-							attempt,
-						)
-						break
-					except Exception:
-						logger.exception(
-							"Failed to execute Alpaca limit order: strategy=%r ticker=%r order_type=%r broker_side=%r execution_qty=%r limit_price=%r attempt=%r",
-							strategy_name,
-							ticker,
-							order_type,
-							broker_side,
-							execution_qty,
-							price,
-							attempt,
-						)
-						time.sleep(0.5)
+		# If we are here, the Alpaca order got successfully filled
+		fill_price = getattr(filled_order, "filled_avg_price", None)
+		if fill_price is None:
+			fill_price = price
 
-		return record
+		if do_redis_bookkeeping:
+			return self.trade_records.create_trade_record(
+				strategy_name,
+				ticker,
+				date,
+				fill_price,
+				execution_qty,
+				order_type,
+				True,
+			)
+
+		return None
 
 
 	def place_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
@@ -1505,7 +1621,7 @@ class Strategies:
 			True,
 		)
 
-	def sell_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def sell_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=True):
 		return self.place_order(
 			simulation_only,
 			strategy_name,
@@ -1515,10 +1631,10 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"sell",
-			False,
+			do_redis_bookkeeping,
 		)
 
-	def cover_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def cover_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=True):
 		return self.place_order(
 			simulation_only,
 			strategy_name,
@@ -1528,5 +1644,5 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"cover",
-			False,
+			do_redis_bookkeeping,
 		)	

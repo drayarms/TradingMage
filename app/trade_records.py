@@ -140,6 +140,7 @@ class TradeRecords:
 			"num_shares": self._parse_float(fields.get("num_shares")),
 			"unrealized_pnl": self._parse_float(fields.get("unrealized_pnl")),
 			"realized_pnl": self._parse_float(fields.get("realized_pnl")),
+			"entry_sequence_count": self._parse_int(fields.get("entry_sequence_count")),
 		}
 
 
@@ -290,6 +291,50 @@ class TradeRecords:
 
 		existing = self._load_position(strat, sym)
 
+		# Guard dog: detect suspicious duplicate bookkeeping attempts.
+		if existing is not None:
+			existing_side = str(existing.get("side") or "").strip().lower()
+			existing_qty = self._parse_float(existing.get("num_shares"))
+
+			if side == "sell" and (existing_side != "long" or existing_qty == 0):
+				raise ValueError(
+					f"GUARD_DOG blocked invalid sell: strategy={strat} ticker={sym} existing_side={existing_side} qty={existing_qty}"
+				)
+
+			if side == "cover" and (existing_side != "short" or existing_qty == 0):
+				raise ValueError(
+					f"GUARD_DOG blocked invalid cover: strategy={strat} ticker={sym} existing_side={existing_side} qty={existing_qty}"
+				)				
+
+			if side in {"long", "short"} and existing_qty > 0 and existing_side == side:
+				logger.warning(
+					"GUARD_DOG duplicate/add entry attempt: strategy=%r ticker=%r side=%r existing_qty=%r requested_qty=%r can_add=%r",
+					strat,
+					sym,
+					side,
+					existing_qty,
+					num_shares,
+					can_add_to_existing_position,
+				)
+
+			if side == "sell" and existing_side == "long" and existing_qty <= 0:
+				logger.warning(
+					"GUARD_DOG duplicate sell/close attempt on flat long: strategy=%r ticker=%r existing_qty=%r requested_qty=%r",
+					strat,
+					sym,
+					existing_qty,
+					num_shares,
+				)
+
+			if side == "cover" and existing_side == "short" and existing_qty <= 0:
+				logger.warning(
+					"GUARD_DOG duplicate cover/close attempt on flat short: strategy=%r ticker=%r existing_qty=%r requested_qty=%r",
+					strat,
+					sym,
+					existing_qty,
+					num_shares,
+				)
+
 		position_key = self._position_key(strat, sym)
 		strategy_positions_key = self._strategy_positions_key(strat)
 		global_index_key = self._positions_index_key()
@@ -318,6 +363,9 @@ class TradeRecords:
 				old_entry_price = self._parse_float(existing["entry_price"])
 				old_entry_price_per_share = self._parse_float(existing["entry_price_per_share"])
 
+				old_entry_sequence_count = self._parse_int(existing.get("entry_sequence_count"), 1)
+				new_entry_sequence_count = old_entry_sequence_count + 1				
+
 				new_qty = old_qty + num_shares
 				new_avg = ((old_avg * old_qty) + (price * num_shares)) / new_qty
 				new_last_market_price = price
@@ -335,6 +383,7 @@ class TradeRecords:
 					"num_shares": self.tvw_helpers.to_str(new_qty),
 					"unrealized_pnl": self.tvw_helpers.to_str(new_unrealized),
 					"realized_pnl": self.tvw_helpers.to_str(old_realized),
+					"entry_sequence_count": self.tvw_helpers.to_str(new_entry_sequence_count),
 				}
 
 				self.r.hset(position_key, mapping=updated_record)
@@ -393,6 +442,7 @@ class TradeRecords:
 				"num_shares": self.tvw_helpers.to_str(num_shares),
 				"unrealized_pnl": self.tvw_helpers.to_str(0.0),
 				"realized_pnl": self.tvw_helpers.to_str(carry_realized_pnl),
+				"entry_sequence_count": self.tvw_helpers.to_str(1),
 			}
 
 			pipe = self.r.pipeline()
@@ -462,6 +512,11 @@ class TradeRecords:
 		new_num_shares = existing_num_shares - num_shares
 		new_cumulative_realized_pnl = current_realized_pnl + realized_delta
 
+		current_entry_sequence_count = self._parse_int(existing.get("entry_sequence_count"), 0)
+		new_entry_sequence_count = current_entry_sequence_count
+		if new_num_shares == 0:
+			new_entry_sequence_count = 0		
+
 		updated_record = {
 			"strategy_name": strat,
 			"ticker": sym,
@@ -474,200 +529,9 @@ class TradeRecords:
 			"num_shares": self.tvw_helpers.to_str(new_num_shares),
 			"unrealized_pnl": self.tvw_helpers.to_str(0.0),
 			"realized_pnl": self.tvw_helpers.to_str(new_cumulative_realized_pnl),
+			"entry_sequence_count": self.tvw_helpers.to_str(new_entry_sequence_count),
 		}
 
-		event_type = "partial_close"
-		if new_num_shares == 0:
-			event_type = "close"
-
-		self.r.hset(position_key, mapping=updated_record)
-
-		event = self.record_trade_event(
-			strategy_name=strat,
-			ticker=sym,
-			event_type=event_type,
-			event_time=iso_dt,
-			price=price,
-			num_shares=num_shares,
-			side=side,
-			old_num_shares=existing_num_shares,
-			new_num_shares=new_num_shares,
-			realized_delta=realized_delta,
-			cumulative_realized_pnl=new_cumulative_realized_pnl,
-		)
-
-		ts = datetime.fromisoformat(iso_dt).timestamp()
-		self.r.zadd(trade_index_key, {
-			f"{strat}|{sym}|{event['global_stream_id']}": ts
-		})
-
-		logger.info(
-			"Updated trade record for strategy=%r ticker=%r side=%r qty=%r old_qty=%r new_qty=%r realized_delta=%r",
-			strat,
-			sym,
-			side,
-			num_shares,
-			existing_num_shares,
-			new_num_shares,
-			realized_delta,
-		)
-
-		return {
-			"position": self.get_position(strat, sym),
-			"event": event,
-		}
-
-
-	def create_trade_record_old(self, strategy_name, ticker, date, price, num_shares, side):
-		"""
-		Create or update a trade record for a strategy/ticker.
-
-		Supported sides:
-			- "long": open a long position
-			- "short": open a short position
-			- "sell": close/reduce an existing long position
-			- "cover": close/reduce an existing short position
-
-		Returns:
-			dict with updated position and created event metadata.
-		"""
-		strat = self._normalize_strategy(strategy_name)
-		sym = self._normalize_ticker(ticker)
-		side = str(side or "").strip().lower()
-
-		if side not in {"long", "short", "sell", "cover"}:
-			raise ValueError(f"Invalid trade side: {side}")
-
-		num_shares = self._parse_float(num_shares)
-		if num_shares <= 0:
-			raise ValueError("num_shares must be > 0")
-
-		price = self._parse_float(price)
-		if price <= 0:
-			raise ValueError("price must be > 0")
-
-		iso_dt = self._to_eastern_iso(date or self._iso_now())
-
-		existing = self._load_position(strat, sym)
-
-		position_key = self._position_key(strat, sym)
-		strategy_positions_key = self._strategy_positions_key(strat)
-		global_index_key = self._positions_index_key()
-		strategies_index_key = self._strategies_index_key()
-		trade_index_key = self._trade_index_key()
-
-		# --------------------------------------------------
-		# OPEN / REOPEN
-		# --------------------------------------------------
-		if side in {"long", "short"}:
-			if existing is not None and existing["num_shares"] > 0:
-				raise ValueError("Open position already exists for strategy/ticker. Close or modify it first.")
-
-			carry_realized_pnl = 0.0
-			event_type = "open"
-
-			if existing is not None:
-				carry_realized_pnl = existing["realized_pnl"]
-				if existing["num_shares"] == 0:
-					event_type = "reopen"
-
-			record = {
-				"strategy_name": strat,
-				"ticker": sym,
-				"side": side,
-				"entry_date": iso_dt,
-				"entry_price": self.tvw_helpers.to_str(price),
-				"entry_price_per_share": self.tvw_helpers.to_str(price),
-				"avg_price_per_share": self.tvw_helpers.to_str(price),
-				"last_market_price": self.tvw_helpers.to_str(price),
-				"num_shares": self.tvw_helpers.to_str(num_shares),
-				"unrealized_pnl": self.tvw_helpers.to_str(0.0),
-				"realized_pnl": self.tvw_helpers.to_str(carry_realized_pnl),
-			}
-
-			pipe = self.r.pipeline()
-			pipe.hset(position_key, mapping=record)
-			pipe.sadd(strategy_positions_key, sym)
-			pipe.sadd(global_index_key, f"{strat}|{sym}")
-			pipe.sadd(strategies_index_key, strat)
-			pipe.execute()
-
-			event = self.record_trade_event(
-				strategy_name=strat,
-				ticker=sym,
-				event_type=event_type,
-				event_time=iso_dt,
-				price=price,
-				num_shares=num_shares,
-				side=side,
-				old_num_shares=0,
-				new_num_shares=num_shares,
-				realized_delta=0.0,
-				cumulative_realized_pnl=carry_realized_pnl,
-			)
-
-			ts = datetime.fromisoformat(iso_dt).timestamp()
-			self.r.zadd(trade_index_key, {
-				f"{strat}|{sym}|{event['global_stream_id']}": ts
-			})
-
-			logger.info(
-				"Created trade record for strategy=%r ticker=%r side=%r qty=%r",
-				strat,
-				sym,
-				side,
-				num_shares
-			)
-
-			return {
-				"position": self.get_position(strat, sym),
-				"event": event,
-			}
-
-		# --------------------------------------------------
-		# CLOSE / REDUCE
-		# --------------------------------------------------
-		if existing is None or existing["num_shares"] <= 0:
-			raise ValueError("No open position exists for strategy/ticker.")
-
-		existing_side = str(existing["side"]).strip().lower()
-		existing_num_shares = self._parse_float(existing["num_shares"])
-		entry_price = self._parse_float(existing["entry_price_per_share"])
-		current_realized_pnl = self._parse_float(existing["realized_pnl"])
-
-		if side == "sell" and existing_side != "long":
-			raise ValueError("Cannot sell: open position is not long.")
-
-		if side == "cover" and existing_side != "short":
-			raise ValueError("Cannot cover: open position is not short.")
-
-		if num_shares > existing_num_shares:
-			raise ValueError("Cannot close more shares than currently open.")
-
-		if side == "sell":
-			realized_delta = (price - entry_price) * num_shares
-		else:  # cover
-			realized_delta = (entry_price - price) * num_shares
-
-		new_num_shares = existing_num_shares - num_shares
-		new_cumulative_realized_pnl = current_realized_pnl + realized_delta
-
-		# Keep original entry details for any remaining open shares
-		updated_record = {
-			"strategy_name": strat,
-			"ticker": sym,
-			"side": existing_side,
-			"entry_date": existing["entry_date"],
-			"entry_price": self.tvw_helpers.to_str(entry_price),
-			"entry_price_per_share": self.tvw_helpers.to_str(entry_price),
-			"avg_price_per_share": self.tvw_helpers.to_str(entry_price),
-			"last_market_price": self.tvw_helpers.to_str(price),
-			"num_shares": self.tvw_helpers.to_str(new_num_shares),
-			"unrealized_pnl": self.tvw_helpers.to_str(0.0),
-			"realized_pnl": self.tvw_helpers.to_str(new_cumulative_realized_pnl),
-		}
-
-		# If fully closed, keep position record but zero out shares
 		event_type = "partial_close"
 		if new_num_shares == 0:
 			event_type = "close"
