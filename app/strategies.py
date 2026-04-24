@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import datetime
+import math
 
 logger = logging.getLogger("tv-webhook")
 
@@ -1516,17 +1517,22 @@ class Strategies:
 				self.SMALLEST_SHARE_SIZE
 			)
 
-			if execution_qty < self.SMALLEST_SHARE_SIZE:
-				logger.info(
-					"Progressive entry size below %r shares; skipping entry: strategy=%r ticker=%r order_type=%r base_qty=%r computed_qty=%r",
-					self.SMALLEST_SHARE_SIZE,
-					strategy_name,
-					ticker,
-					order_type,
-					num_shares,
-					execution_qty,
-				)
-				return None
+		# Enforce Alpaca constraint FIRST
+		if order_type == "short":
+			execution_qty = math.floor(execution_qty)
+
+		# Then enforce min size
+		if execution_qty < self.SMALLEST_SHARE_SIZE:
+			logger.info(
+				"Progressive entry size below %r shares; skipping entry: strategy=%r ticker=%r order_type=%r base_qty=%r computed_qty=%r",
+				self.SMALLEST_SHARE_SIZE,
+				strategy_name,
+				ticker,
+				order_type,
+				num_shares,
+				execution_qty,
+			)
+			return None
 
 		if execution_qty <= 0:
 			logger.info(
