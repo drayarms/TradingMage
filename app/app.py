@@ -3,68 +3,61 @@ Author: Matthew Akofu
 Date Created: Feb 12, 2026
 """
 
-from zoneinfo import ZoneInfo
 import os
-from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
 import logging
 import sys
+from typing import Optional
+from pydantic import BaseModel
+
+from fastapi import FastAPI, Request, HTTPException, Query, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse
+
 import alpaca_trade_api as tradeapi
-import trading_view_webhook_helpers 
+
+import trading_view_webhook_helpers
 import strategies
 import trade_records
 import plot
-from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit
-from typing import Optional
-from pydantic import BaseModel
-from datetime import datetime
+
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
 # Redis indexes use epoch timestamps derived from those timezone-aware values.
 
-# Configure the root logger.
-# logging.INFO Sets the minimum severity level to log. sys.stdout sends logs to stdout. 
 logging.basicConfig(
 	level=logging.INFO,
 	stream=sys.stdout,
 	format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-logger = logging.getLogger("tv-webhook") # Creates a named logger. Akin to a namespace for logs. Helps ID src of logs. 
-# So logs will show tv-webhook: message here
-logger.setLevel(logging.INFO) # Root logger is already INFO. Ensures this logger also respects INFO.
-logger.propagate = True # Logs from tv-webhook -> also sent to parent (root logger) -> stdout. False means logs don't reach root logger.
-# Logs appear in docker logs, systemd journal.
+logger = logging.getLogger("tv-webhook")
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
-# These env vars are injected via the user_data.sh shell script when the EC2 instance is created.
-TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]  # Required
-# Example optional vars:
+
+TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]
 APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
 APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
 APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
 
-#PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
-#EASTERN_TZ = ZoneInfo("America/New_York")
-#MY_TZ = EASTERN_TZ :)
-
 alpaca_api = tradeapi.REST(
-    base_url=APCA_API_BASE_URL,
-    key_id=APCA_API_KEY_ID,
-    secret_key=APCA_API_SECRET_KEY
+	base_url=APCA_API_BASE_URL,
+	key_id=APCA_API_KEY_ID,
+	secret_key=APCA_API_SECRET_KEY,
 )
-POSITION_SIZE = 10000
+
+POSITION_SIZE1 = 2000
+POSITION_SIZE2 = 6600
+POSITION_SIZE3 = 20000
 
 app = FastAPI(title="TradingView Webhook")
 
-# Instantiate external classes.
 tvw_helpers = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
 trade_recs = trade_records.TradeRecords(tvw_helpers)
 stgs = strategies.Strategies(tvw_helpers, trade_recs)
 plotter = plot.Plot()
 
-#SECURITIES = ["AAPL", "MSFT", "TSLA", "XOM"]
 
 class TradingViewWebhook(BaseModel):
 	secret: str
@@ -90,7 +83,8 @@ def _startup():
 			logger.info("Account is currently restricted from trading")
 	except Exception as exc:
 		logger.exception("Alpaca get_account failed during startup")
-		raise RuntimeError("Alpaca get_account failed during startup") from exc			
+		raise RuntimeError("Alpaca get_account failed during startup") from exc
+
 
 @app.get("/health")
 def health():
@@ -100,7 +94,8 @@ def health():
 		return {"ok": True, "redis": "up"}
 	except Exception:
 		logger.exception("Redis ping failed")
-		raise HTTPException(status_code=503, detail="Redis ping failed")		
+		raise HTTPException(status_code=503, detail="Redis ping failed")
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -110,24 +105,175 @@ async def global_exception_handler(request: Request, exc: Exception):
 		content={"detail": "Internal server error"},
 	)
 
-@app.post("/webhook/tradingview")
-async def webhook_tradingview(payload: TradingViewWebhook):
+
+def process_trading_signal(symbol: str, tf: str, signal: str):
 	"""
-	Handles the TV webhook when it is received by this FastAPI app.
+	Runs strategy logic after the webhook has already been accepted.
+
+	This keeps TradingView webhook delivery fast. Redis ingestion happens inside
+	the request/response path. Alpaca calls, market-price lookup, and strategy
+	execution happen here after the HTTP 200 response has been prepared.
+	"""
+	try:
+		now_et = tvw_helpers._now_et()
+
+		if not tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+			logger.info(
+				"Strategy processing skipped outside trading window: symbol=%s tf=%s signal=%s now_et=%s",
+				symbol,
+				tf,
+				signal,
+				now_et,
+			)
+			return
+
+		if not tvw_helpers.is_symbol_tradable_now(alpaca_api, symbol, now_et):
+			logger.info(
+				"Strategy processing skipped because symbol is not tradable now: symbol=%s tf=%s signal=%s now_et=%s",
+				symbol,
+				tf,
+				signal,
+				now_et,
+			)
+			return
+
+		prices = trade_recs.get_market_prices([symbol], alpaca_api)
+		market_price = prices.get(symbol, {}).get("market")
+
+		if market_price is None or market_price <= 0:
+			logger.warning(
+				"Strategy processing skipped due to invalid market price: symbol=%s tf=%s signal=%s market_price=%r",
+				symbol,
+				tf,
+				signal,
+				market_price,
+			)
+			return
+
+		NUM_SHARES1 = POSITION_SIZE1 / market_price
+		NUM_SHARES2 = POSITION_SIZE2 / market_price
+		NUM_SHARES3 = POSITION_SIZE3 / market_price
+
+		stgs.entry_strategy1(
+			"entry_strategy1_15m_anchor",
+			"1m",
+			"5m",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES1,
+			alpaca_api,
+		)
+
+		stgs.exit_strategy1(
+			"entry_strategy1_15m_anchor",
+			"1m",
+			"5m",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			alpaca_api,
+		)
+
+		stgs.entry_strategy1(
+			"entry_strategy1_1h_anchor",
+			"5m",
+			"15m",
+			"1h",
+			True,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES2,
+			alpaca_api,
+		)
+
+		stgs.exit_strategy1(
+			"entry_strategy1_1h_anchor",
+			"5m",
+			"15m",
+			"1h",
+			True,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			alpaca_api,
+		)
+
+		stgs.entry_strategy1(
+			"entry_strategy1_4h_anchor",
+			"15m",
+			"1h",
+			"4h",
+			True,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES3,
+			alpaca_api,
+		)
+
+		stgs.exit_strategy1(
+			"entry_strategy1_4h_anchor",
+			"15m",
+			"1h",
+			"4h",
+			True,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			alpaca_api,
+		)
+
+	except Exception:
+		logger.exception(
+			"Background strategy processing failed: symbol=%s tf=%s signal=%s",
+			symbol,
+			tf,
+			signal,
+		)
+
+
+@app.post("/webhook/tradingview")
+async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: BackgroundTasks):
+	"""
+	Fast TradingView webhook handler.
+
+	Request path:
+		1. Validate secret and required fields.
+		2. Acquire idempotency key.
+		3. Write alert to Redis stream/state.
+		4. Mark idempotency key done.
+		5. Schedule strategy processing in the background.
+		6. Return 200 quickly to TradingView.
 	"""
 	rr = tvw_helpers.require_redis()
 
-	if payload.secret != TV_WEBHOOK_SECRET: # Ensure secret embedded in TV payload matches our env secret
+	if payload.secret != TV_WEBHOOK_SECRET:
 		raise HTTPException(status_code=401, detail="Invalid secret")
 
 	tf = tvw_helpers.normalize_tf(payload.timeframe)
 	symbol = str(payload.symbol or "").upper().strip()
-	#signal = tvw_helpers.normalize_signal(payload.signal)
 	signal = payload.signal
 	bar_close_time_raw = str(payload.bar_close_time or "").strip()
 
 	if not tf or not symbol or not signal or not bar_close_time_raw:
-	#if not tf or not symbol or not signal:
 		logger.warning(
 			"Invalid webhook payload: timeframe=%r symbol=%r signal=%r bar_close_time=%r",
 			payload.timeframe,
@@ -135,7 +281,10 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 			payload.signal,
 			payload.bar_close_time,
 		)
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe, symbol, or signal or bar close time")		
+		raise HTTPException(
+			status_code=400,
+			detail="Missing/invalid timeframe, symbol, signal, or bar close time",
+		)
 
 	acquired, dedupe_key = tvw_helpers.acquire_alert_idempotency(
 		symbol=symbol,
@@ -145,10 +294,8 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 	)
 
 	if not acquired:
-
 		existing = rr.get(dedupe_key)
 
-		# Another worker/process may still be handling it.
 		if existing == "processing":
 			logger.info(
 				"TradingView alert already in progress: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s",
@@ -169,7 +316,6 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 				"bar_close_time": bar_close_time_raw,
 			}
 
-		# Previously completed successfully.
 		if existing and existing.startswith("done:"):
 			existing_stream_id = existing.split("done:", 1)[1]
 			logger.info(
@@ -193,7 +339,6 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 				"stream_id": existing_stream_id,
 			}
 
-		# Fallback for unexpected dedupe value.
 		logger.info(
 			"Duplicate TradingView alert ignored with unexpected dedupe state: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s value=%r",
 			symbol,
@@ -212,7 +357,7 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 			"signal": signal,
 			"bar_close_time": bar_close_time_raw,
 		}
-	
+
 	stream_key = tvw_helpers.stream_key(tf, symbol)
 	state_key = tvw_helpers.state_key(tf, symbol)
 
@@ -250,7 +395,7 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 
 	try:
 		pipe = rr.pipeline()
-		pipe.xadd(# Add fields specified by the stream key (e.g. tv:stream:1m:AAPL) to history
+		pipe.xadd(
 			name=stream_key,
 			fields=stream_fields,
 			maxlen=TV_MAXLEN,
@@ -259,20 +404,22 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 		pipe.hset(state_key, mapping=state_fields)
 		results = pipe.execute()
 		stream_id = results[0]
+
 		rr.set(
 			dedupe_key,
 			f"done:{stream_id}",
 			xx=True,
 			ex=tvw_helpers.alert_dedupe_ttl_seconds,
 		)
+
 	except Exception:
 		try:
 			rr.delete(dedupe_key)
 		except Exception:
-			logger.exception("Failed to clear idempotency key after processing failure")		
-		
+			logger.exception("Failed to clear idempotency key after processing failure")
+
 		logger.exception("Redis write failed")
-		raise HTTPException(status_code=500, detail="Redis write failed")			
+		raise HTTPException(status_code=500, detail="Redis write failed")
 
 	logger.info(
 		"\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_eastern=%s\nprice=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
@@ -289,34 +436,16 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 		payload.volume,
 	)
 
-	#second_last_alert = tvw_helpers.handle_alert(symbol, tf, signal) # Str Str Str
-	#logger.info("In app.py: Second last alert = %r", second_last_alert)
-	#market_prices = trade_recs.get_market_prices(SECURITIES, alpaca_api)
-	#stgs.implement_simple_strategy("simple strategy", True, signal, market_prices.get(symbol, {}).get("market"), symbol, tf)
-
-
-	now_et = tvw_helpers._now_et()
-	if tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
-		if tvw_helpers.is_symbol_tradable_now(alpaca_api, symbol, now_et):
-
-			prices = trade_recs.get_market_prices([symbol], alpaca_api)
-			market_price = prices.get(symbol, {}).get("market")
-			if market_price is None or market_price <= 0:
-				raise HTTPException(status_code=400, detail="Invalid price")
-
-			NUM_SHARES = POSITION_SIZE / market_price
-			
-			stgs.entry_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api) 
-			stgs.exit_strategy1("strategy1", True, now_et, signal, prices, symbol, tf, alpaca_api)
-			stgs.entry_strategy2("strategy2", False, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
-			stgs.exit_strategy2("strategy2", False, now_et, signal, prices, symbol, tf, alpaca_api)
-			stgs.entry_strategy3("strategy3", True, now_et, signal, prices, symbol, tf, NUM_SHARES, alpaca_api)
-			stgs.exit_strategy3("strategy3", True, now_et, signal, prices, symbol, tf, alpaca_api)			
-
+	background_tasks.add_task(
+		process_trading_signal,
+		symbol,
+		tf,
+		signal,
+	)
 
 	return {
 		"ok": True,
-		"printed": True,
+		"accepted": True,
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
@@ -327,13 +456,7 @@ async def webhook_tradingview(payload: TradingViewWebhook):
 	}
 
 
-#@app.get("/retrieve_nth_last_alert")
-#def retrieve_nth_last_alert():
-	#ticker = request.args.get('ticker')
-	#tf = request.args.get('tf')
-	#tvw_helpers.log_nth_last_alert(ticker, tf, 1)
-
-@app.get("/retrieve_nth_last_alert")  
+@app.get("/retrieve_nth_last_alert")
 def retrieve_nth_last_alert(
 	ticker: str = Query(..., min_length=1),
 	tf: str = Query(..., min_length=1),
@@ -374,12 +497,11 @@ def retrieve_nth_last_alert(
 		},
 	}
 
+
 @app.get("/trades")
 def get_trades(
-	#start: Optional[datetime] = Query(None),
-	#end: Optional[datetime] = Query(None),
 	start: Optional[str] = Query(None, description="ISO start datetime"),
-	end: Optional[str] = Query(None, description="ISO end datetime"),	
+	end: Optional[str] = Query(None, description="ISO end datetime"),
 	tickers: Optional[list[str]] = Query(None, description="Ticker filter"),
 ):
 	"""
@@ -391,11 +513,9 @@ def get_trades(
 		curl "http://localhost:8000/trades?start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z&tickers=AAPL&tickers=MSFT"
 	"""
 	try:
-		# If start missing -> get earliest trade
 		if start is None:
 			start = trade_recs.get_first_trade_time()
 
-		# If end missing -> get latest trade
 		if end is None:
 			end = trade_recs.get_last_trade_time()
 
@@ -404,8 +524,8 @@ def get_trades(
 				"start": start,
 				"end": end,
 				"count": 0,
-				"records": []
-			}			
+				"records": [],
+			}
 
 		records = trade_recs.get_trade_records_between(start, end, tickers=tickers)
 
@@ -417,7 +537,8 @@ def get_trades(
 		"end": end,
 		"count": len(records),
 		"records": records,
-	}	
+	}
+
 
 @app.get("/debug/state/{timeframe}/{symbol}")
 async def debug_state_symbol(
@@ -458,7 +579,7 @@ async def debug_state_symbol(
 		values = rr.hmget(key, field_list)
 	except Exception:
 		logger.exception("Redis read failed")
-		raise HTTPException(status_code=500, detail="Redis read failed")			
+		raise HTTPException(status_code=500, detail="Redis read failed")
 
 	data = {field: value for field, value in zip(field_list, values)}
 
@@ -497,18 +618,18 @@ async def debug_stream_symbol(
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")		
+		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
 
 	key = tvw_helpers.stream_key(tf, sym)
 
 	if not rr.exists(key):
-		raise HTTPException(404, "Stream not found")	
+		raise HTTPException(status_code=404, detail="Stream not found")
 
 	try:
 		entries = rr.xrevrange(key, max="+", min="-", count=count)
 	except Exception:
 		logger.exception("Redis stream read failed")
-		raise HTTPException(status_code=500, detail="Redis stream read failed")			
+		raise HTTPException(status_code=500, detail="Redis stream read failed")
 
 	return {
 		"stream": key,
@@ -561,13 +682,13 @@ async def debug_stream_range_symbol(
 	key = tvw_helpers.stream_key(tf, sym)
 
 	if not rr.exists(key):
-		raise HTTPException(404, "Stream not found")	
+		raise HTTPException(status_code=404, detail="Stream not found")
 
 	try:
 		entries = rr.xrange(key, min="-", max="+", count=count)
 	except Exception:
 		logger.exception("Redis stream read failed")
-		raise HTTPException(status_code=500, detail="Redis stream read failed")			
+		raise HTTPException(status_code=500, detail="Redis stream read failed")
 
 	return {
 		"stream": key,
@@ -588,7 +709,6 @@ async def debug_stream_range_symbol(
 			for entry_id, fields in entries
 		],
 	}
-
 
 
 @app.post("/pnl/snapshot/run")
@@ -712,10 +832,10 @@ def get_trade_events(
 	ticker: Optional[str] = Query(default=None),
 	start: Optional[str] = Query(default=None),
 	end: Optional[str] = Query(default=None),
-):	
-	"""
+):
+	""" DUMP
 	Get individual trade events
-	curl "http://localhost:8000/trade-events?strategy_name=simple%20strategy&ticker=TSLA"
+	curl "http://localhost:8000/trade-events?strategy_name=strategy2&ticker=TSLA"
 	"""
 	try:
 		events = trade_recs.get_trade_events(
@@ -745,7 +865,7 @@ def reset_redis():
 	"""
 	Reset all app redis data
 	curl -X POST "http://localhost:8000/debug/reset-redis"
-	"""
+	"""	
 	try:
 		result = trade_recs.reset_tv_data()
 	except Exception:
@@ -756,6 +876,7 @@ def reset_redis():
 		"ok": True,
 		**result,
 	}
+
 
 @app.post("/pnl/snapshot/run-all")
 def run_all_pnl_snapshots():
@@ -782,12 +903,11 @@ def run_all_pnl_snapshots():
 	curl "http://localhost/pnl/history?strategy_name=simple%20strategy"
 	And trade events
 	curl "http://localhost/trade-events?strategy_name=simple%20strategy"
-	"""
+	"""	
 	try:
 		result = trade_recs.snapshot_all_pnl(alpaca_api)
 	except Exception:
 		logger.exception("All-strategy PnL snapshot failed")
 		raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")
 
-	return result	
-
+	return result
