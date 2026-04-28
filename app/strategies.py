@@ -687,12 +687,13 @@ class Strategies:
 		return None	
 
 
-	def exit_strategy1(self, strategy_name, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
+	def exit_strategy1(self, strategy_name, lower_timeframes, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
 		"""
 		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal.
 
 		Parameters:
 			strategy_name (str): Strategy name.
+			lower_timeframes (Set): All timeframes for which we can get a potential signal, that are lower than intermediary timeframe.
 			intermediary_tf (str): Intermediary timeframe.
 			anchor_tf (str): Anchor timeframe (hihgest timeframe)
 			simulation_only (bool): True if we only want Redis simulation and no Alpaca execution. False if we want both.
@@ -717,20 +718,24 @@ class Strategies:
 			self.tvw_helpers.normalize_signal(signal),
 		)
 
-		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite")		
 
-		logger.info("exit %r opposite-check for %r => %r", strategy_name, ticker, is_intermediary_tf_opposite_of_last_anchor_tf)
-
-		if not is_intermediary_tf_opposite_of_last_anchor_tf:
+		exit_timeframes = lower_timeframes | {intermediary_tf} # union
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		if tf not in exit_timeframes:
 			return None
 
-		redis_position = None
-		try:
-			redis_position = self.trade_records.get_position(strategy_name, ticker)
-			logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
-		except Exception:
-			logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)
+		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite")
 
+		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf)
+
+		should_exit = is_intermediary_tf_opposite_of_last_anchor_tf or lower_tf_confirms_intermediary_opposite_of_anchor
+
+		logger.info("exit %r opposite-check for %r => intermediary opp anchor: %r  lower tf confirms intermediary opp anchor: %r", strategy_name, ticker, is_intermediary_tf_opposite_of_last_anchor_tf, lower_tf_confirms_intermediary_opposite_of_anchor)
+
+		if not should_exit:
+			return None		
+
+		# should_exit is True at this point
 		alpaca_position = None
 		try:
 			alpaca_position = alpaca_api.get_position(ticker)
@@ -744,6 +749,13 @@ class Strategies:
 			)
 		except Exception:
 			logger.exception("exit %r failed to fetch Alpaca position for %r", strategy_name, ticker)
+
+		redis_position = None
+		try:
+			redis_position = self.trade_records.get_position(strategy_name, ticker)
+			logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
+		except Exception:
+			logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)			
 
 		redis_position_qty = 0.0
 		redis_position_side = None

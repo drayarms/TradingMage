@@ -155,7 +155,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		NUM_SHARES3 = POSITION_SIZE3 / market_price
 
 		stgs.entry_strategy1(
-			"entry_strategy1_15m_anchor",
+			"strategy1_15m_anchor",
 			"1m",
 			"5m",
 			"15m",
@@ -170,8 +170,8 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 		stgs.exit_strategy1(
-			"entry_strategy1_15m_anchor",
-			"1m",
+			"strategy1_15m_anchor",
+			{"1m"},
 			"5m",
 			"15m",
 			False,
@@ -184,7 +184,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 		stgs.entry_strategy1(
-			"entry_strategy1_1h_anchor",
+			"strategy1_1h_anchor",
 			"5m",
 			"15m",
 			"1h",
@@ -199,8 +199,8 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 		stgs.exit_strategy1(
-			"entry_strategy1_1h_anchor",
-			"5m",
+			"strategy1_1h_anchor",
+			{"1m", "5m"},
 			"15m",
 			"1h",
 			True,
@@ -213,7 +213,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 		stgs.entry_strategy1(
-			"entry_strategy1_4h_anchor",
+			"strategy1_4h_anchor",
 			"15m",
 			"1h",
 			"4h",
@@ -228,8 +228,8 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 		stgs.exit_strategy1(
-			"entry_strategy1_4h_anchor",
-			"15m",
+			"strategy1_4h_anchor",
+			{"1m", "5m", "15m"},
 			"1h",
 			"4h",
 			True,
