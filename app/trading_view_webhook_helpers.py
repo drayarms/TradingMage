@@ -67,6 +67,19 @@ class TradingViewWebhookHelpers:
 		return time(9, 30, tzinfo=self.eastern_tz) <= t < time(16, 0, tzinfo=self.eastern_tz)
 
 
+	def _is_extended_hours_et(self, now_et=None):
+		"""
+		Extended market hours:
+		(4:00 AM ET <= time < 9:30 AM ET) OR (4:00 PM ET <= time < 8:00 PM ET)
+		"""
+		now_et = now_et or self._now_et()
+		t = now_et.timetz()
+		return (
+			(time(4, 0, tzinfo=self.eastern_tz) <= t < time(9, 30, tzinfo=self.eastern_tz)) or
+			(time(16, 0, tzinfo=self.eastern_tz) <= t < time(20, 0, tzinfo=self.eastern_tz))
+		)		
+
+
 	def _get_asset_or_none(self, alpaca_api, symbol):
 		try:
 			return alpaca_api.get_asset(symbol)
@@ -75,28 +88,48 @@ class TradingViewWebhookHelpers:
 			return None
 
 
+	def is_trading_session_open(self, now_et):
+		if self._is_regular_hours_et(now_et):
+			return "regular"
+		if self._is_extended_hours_et(now_et):
+			return "extended"
+		return None
+
+
+	def is_asset_tradable(self, asset, session):
+		if getattr(asset, "status", None) != "active":
+			return False
+
+		if not getattr(asset, "tradable", False):
+			return False
+
+		if session == "extended":
+			return bool(getattr(asset, "tradable", False))  # usually enough
+
+		return True
+
+
 	def is_symbol_tradable_now(self, alpaca_api, symbol, now_et=None):
 		"""
 		Inside regular hours:
 			asset must be active + tradable
 		Outside regular hours:
 			asset must be active + tradable + overnight_tradable
-		"""
+		"""		
 		now_et = now_et or self._now_et()
+
+		# Session must be either regular or extended
+		session = self.is_trading_session_open(now_et)
+		if session is None:
+			return False
+
+		# Asset must exist
 		asset = self._get_asset_or_none(alpaca_api, symbol)
 		if asset is None:
 			return False
 
-		is_active = getattr(asset, "status", None) == "active"
-		is_tradable = bool(getattr(asset, "tradable", False))
-
-		if not (is_active and is_tradable):
-			return False
-
-		if self._is_regular_hours_et(now_et):
-			return True
-
-		return bool(getattr(asset, "overnight_tradable", False))
+		# Asset must be active, tradable, and tradable if extended hours
+		return self.is_asset_tradable(asset, session)		
 
 
 	def is_symbol_tradable(self, alpaca_api, symbol):

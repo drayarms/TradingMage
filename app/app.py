@@ -135,7 +135,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 				signal,
 				now_et,
 			)
-			return
+			return		
 
 		prices = trade_recs.get_market_prices([symbol], alpaca_api)
 		market_price = prices.get(symbol, {}).get("market")

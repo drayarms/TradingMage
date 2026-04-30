@@ -718,7 +718,6 @@ class Strategies:
 			self.tvw_helpers.normalize_signal(signal),
 		)
 
-
 		exit_timeframes = lower_timeframes | {intermediary_tf} # union
 		tf = self.tvw_helpers.normalize_tf(timeframe)
 		if tf not in exit_timeframes:
