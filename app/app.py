@@ -154,6 +154,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		NUM_SHARES2 = POSITION_SIZE2 / market_price
 		NUM_SHARES3 = POSITION_SIZE3 / market_price
 
+		#Git
 		stgs.entry_strategy1(
 			"strategy1_15m_anchor",
 			"1m",
