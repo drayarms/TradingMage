@@ -9,15 +9,16 @@ resource "aws_s3_bucket" "tf_state" { # Stores remote state file (terraform.tfst
 	force_destroy = true
 }
 
-# Enforce encryption at rest
-resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
-  bucket = aws_s3_bucket.tf_state.id
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256" # or aws:kms
-    }
-  }
+# Enforce encryption at rest
+resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state" { # Configs deault encryption for the bucket.
+	bucket = aws_s3_bucket.tf_state.id
+
+	rule { # Defines an encryption rule
+		apply_server_side_encryption_by_default { # Enforces encryption on all objs automatically
+			sse_algorithm = "AES256" # or aws:kms
+		}
+	}
 }
 
 resource "aws_s3_bucket_versioning" "tf_state"{ # Manages versioning config for existing S3 bucket. Every state file change creates a new version, comes in handy for rolling back.
@@ -25,16 +26,6 @@ resource "aws_s3_bucket_versioning" "tf_state"{ # Manages versioning config for 
 
 	versioning_configuration {
 		status = "Enabled"
-	}
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state" { # Configs deault encryption for the bucket.
-	bucket = aws_s3_bucket.tf_state.id
-
-	rule { # Defines an encryption rule
-		apply_server_side_encryption_by_default { # Enforces encryption on all objs automatically
-			sse_algorithm = "AES256"
-		}
 	}
 }
 

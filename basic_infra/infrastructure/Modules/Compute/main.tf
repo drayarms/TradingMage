@@ -50,14 +50,18 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   role = aws_iam_role.ec2_ecr_pull.name
 }
 
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners = ["099720109477"] #Canonical
+#data "aws_ami" "ubuntu" {
+  #most_recent = true
+  #owners = ["099720109477"] #Canonical
 
-  filter {
-    name = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
+  #filter {
+    #name = "name"
+    #values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  #}
+#}
+
+locals {
+  ubuntu_ami = "ami-04ad5d4fcc59afb96"
 }
 
 resource "aws_security_group" "web_sg" {
@@ -92,7 +96,8 @@ resource "aws_security_group" "web_sg" {
 
 # Minimal phase: 1 EC2 instance (first public subnet)
 resource "aws_instance" "web" {
-  ami                         = data.aws_ami.ubuntu.id
+  #ami                        = data.aws_ami.ubuntu.id
+  ami                         = local.ubuntu_ami
   instance_type               = var.instance_type
   subnet_id                   = var.public_subnet_ids[0]
   associate_public_ip_address = true
@@ -120,6 +125,10 @@ resource "aws_instance" "web" {
     aws_iam_instance_profile.ec2_profile
   ]
 
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [user_data]
+  }  
 }
 
 
@@ -131,6 +140,10 @@ resource "aws_ebs_volume" "redis_data" {
 
   tags = {
     Name = "${var.project_name}-${var.app_name}-redis-data"
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 

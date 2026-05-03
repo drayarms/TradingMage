@@ -1,0 +1,50 @@
+#metricbeat.modules:
+  #- module: system
+    #period: 10s
+    #metricsets:
+      #- cpu
+      #- load
+      #- memory
+      #- network
+      #- process
+      #- process_summary
+      #- filesystem
+      #- fsstat
+      #- diskio
+    #enabled: true
+    #processes: ['.*']
+
+#processors:
+  #- add_host_metadata: {}
+  #- add_cloud_metadata: {}
+  #- add_docker_metadata:
+      #host: "unix:///var/run/docker.sock"
+
+#output.elasticsearch:
+  #hosts: ["http://{{ elasticsearch_host }}:{{ elasticsearch_port }}"]
+
+
+
+
+metricbeat.modules:
+  - module: system
+    metricsets:
+      - cpu
+      - memory
+      - network
+      - process
+      - filesystem
+      - fsstat
+    period: 10s
+    enabled: true
+
+processors:
+  - add_host_metadata: {}
+  - add_cloud_metadata: {}
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+
+output.elasticsearch:
+  hosts: ["http://{{ elasticsearch_host }}:{{ elasticsearch_port }}"]
+
+  

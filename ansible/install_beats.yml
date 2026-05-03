@@ -1,0 +1,8 @@
+---
+- name: Install Beats on TradingMage app EC2
+  hosts: app
+  become: true
+
+  roles:
+    - filebeat
+    - metricbeat

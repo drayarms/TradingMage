@@ -535,6 +535,91 @@ class Strategies:
 		return False
 
 
+
+	def get_live_progressive_entry_size_from_alpaca(
+		self,
+		alpaca_position_qty,
+		side,
+		base_num_shares,
+		smallest_share_size,
+	):
+		"""
+		Determines the next progressive entry size for a live (non-simulation) strategy
+		using Alpaca as the source of truth for the current position.
+
+		This function infers how many progressive entries have already been executed
+		by reconstructing the cumulative position size from the base entry size and
+		halving logic (e.g., base → base/2 → base/4 → ...). It then computes the next
+		entry size in the sequence.
+
+		For short positions, the computed size is adjusted to comply with Alpaca's
+		whole-share constraint by applying a floor operation.
+
+		Behavior:
+			- If there is no existing position (qty == 0), returns the base entry size.
+			- If an existing position is in the opposite direction, returns 0.0 (no entry).
+			- If an existing position is in the same direction, infers the number of
+			  prior entries and returns the next progressively reduced size.
+			- Returns 0.0 if the computed next size falls below the smallest allowed size.
+
+		Parameters:
+			alpaca_position_qty (float): Current position quantity from Alpaca.
+				Positive for long, negative for short, zero if flat.
+			side (str): Desired trade direction ("long" or "short").
+			base_num_shares (float): Initial entry size before progressive scaling.
+			smallest_share_size (float): Minimum allowable trade size threshold.
+
+		Returns:
+			float: The computed next entry size. Returns 0.0 if no valid entry
+			should be placed under current conditions.
+		"""	
+		side = str(side or "").strip().lower()
+
+		try:
+			base_num_shares = float(base_num_shares)
+			alpaca_position_qty = float(alpaca_position_qty or 0.0)
+		except Exception:
+			return 0.0
+
+		if side not in {"long", "short"} or base_num_shares <= 0:
+			return 0.0
+
+		current_qty = abs(alpaca_position_qty)
+
+		# Flat, or opposite-side position: first entry size.
+		if current_qty <= 0:
+			return base_num_shares
+
+		if side == "long" and alpaca_position_qty < 0:
+			return 0.0
+
+		if side == "short" and alpaca_position_qty > 0:
+			return 0.0
+
+		# Infer next progressive step from actual Alpaca exposure.
+		total = 0.0
+		sequence_count = 0
+
+		while total < current_qty and sequence_count < 20:
+			step_qty = base_num_shares / (2 ** sequence_count)
+
+			if step_qty < smallest_share_size or step_qty <= 0:
+				break
+
+			total += step_qty
+			sequence_count += 1
+
+		next_qty = base_num_shares / (2 ** sequence_count)
+
+		if side == "short":
+			next_qty = math.floor(next_qty)
+
+		if next_qty < smallest_share_size:
+			return 0.0
+
+		return next_qty
+
+
 	def get_progressive_entry_size(self, strategy_name, ticker, side, base_num_shares, smallest_share_size):
 		"""
 		Computes progressively smaller same-side entry sizes for an open position
@@ -1104,13 +1189,21 @@ class Strategies:
 			return None
 
 		if order_type in {"long", "short"}:
-			execution_qty = self.get_progressive_entry_size(
-				strategy_name,
-				ticker,
-				order_type,
-				num_shares,
-				self.SMALLEST_SHARE_SIZE
-			)
+			if simulation_only:
+				execution_qty = self.get_progressive_entry_size(
+					strategy_name,
+					ticker,
+					order_type,
+					num_shares,
+					self.SMALLEST_SHARE_SIZE,
+				)
+			else:
+				execution_qty = self.get_live_progressive_entry_size_from_alpaca(
+					alpaca_position_qty,
+					order_type,
+					num_shares,
+					self.SMALLEST_SHARE_SIZE,
+				)
 
 		# Enforce Alpaca constraint FIRST
 		if order_type == "short":

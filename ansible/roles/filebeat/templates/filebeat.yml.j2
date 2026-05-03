@@ -1,0 +1,26 @@
+filebeat.inputs:
+  - type: filestream
+    id: trading-mage-docker-containers
+    enabled: true
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    parsers:
+      - ndjson:
+          target: ""
+          add_error_key: true
+
+  - type: filestream
+    id: trading-mage-system-logs
+    enabled: true
+    paths:
+      - /var/log/syslog
+      - /var/log/auth.log
+
+processors:
+  - add_host_metadata: {}
+  - add_cloud_metadata: {}
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+
+output.elasticsearch:
+  hosts: ["http://{{ elasticsearch_host }}:{{ elasticsearch_port }}"]

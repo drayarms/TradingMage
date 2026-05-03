@@ -21,5 +21,10 @@ output "ecr_repo_url" {
   value = aws_ecr_repository.app.repository_url
 }
 
+output "vpc_id" {
+  value = module.network.vpc_id
+}
 
-
+output "app_security_group_id" {
+  value = module.compute.app_security_group_id
+}

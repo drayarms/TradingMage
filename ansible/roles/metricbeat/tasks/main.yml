@@ -1,0 +1,42 @@
+---
+- name: Install apt prerequisites
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+
+- name: Add Elastic GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elastic apt repo
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+    filename: elastic-8.x
+
+- name: Install Metricbeat
+  apt:
+    name: "metricbeat={{ elastic_version }}"
+    state: present
+    update_cache: true
+
+- name: Configure Metricbeat
+  template:
+    src: metricbeat.yml.j2
+    dest: /etc/metricbeat/metricbeat.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart metricbeat
+
+- name: Enable and start Metricbeat
+  systemd:
+    name: metricbeat
+    enabled: true
+    state: started

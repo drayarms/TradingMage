@@ -90,3 +90,11 @@ aws_creds.*
 .env
 *.pem
 *.key
+
+
+# Observability backend
+observability/.terraform/
+observability/.terraform.lock.hcl
+observability/terraform.tfstate
+observability/terraform.tfstate.backup
+observability/*.tfplan
