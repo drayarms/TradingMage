@@ -21,7 +21,7 @@ import plot
 
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
-# Redis indexes use epoch timestamps derived from those timezone-aware values.
+# Redis indexes use epoch timestamps derived from those timezone-aware values. Git change.
 
 logging.basicConfig(
 	level=logging.INFO,
@@ -74,7 +74,7 @@ class TradingViewWebhook(BaseModel):
 
 
 # When app starts, this function runs once
-#systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
+# systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
 @app.on_event("startup")
 def _startup():
 	try:
