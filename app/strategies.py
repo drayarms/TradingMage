@@ -1347,4 +1347,3 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
-alpaca_position_qty_after_fill
