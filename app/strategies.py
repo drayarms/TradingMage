@@ -835,36 +835,6 @@ class Strategies:
 			logger.exception("exit %r failed to fetch Alpaca position for %r", strategy_name, ticker)
 
 
-		#if simulation_only:
-
-			#redis_position = None
-			#try:
-				#redis_position = self.trade_records.get_position(strategy_name, ticker)
-				#logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
-			#except Exception:
-				#logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)			
-
-			#redis_position_qty = 0.0
-			#redis_position_side = None
-			#if redis_position is not None:
-				#try:
-					#redis_position_qty = float(redis_position.get("num_shares") or 0.0)
-				#except Exception:
-					#redis_position_qty = 0.0
-				#redis_position_side = str(redis_position.get("side") or "").strip().lower()
-
-			#alpaca_position_qty = 0.0
-			#if alpaca_position is not None:
-				#try:
-					#alpaca_position_qty = float(alpaca_position.qty)
-				#except Exception:
-					#alpaca_position_qty = 0.0
-
-			#redis_num_shares = abs(redis_position_qty)
-		
-		#alpaca_num_shares = abs(alpaca_position_qty)
-
-
 		alpaca_position_qty = 0.0
 		if alpaca_position is not None:
 			try:
@@ -1269,18 +1239,25 @@ class Strategies:
 			)
 			return None
 
-		#if simulation_only: # No Alpaca execution
-			#if do_redis_bookkeeping:
-				#return self.trade_records.create_trade_record(
-					#strategy_name,
-					#ticker,
-					#date,
-					#price,
-					#execution_qty,
-					#order_type,
-					#True,
-				#)
-			#return None
+
+		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca execution
+
+		if filled_order is None:
+			logger.info(
+				"Skipping Redis bookkeeping because Alpaca order was not filled: strategy=%r ticker=%r order_type=%r qty=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				execution_qty,
+			)
+			return None
+
+		# If we are here, the Alpaca order got successfully filled
+		fill_price = getattr(filled_order, "filled_avg_price", None)
+		if fill_price is None:
+			fill_price = price
+
+		time.sleep(0.5)
 
 		alpaca_position_qty_after_fill = 0.0
 		alpaca_avg_entry_price_after_fill = None
@@ -1314,46 +1291,6 @@ class Strategies:
 				order_type=order_type,
 				alpaca_position_qty=alpaca_position_qty_after_fill,
 				alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
-			)			
-
-		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca execution
-
-		if filled_order is None:
-			logger.info(
-				"Skipping Redis bookkeeping because Alpaca order was not filled: strategy=%r ticker=%r order_type=%r qty=%r",
-				strategy_name,
-				ticker,
-				order_type,
-				execution_qty,
-			)
-			return None
-
-		time.sleep(0.5)
-		try:
-			position = alpaca_api.get_position(ticker)
-			logger.info(
-				"Post-fill Alpaca position check: ticker=%r qty=%r side=%r",
-				ticker,
-				getattr(position, "qty", None),
-				getattr(position, "side", None),
-			)
-		except Exception:
-			logger.info("No Alpaca position found after fill for ticker=%r order_type=%r", ticker, order_type)
-
-		# If we are here, the Alpaca order got successfully filled
-		fill_price = getattr(filled_order, "filled_avg_price", None)
-		if fill_price is None:
-			fill_price = price
-
-		if do_redis_bookkeeping:
-			return self.trade_records.create_trade_record(
-				strategy_name,
-				ticker,
-				date,
-				fill_price,
-				execution_qty,
-				order_type,
-				True,
 			)
 
 		return None
@@ -1410,3 +1347,4 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
+alpaca_position_qty_after_fill

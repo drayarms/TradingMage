@@ -33,7 +33,6 @@ logger = logging.getLogger("tv-webhook")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
-#Git
 TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]
 #APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
 #APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
