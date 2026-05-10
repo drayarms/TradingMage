@@ -35,21 +35,53 @@ logger.propagate = True
 
 
 TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]
-APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
-APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
-APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+#APCA_API_BASE_URL = os.environ["APCA_API_BASE_URL"]
+#APCA_API_KEY_ID = os.environ["APCA_API_KEY_ID"]
+#APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
 
-alpaca_api = tradeapi.REST(
-	base_url=APCA_API_BASE_URL,
-	key_id=APCA_API_KEY_ID,
-	secret_key=APCA_API_SECRET_KEY,
-)
+APCA_API_BASE_URL_STG1_15M = os.environ["APCA_API_BASE_URL_STG1_15M"]
+APCA_API_KEY_ID_STG1_15M = os.environ["APCA_API_KEY_ID_STG1_15M"]
+APCA_API_SECRET_KEY_STG1_15M = os.environ["APCA_API_SECRET_KEY_STG1_15M"]
 
-POSITION_SIZE1 = 2000
-POSITION_SIZE2 = 6600
-POSITION_SIZE3 = 20000
+APCA_API_BASE_URL_STG1_1H = os.environ["APCA_API_BASE_URL_STG1_1H"]
+APCA_API_KEY_ID_STG1_1H = os.environ["APCA_API_KEY_ID_STG1_1H"]
+APCA_API_SECRET_KEY_STG1_1H = os.environ["APCA_API_SECRET_KEY_STG1_1H"]
+
+APCA_API_BASE_URL_STG1_4H = os.environ["APCA_API_BASE_URL_STG1_4H"]
+APCA_API_KEY_ID_STG1_4H = os.environ["APCA_API_KEY_ID_STG1_4H"]
+APCA_API_SECRET_KEY_STG1_4H = os.environ["APCA_API_SECRET_KEY_STG1_4H"]
+
+POSITION_SIZE_15M = float(os.environ["POSITION_SIZE_15M"])
+POSITION_SIZE_1H = float(os.environ["POSITION_SIZE_1H"])
+POSITION_SIZE_4H = float(os.environ["POSITION_SIZE_4H"])
+
+
+ALPACA_APIS = {
+	#"real_money": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG1_15M, 
+		#key_id=APCA_API_KEY_ID_STG1_15M, 
+		#secret_key=APCA_API_SECRET_KEY_STG1_15M
+	#),
+	"strategy1_15m_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG1_15M, 
+		key_id=APCA_API_KEY_ID_STG1_15M, 
+		secret_key=APCA_API_SECRET_KEY_STG1_15M
+	),
+	"strategy1_1h_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG1_1H, 
+		key_id=APCA_API_KEY_ID_STG1_1H, 
+		secret_key=APCA_API_SECRET_KEY_STG1_1H
+	),
+	"strategy1_4h_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG1_4H, 
+		key_id=APCA_API_KEY_ID_STG1_4H, 
+		secret_key=APCA_API_SECRET_KEY_STG1_4H
+	),
+}
+
+MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
 
 app = FastAPI(title="TradingView Webhook")
 
@@ -77,13 +109,16 @@ class TradingViewWebhook(BaseModel):
 # systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
 @app.on_event("startup")
 def _startup():
-	try:
-		account = alpaca_api.get_account()
-		if account.trading_blocked:
-			logger.info("Account is currently restricted from trading")
-	except Exception as exc:
-		logger.exception("Alpaca get_account failed during startup")
-		raise RuntimeError("Alpaca get_account failed during startup") from exc
+	for strategy_name, api in ALPACA_APIS.items():
+		try:
+			account = api.get_account()
+			if account.trading_blocked:
+				logger.warning("%s account is currently restricted from trading", strategy_name)
+			else:
+				logger.info("%s account verified", strategy_name)
+		except Exception as exc:
+			logger.exception("Alpaca get_account failed during startup for %s", strategy_name)
+			raise RuntimeError(f"Alpaca get_account failed during startup for {strategy_name}") from exc		
 
 
 @app.get("/health")
@@ -127,7 +162,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 			return
 
-		if not tvw_helpers.is_symbol_tradable_now(alpaca_api, symbol, now_et):
+		if not tvw_helpers.is_symbol_tradable_now(MARKET_DATA_API, symbol, now_et):
 			logger.info(
 				"Strategy processing skipped because symbol is not tradable now: symbol=%s tf=%s signal=%s now_et=%s",
 				symbol,
@@ -137,7 +172,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 			return		
 
-		prices = trade_recs.get_market_prices([symbol], alpaca_api)
+		prices = trade_recs.get_market_prices([symbol], MARKET_DATA_API)
 		market_price = prices.get(symbol, {}).get("market")
 
 		if market_price is None or market_price <= 0:
@@ -150,11 +185,39 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 			return
 
-		NUM_SHARES1 = POSITION_SIZE1 / market_price
-		NUM_SHARES2 = POSITION_SIZE2 / market_price
-		NUM_SHARES3 = POSITION_SIZE3 / market_price
+		NUM_SHARES1 = POSITION_SIZE_15M / market_price
+		NUM_SHARES2 = POSITION_SIZE_1H / market_price
+		NUM_SHARES3 = POSITION_SIZE_4H / market_price
 
-		#Git
+		#stgs.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
+			#"real_money",
+			#"1m",
+			#"5m",
+			#"15m",
+			#False,
+			#now_et,
+			#signal,
+			#prices,
+			#symbol,
+			#tf,
+			#NUM_SHARES1,
+			#ALPACA_APIS["real_money"],
+		#)
+
+		#stgs.exit_strategy1(
+			#"real_money",
+			#{"1m"},
+			#"5m",
+			#"15m",
+			#False,
+			#now_et,
+			#signal,
+			#prices,
+			#symbol,
+			#tf,
+			#ALPACA_APIS["real_money"],
+		#)		
+
 		stgs.entry_strategy1(
 			"strategy1_15m_anchor",
 			"1m",
@@ -167,7 +230,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			symbol,
 			tf,
 			NUM_SHARES1,
-			alpaca_api,
+			ALPACA_APIS["strategy1_15m_anchor"],
 		)
 
 		stgs.exit_strategy1(
@@ -181,7 +244,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			prices,
 			symbol,
 			tf,
-			alpaca_api,
+			ALPACA_APIS["strategy1_15m_anchor"],
 		)
 
 		stgs.entry_strategy1(
@@ -189,14 +252,14 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			"5m",
 			"15m",
 			"1h",
-			True,
+			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
 			NUM_SHARES2,
-			alpaca_api,
+			ALPACA_APIS["strategy1_1h_anchor"],
 		)
 
 		stgs.exit_strategy1(
@@ -204,13 +267,13 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			{"1m", "5m"},
 			"15m",
 			"1h",
-			True,
+			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
-			alpaca_api,
+			ALPACA_APIS["strategy1_1h_anchor"],
 		)
 
 		stgs.entry_strategy1(
@@ -218,14 +281,14 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			"15m",
 			"1h",
 			"4h",
-			True,
+			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
 			NUM_SHARES3,
-			alpaca_api,
+			ALPACA_APIS["strategy1_4h_anchor"],
 		)
 
 		stgs.exit_strategy1(
@@ -233,13 +296,13 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			{"1m", "5m", "15m"},
 			"1h",
 			"4h",
-			True,
+			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
-			alpaca_api,
+			ALPACA_APIS["strategy1_4h_anchor"],
 		)
 
 	except Exception:
@@ -726,7 +789,7 @@ def run_pnl_snapshot(
 			curl -X POST "http://<EC2_PUBLIC_IP>/pnl/snapshot/run?strategy_name=simple%20strategy"
 	"""
 	try:
-		result = trade_recs.snapshot_pnl(strategy_name, alpaca_api)
+		result = trade_recs.snapshot_pnl(strategy_name, MARKET_DATA_API)
 	except Exception:
 		logger.exception("PnL snapshot failed")
 		raise HTTPException(status_code=500, detail="PnL snapshot failed")
@@ -906,7 +969,7 @@ def run_all_pnl_snapshots():
 	curl "http://localhost/trade-events?strategy_name=simple%20strategy"
 	"""	
 	try:
-		result = trade_recs.snapshot_all_pnl(alpaca_api)
+		result = trade_recs.snapshot_all_pnl(MARKET_DATA_API)
 	except Exception:
 		logger.exception("All-strategy PnL snapshot failed")
 		raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")

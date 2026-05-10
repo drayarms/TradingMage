@@ -255,6 +255,193 @@ class TradeRecords:
 		return "tv:strategies:index"
 
 
+	def record_live_alpaca_fill(
+		self,
+		strategy_name,
+		ticker,
+		date,
+		fill_price,
+		filled_qty,
+		order_type,
+		alpaca_position_qty,
+		alpaca_avg_entry_price=None,
+	):
+		"""
+		Records a live Alpaca-confirmed fill without using Redis as the source of truth.
+
+		For live strategies, Alpaca is authoritative. Redis is only synchronized after
+		the Alpaca fill succeeds. This method intentionally does not reject the update
+		because Redis thinks the old side/quantity is different.
+
+		Parameters:
+			strategy_name (str): Strategy name.
+			ticker (str): Ticker symbol.
+			date (str): Fill/event timestamp.
+			fill_price (float): Filled average price.
+			filled_qty (float): Quantity filled by this order.
+			order_type (str): One of "long", "short", "sell", "cover".
+			alpaca_position_qty (float): Alpaca position quantity after the fill.
+				Positive means long, negative means short, zero means flat.
+			alpaca_avg_entry_price (float): Alpaca average entry price after the fill.
+
+		Returns:
+			dict: Updated Redis position snapshot plus trade event metadata.
+		"""
+		strat = self._normalize_strategy(strategy_name)
+		sym = self._normalize_ticker(ticker)
+		order_type = str(order_type or "").strip().lower()
+
+		if order_type not in {"long", "short", "sell", "cover"}:
+			raise ValueError(f"Invalid live Alpaca order_type: {order_type}")
+
+		fill_price = self._parse_float(fill_price)
+		filled_qty = abs(self._parse_float(filled_qty))
+		alpaca_position_qty = self._parse_float(alpaca_position_qty)
+		alpaca_abs_qty = abs(alpaca_position_qty)
+
+		POSITION_EPSILON = 1e-6
+
+		if alpaca_abs_qty < POSITION_EPSILON:
+			alpaca_abs_qty = 0.0
+			alpaca_position_qty = 0.0		
+
+		if fill_price <= 0:
+			raise ValueError("fill_price must be > 0")
+
+		if filled_qty <= 0:
+			raise ValueError("filled_qty must be > 0")
+
+		iso_dt = self._to_eastern_iso(date or self._iso_now())
+
+		existing = self._load_position(strat, sym)
+		old_qty = 0.0
+		old_side = None
+		old_realized = 0.0
+		old_avg = 0.0
+		old_entry_date = iso_dt
+		old_entry_price = fill_price
+		old_entry_price_per_share = fill_price
+		old_entry_sequence_count = 0
+
+		if existing is not None:
+			old_qty = self._parse_float(existing.get("num_shares"))
+			old_side = str(existing.get("side") or "").strip().lower()
+			old_realized = self._parse_float(existing.get("realized_pnl"))
+			old_avg = self._parse_float(existing.get("avg_price_per_share"))
+			old_entry_date = existing.get("entry_date") or iso_dt
+			old_entry_price = self._parse_float(existing.get("entry_price"), fill_price)
+			old_entry_price_per_share = self._parse_float(existing.get("entry_price_per_share"), fill_price)
+			old_entry_sequence_count = self._parse_int(existing.get("entry_sequence_count"), 0)
+
+		if alpaca_position_qty > 0:
+			new_side = "long"
+		elif alpaca_position_qty < 0:
+			new_side = "short"
+		else:
+			if order_type == "sell":
+				new_side = "long"
+			elif order_type == "cover":
+				new_side = "short"
+			elif order_type == "long":
+				new_side = "long"
+			else:
+				new_side = "short"
+
+		if alpaca_avg_entry_price is not None:
+			new_avg = self._parse_float(alpaca_avg_entry_price, fill_price)
+		else:
+			new_avg = fill_price if alpaca_abs_qty > 0 else old_avg
+
+		realized_delta = 0.0
+		if order_type == "sell" and old_side == "long" and old_avg > 0:
+			realized_delta = (fill_price - old_avg) * filled_qty
+		elif order_type == "cover" and old_side == "short" and old_avg > 0:
+			realized_delta = (old_avg - fill_price) * filled_qty
+
+		new_realized = old_realized + realized_delta
+
+		if order_type in {"long", "short"}:
+			if old_side == new_side and old_qty > 0:
+				event_type = "add"
+				entry_date = old_entry_date
+				entry_price = old_entry_price
+				entry_price_per_share = old_entry_price_per_share
+				entry_sequence_count = old_entry_sequence_count + 1
+			else:
+				event_type = "open"
+				entry_date = iso_dt
+				entry_price = fill_price
+				entry_price_per_share = fill_price
+				entry_sequence_count = 1
+		else:
+			event_type = "close" if alpaca_abs_qty == 0 else "partial_close"
+			entry_date = old_entry_date
+			entry_price = old_entry_price
+			entry_price_per_share = old_entry_price_per_share
+			entry_sequence_count = 0 if alpaca_abs_qty == 0 else old_entry_sequence_count
+
+		position_key = self._position_key(strat, sym)
+		strategy_positions_key = self._strategy_positions_key(strat)
+		global_index_key = self._positions_index_key()
+		strategies_index_key = self._strategies_index_key()
+		trade_index_key = self._trade_index_key()
+
+		updated_record = {
+			"strategy_name": strat,
+			"ticker": sym,
+			"side": new_side,
+			"entry_date": entry_date,
+			"entry_price": self.tvw_helpers.to_str(entry_price),
+			"entry_price_per_share": self.tvw_helpers.to_str(entry_price_per_share),
+			"avg_price_per_share": self.tvw_helpers.to_str(new_avg),
+			"last_market_price": self.tvw_helpers.to_str(fill_price),
+			"num_shares": self.tvw_helpers.to_str(alpaca_abs_qty),
+			"unrealized_pnl": self.tvw_helpers.to_str(0.0),
+			"realized_pnl": self.tvw_helpers.to_str(new_realized),
+			"entry_sequence_count": self.tvw_helpers.to_str(entry_sequence_count),
+		}
+
+		pipe = self.r.pipeline()
+		pipe.hset(position_key, mapping=updated_record)
+		pipe.sadd(strategy_positions_key, sym)
+		pipe.sadd(global_index_key, f"{strat}|{sym}")
+		pipe.sadd(strategies_index_key, strat)
+		pipe.execute()
+
+		event = self.record_trade_event(
+			strategy_name=strat,
+			ticker=sym,
+			event_type=event_type,
+			event_time=iso_dt,
+			price=fill_price,
+			num_shares=filled_qty,
+			side=order_type,
+			old_num_shares=old_qty,
+			new_num_shares=alpaca_abs_qty,
+			realized_delta=realized_delta,
+			cumulative_realized_pnl=new_realized,
+		)
+
+		ts = datetime.fromisoformat(iso_dt).timestamp()
+		self.r.zadd(trade_index_key, {
+			f"{strat}|{sym}|{event['global_stream_id']}": ts
+		})
+
+		logger.info(
+			"Live Alpaca fill synced to Redis: strategy=%r ticker=%r order_type=%r filled_qty=%r alpaca_position_qty=%r",
+			strat,
+			sym,
+			order_type,
+			filled_qty,
+			alpaca_position_qty,
+		)
+
+		return {
+			"position": self.get_position(strat, sym),
+			"event": event,
+		}
+
+
 	def create_trade_record(self, strategy_name, ticker, date, price, num_shares, side, can_add_to_existing_position):
 		"""
 		Create or update a trade record for a strategy/ticker.

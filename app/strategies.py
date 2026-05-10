@@ -834,21 +834,36 @@ class Strategies:
 		except Exception:
 			logger.exception("exit %r failed to fetch Alpaca position for %r", strategy_name, ticker)
 
-		redis_position = None
-		try:
-			redis_position = self.trade_records.get_position(strategy_name, ticker)
-			logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
-		except Exception:
-			logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)			
 
-		redis_position_qty = 0.0
-		redis_position_side = None
-		if redis_position is not None:
-			try:
-				redis_position_qty = float(redis_position.get("num_shares") or 0.0)
-			except Exception:
-				redis_position_qty = 0.0
-			redis_position_side = str(redis_position.get("side") or "").strip().lower()
+		#if simulation_only:
+
+			#redis_position = None
+			#try:
+				#redis_position = self.trade_records.get_position(strategy_name, ticker)
+				#logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
+			#except Exception:
+				#logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)			
+
+			#redis_position_qty = 0.0
+			#redis_position_side = None
+			#if redis_position is not None:
+				#try:
+					#redis_position_qty = float(redis_position.get("num_shares") or 0.0)
+				#except Exception:
+					#redis_position_qty = 0.0
+				#redis_position_side = str(redis_position.get("side") or "").strip().lower()
+
+			#alpaca_position_qty = 0.0
+			#if alpaca_position is not None:
+				#try:
+					#alpaca_position_qty = float(alpaca_position.qty)
+				#except Exception:
+					#alpaca_position_qty = 0.0
+
+			#redis_num_shares = abs(redis_position_qty)
+		
+		#alpaca_num_shares = abs(alpaca_position_qty)
+
 
 		alpaca_position_qty = 0.0
 		if alpaca_position is not None:
@@ -857,8 +872,29 @@ class Strategies:
 			except Exception:
 				alpaca_position_qty = 0.0
 
-		redis_num_shares = abs(redis_position_qty)
-		alpaca_num_shares = abs(alpaca_position_qty)
+		redis_position_side = None
+		redis_num_shares = 0.0
+
+		if simulation_only:
+			redis_position = None
+			try:
+				redis_position = self.trade_records.get_position(strategy_name, ticker)
+				logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
+			except Exception:
+				logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)
+
+			redis_position_qty = 0.0
+			if redis_position is not None:
+				try:
+					redis_position_qty = float(redis_position.get("num_shares") or 0.0)
+				except Exception:
+					redis_position_qty = 0.0
+				redis_position_side = str(redis_position.get("side") or "").strip().lower()
+
+			redis_num_shares = abs(redis_position_qty)
+
+		alpaca_num_shares = abs(alpaca_position_qty)		
+
 
 		last_intermediary_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, intermediary_tf, 1)
 		if last_intermediary_tf_alert is None:
@@ -1233,18 +1269,52 @@ class Strategies:
 			)
 			return None
 
-		if simulation_only: # No Alpaca execution
-			if do_redis_bookkeeping:
-				return self.trade_records.create_trade_record(
-					strategy_name,
-					ticker,
-					date,
-					price,
-					execution_qty,
-					order_type,
-					True,
-				)
-			return None
+		#if simulation_only: # No Alpaca execution
+			#if do_redis_bookkeeping:
+				#return self.trade_records.create_trade_record(
+					#strategy_name,
+					#ticker,
+					#date,
+					#price,
+					#execution_qty,
+					#order_type,
+					#True,
+				#)
+			#return None
+
+		alpaca_position_qty_after_fill = 0.0
+		alpaca_avg_entry_price_after_fill = None
+
+		try:
+			position = alpaca_api.get_position(ticker)
+			alpaca_position_qty_after_fill = float(getattr(position, "qty", 0.0) or 0.0)
+			alpaca_avg_entry_price_after_fill = getattr(position, "avg_entry_price", None)
+
+			logger.info(
+				"Post-fill Alpaca position check: ticker=%r qty=%r side=%r avg_entry_price=%r",
+				ticker,
+				getattr(position, "qty", None),
+				getattr(position, "side", None),
+				alpaca_avg_entry_price_after_fill,
+			)
+		except Exception:
+			logger.info(
+				"No Alpaca position found after fill for ticker=%r order_type=%r; treating position as flat",
+				ticker,
+				order_type,
+			)
+
+		if do_redis_bookkeeping:
+			return self.trade_records.record_live_alpaca_fill(
+				strategy_name=strategy_name,
+				ticker=ticker,
+				date=date,
+				fill_price=fill_price,
+				filled_qty=execution_qty,
+				order_type=order_type,
+				alpaca_position_qty=alpaca_position_qty_after_fill,
+				alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
+			)			
 
 		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca execution
 
