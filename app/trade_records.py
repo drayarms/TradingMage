@@ -1,5 +1,6 @@
 import os
-import threading
+#import threading
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from datetime import datetime, timezone
 
@@ -986,16 +987,21 @@ class TradeRecords:
 						e,
 					)
 
-		threads = []
-		for ticker in tickers:
-			t = threading.Thread(target=get_prices, args=(ticker,))
-			threads.append(t)
+		#threads = []
+		#for ticker in tickers:
+			#t = threading.Thread(target=get_prices, args=(ticker,))
+			#threads.append(t)
 
-		for t in threads:
-			t.start()
+		#for t in threads:
+			#t.start()
 
-		for t in threads:
-			t.join()
+		#for t in threads:
+			#t.join()
+
+		from concurrent.futures import ThreadPoolExecutor
+		max_workers = min(5, len(tickers))
+		with ThreadPoolExecutor(max_workers=max_workers) as executor:
+			executor.map(get_prices, tickers)
 
 		return market_prices
 
