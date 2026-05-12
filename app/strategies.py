@@ -883,8 +883,21 @@ class Strategies:
 			alpaca_num_shares,
 		)
 
-		if signal_intermediary_tf == "buy":
-			if simulation_only and redis_position_side == "short" and redis_num_shares > 0:
+
+		if signal_intermediary_tf not in {"buy", "sell"}:
+			logger.info(
+				"Latest intermediary_tf signal is invalid/unknown for %r: %r",
+				ticker,
+				signal_intermediary_tf,
+			)
+			return None
+
+		# At this point, should_exit is already True.
+		# So liquidation should be based on the actual open position side,
+		# not on the latest intermediary signal side.
+
+		if simulation_only:
+			if redis_position_side == "short" and redis_num_shares > 0:
 				logger.info(
 					"exit %r Redis bookkeeping cover for %r using redis_num_shares=%r",
 					strategy_name,
@@ -908,35 +921,9 @@ class Strategies:
 						ticker,
 						redis_num_shares,
 					)
+				return None
 
-			if alpaca_position_qty < 0 and alpaca_num_shares > 0:
-				logger.info(
-					"exit %r Alpaca cover for %r using alpaca_num_shares=%r",
-					strategy_name,
-					ticker,
-					alpaca_num_shares,
-				)
-				return self.cover_short_order(
-					simulation_only,
-					strategy_name,
-					ticker,
-					date,
-					prices,
-					alpaca_num_shares,
-					alpaca_api,
-					do_redis_bookkeeping=not simulation_only,
-				)
-
-			logger.info(
-				"exit %r no Alpaca short position to cover for %r; alpaca_qty=%r",
-				strategy_name,
-				ticker,
-				alpaca_position_qty,
-			)
-			return None
-
-		elif signal_intermediary_tf == "sell":
-			if simulation_only and redis_position_side == "long" and redis_num_shares > 0:
+			if redis_position_side == "long" and redis_num_shares > 0:
 				logger.info(
 					"exit %r Redis bookkeeping sell for %r using redis_num_shares=%r",
 					strategy_name,
@@ -960,36 +947,60 @@ class Strategies:
 						ticker,
 						redis_num_shares,
 					)
-
-			if alpaca_position_qty > 0 and alpaca_num_shares > 0:
-				logger.info(
-					"exit %r Alpaca sell for %r using alpaca_num_shares=%r",
-					strategy_name,
-					ticker,
-					alpaca_num_shares,
-				)
-				return self.sell_long_order(
-					simulation_only,
-					strategy_name,
-					ticker,
-					date,
-					prices,
-					alpaca_num_shares,
-					alpaca_api,
-					do_redis_bookkeeping=not simulation_only,
-				)
+				return None
 
 			logger.info(
-				"exit %r no Alpaca long position to sell for %r; alpaca_qty=%r",
+				"exit %r no Redis position to liquidate for %r; redis_side=%r redis_qty=%r",
 				strategy_name,
 				ticker,
-				alpaca_position_qty,
+				redis_position_side,
+				redis_num_shares,
 			)
 			return None
 
-		else:
-			logger.info("Latest intermediary_tf signal is invalid/unknown for %r: %r", ticker, signal_intermediary_tf)
-			return None	
+		if alpaca_position_qty < 0 and alpaca_num_shares > 0:
+			logger.info(
+				"exit %r Alpaca cover for %r using alpaca_num_shares=%r",
+				strategy_name,
+				ticker,
+				alpaca_num_shares,
+			)
+			return self.cover_short_order(
+				simulation_only,
+				strategy_name,
+				ticker,
+				date,
+				prices,
+				alpaca_num_shares,
+				alpaca_api,
+				do_redis_bookkeeping=True,
+			)
+
+		if alpaca_position_qty > 0 and alpaca_num_shares > 0:
+			logger.info(
+				"exit %r Alpaca sell for %r using alpaca_num_shares=%r",
+				strategy_name,
+				ticker,
+				alpaca_num_shares,
+			)
+			return self.sell_long_order(
+				simulation_only,
+				strategy_name,
+				ticker,
+				date,
+				prices,
+				alpaca_num_shares,
+				alpaca_api,
+				do_redis_bookkeeping=True,
+			)
+
+		logger.info(
+			"exit %r no Alpaca position to liquidate for %r; alpaca_qty=%r",
+			strategy_name,
+			ticker,
+			alpaca_position_qty,
+		)
+		return None
 
 
 	def place_order(
