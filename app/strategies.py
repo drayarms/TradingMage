@@ -1182,6 +1182,29 @@ class Strategies:
 			order_type_name = "market" if is_regular_hours else "limit"
 			submitted_order = None
 
+			try:
+				open_orders = alpaca_api.list_orders(status="open")
+
+				for existing_order in open_orders:
+					if (
+						getattr(existing_order, "symbol", None) == ticker and
+						str(getattr(existing_order, "side", "")).lower() == broker_side
+					):
+						logger.info(
+							"Existing open Alpaca order already present; skipping duplicate submission: "
+							"ticker=%r side=%r order_id=%r",
+							ticker,
+							broker_side,
+							getattr(existing_order, "id", None),
+						)
+						return None
+
+			except Exception:
+				logger.exception(
+					"Failed checking existing Alpaca open orders for ticker=%r",
+					ticker,
+				)			
+
 			for attempt in range(1, 4):
 				try:
 					if is_regular_hours:
