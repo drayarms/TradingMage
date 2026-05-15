@@ -2,6 +2,7 @@ import logging
 import time
 from datetime import datetime
 import math
+from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger("tv-webhook")
 
@@ -931,7 +932,7 @@ class Strategies:
 		signal_intermediary_tf = self.tvw_helpers.normalize_signal(last_intermediary_tf_fields.get("signal"))
 
 		logger.info(
-			"exit_strategy2 signal context: ticker=%r intermediary_tf_signal=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
+			"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
 			ticker,
 			signal_intermediary_tf,
 			redis_position_side,
@@ -1110,6 +1111,19 @@ class Strategies:
 					return None
 				price = bid - 0.01
 
+			price = float(
+				Decimal(str(price)).quantize(
+					Decimal("0.01"),
+					rounding=ROUND_HALF_UP,
+				)
+			)	
+			logger.info(
+				"Rounded off-hours limit price: ticker=%r order_type=%r limit_price=%r",
+				ticker,
+				order_type,
+				price,
+			)						
+
 		if price <= 0:
 			logger.info("Invalid computed price=%r for ticker=%r order_type=%r", price, ticker, order_type)
 			return None
@@ -1246,7 +1260,10 @@ class Strategies:
 						return order
 
 					if status in terminal_bad_statuses:
-						return None
+						return {
+							"terminal_failure": True,
+							"status": status,
+						}						
 
 				except Exception:
 					logger.exception("Failed polling Alpaca order status: ticker=%r order_id=%r", ticker, order_id)
@@ -1306,8 +1323,60 @@ class Strategies:
 			)
 			return None
 
+		# Ensures execution attempt is complete (with either a success or failure) before next attempt fires
+		pending_exit_key = None
+		exit_guard_acquired = False
 
-		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca execution
+		if order_type in {"sell", "cover"}:
+			pending_exit_key = f"tv:pending_exit:{strategy_name}:{ticker}"
+
+			try:
+				exit_guard_acquired = bool(
+					self.r.set(
+						pending_exit_key,
+						"1",
+						nx=True,
+						ex=120,
+					)
+				)
+			except Exception:
+				logger.exception(
+					"Failed acquiring pending exit guard: strategy=%r ticker=%r order_type=%r",
+					strategy_name,
+					ticker,
+					order_type,
+				)
+				return None
+
+			if not exit_guard_acquired:
+				logger.info(
+					"Skipping duplicate exit attempt because pending exit guard exists: strategy=%r ticker=%r order_type=%r",
+					strategy_name,
+					ticker,
+					order_type,
+				)
+				return None			
+
+
+		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca order
+
+		clear_exit_guard = False
+
+		if filled_order is not None:
+			clear_exit_guard = True
+		elif is_regular_hours:
+			clear_exit_guard = True
+
+		if clear_exit_guard and exit_guard_acquired and pending_exit_key:
+			try:
+				self.r.delete(pending_exit_key)
+			except Exception:
+				logger.exception(
+					"Failed clearing pending exit guard: strategy=%r ticker=%r key=%r",
+					strategy_name,
+					ticker,
+					pending_exit_key,
+				)					
 
 		if filled_order is None:
 			logger.info(
@@ -1318,6 +1387,17 @@ class Strategies:
 				execution_qty,
 			)
 			return None
+
+		if isinstance(filled_order, dict) and filled_order.get("terminal_failure"):
+			logger.info(
+				"Alpaca order reached terminal failure: strategy=%r ticker=%r order_type=%r status=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				filled_order.get("status"),
+			)
+
+			return None			
 
 		# If we are here, the Alpaca order got successfully filled
 		fill_price = getattr(filled_order, "filled_avg_price", None)
