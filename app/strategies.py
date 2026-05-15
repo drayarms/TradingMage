@@ -688,6 +688,44 @@ class Strategies:
 			return 0.0
 
 		return execution_qty
+
+
+	def is_latest_anchor_opposite_of_open_position(self, ticker, anchor_tf, alpaca_position_qty):
+		"""
+		Return True if the latest anchor timeframe signal is opposite
+		of the currently open Alpaca position side.
+		"""
+		try:
+			alpaca_position_qty = float(alpaca_position_qty or 0.0)
+		except Exception:
+			return False
+
+		if alpaca_position_qty == 0:
+			return False
+
+		position_side = "long" if alpaca_position_qty > 0 else "short"
+		expected_anchor_side = "buy" if position_side == "long" else "sell"
+		opposite_anchor_side = "sell" if expected_anchor_side == "buy" else "buy"
+
+		last_anchor_alert = self.tvw_helpers.get_nth_last_alert(ticker, anchor_tf, 1)
+		if last_anchor_alert is None:
+			return False
+
+		_, last_anchor_fields = last_anchor_alert
+		last_anchor_signal = self.tvw_helpers.normalize_signal(last_anchor_fields.get("signal"))
+
+		is_true = last_anchor_signal == opposite_anchor_side
+
+		logger.info(
+			"anchor-position exit check: ticker=%r anchor_tf=%r position_side=%r latest_anchor_signal=%r result=%r",
+			ticker,
+			anchor_tf,
+			position_side,
+			last_anchor_signal,
+			is_true,
+		)
+
+		return is_true		
 			
 
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
@@ -774,7 +812,9 @@ class Strategies:
 
 	def exit_strategy1(self, strategy_name, lower_timeframes, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
 		"""
-		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal.
+		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal,
+		if a lower timeframe signal occured that is same side as the last exit tf (which may have occurred overnight), and opposite side to the anchor tf,
+		if an anchor tf signal occured, opposite side of the entry tf.
 
 		Parameters:
 			strategy_name (str): Strategy name.
@@ -812,14 +852,6 @@ class Strategies:
 
 		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf)
 
-		should_exit = is_intermediary_tf_opposite_of_last_anchor_tf or lower_tf_confirms_intermediary_opposite_of_anchor
-
-		logger.info("exit %r opposite-check for %r => intermediary opp anchor: %r  lower tf confirms intermediary opp anchor: %r", strategy_name, ticker, is_intermediary_tf_opposite_of_last_anchor_tf, lower_tf_confirms_intermediary_opposite_of_anchor)
-
-		if not should_exit:
-			return None		
-
-		# should_exit is True at this point
 		alpaca_position = None
 		try:
 			alpaca_position = alpaca_api.get_position(ticker)
@@ -834,7 +866,6 @@ class Strategies:
 		except Exception:
 			logger.exception("exit %r failed to fetch Alpaca position for %r", strategy_name, ticker)
 
-
 		alpaca_position_qty = 0.0
 		if alpaca_position is not None:
 			try:
@@ -842,6 +873,31 @@ class Strategies:
 			except Exception:
 				alpaca_position_qty = 0.0
 
+		anchor_opposite_open_position = self.is_latest_anchor_opposite_of_open_position(
+			ticker,
+			anchor_tf,
+			alpaca_position_qty,
+		)
+
+		should_exit = (
+			is_intermediary_tf_opposite_of_last_anchor_tf
+			or lower_tf_confirms_intermediary_opposite_of_anchor
+			or anchor_opposite_open_position
+		)
+
+		logger.info(
+			"exit %r opposite-check for %r => intermediary opp anchor: %r  lower tf confirms intermediary opp anchor: %r  anchor opp open position: %r",
+			strategy_name,
+			ticker,
+			is_intermediary_tf_opposite_of_last_anchor_tf,
+			lower_tf_confirms_intermediary_opposite_of_anchor,
+			anchor_opposite_open_position,
+		)
+
+		if not should_exit:
+			return None
+
+		# should_exit is True at this point
 		redis_position_side = None
 		redis_num_shares = 0.0
 
