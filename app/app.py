@@ -19,7 +19,6 @@ import strategies
 import trade_records
 import plot
 
-
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
 # Redis indexes use epoch timestamps derived from those timezone-aware values. Git change.
 
@@ -311,6 +310,10 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			signal,
 		)
+
+@app.get("/risk/daily-max-open-exposure")
+def get_daily_max_open_exposure(days: int = 14):
+	return trade_recs.get_daily_max_open_exposure_summary(days=days)
 
 
 @app.post("/webhook/tradingview")

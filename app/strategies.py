@@ -601,7 +601,9 @@ class Strategies:
 		total = 0.0
 		sequence_count = 0
 
-		while total < current_qty and sequence_count < 20:
+		EPSILON = 1e-6
+		while (total + EPSILON) < current_qty and sequence_count < 20:	
+
 			step_qty = base_num_shares / (2 ** sequence_count)
 
 			if step_qty < smallest_share_size or step_qty <= 0:
@@ -1183,25 +1185,66 @@ class Strategies:
 			submitted_order = None
 
 			try:
-				open_orders = alpaca_api.list_orders(status="open")
+				open_orders = alpaca_api.list_orders(status="open", limit=500)
 
 				for existing_order in open_orders:
-					if (
-						getattr(existing_order, "symbol", None) == ticker and
-						str(getattr(existing_order, "side", "")).lower() == broker_side
-					):
+					existing_symbol = getattr(existing_order, "symbol", None)
+					existing_side = str(getattr(existing_order, "side", "") or "").lower()
+					existing_status = str(getattr(existing_order, "status", "") or "").lower()
+					existing_type = str(getattr(existing_order, "type", "") or "").lower()
+					existing_order_id = getattr(existing_order, "id", None)
+
+					if existing_symbol != ticker or existing_side != broker_side:
+						continue
+
+					if existing_status not in {"new", "accepted", "partially_filled"}:
+						continue
+
+					if existing_type == "market":
 						logger.info(
-							"Existing open Alpaca order already present; skipping duplicate submission: "
-							"ticker=%r side=%r order_id=%r",
+							"Existing market exit order already present; skipping duplicate submission: "
+							"ticker=%r side=%r status=%r order_id=%r",
 							ticker,
 							broker_side,
-							getattr(existing_order, "id", None),
+							existing_status,
+							existing_order_id,
 						)
 						return None
 
+					if (
+						is_regular_hours
+						and order_type in {"sell", "cover"}
+						and existing_type != "market"
+					):
+						logger.info(
+							"Canceling existing non-market exit order before regular-hours market liquidation: "
+							"ticker=%r side=%r type=%r status=%r order_id=%r",
+							ticker,
+							broker_side,
+							existing_type,
+							existing_status,
+							existing_order_id,
+						)
+
+						alpaca_api.cancel_order(existing_order_id)
+
+						time.sleep(1.0)
+						continue
+
+					logger.info(
+						"Existing open Alpaca order already present; skipping duplicate submission: "
+						"ticker=%r side=%r type=%r status=%r order_id=%r",
+						ticker,
+						broker_side,
+						existing_type,
+						existing_status,
+						existing_order_id,
+					)
+					return None
+
 			except Exception:
 				logger.exception(
-					"Failed checking existing Alpaca open orders for ticker=%r",
+					"Failed checking/canceling existing Alpaca open orders for ticker=%r",
 					ticker,
 				)			
 
@@ -1385,7 +1428,13 @@ class Strategies:
 
 		clear_exit_guard = False
 
-		if filled_order is not None:
+		if (
+			filled_order is not None
+			and not (
+				isinstance(filled_order, dict)
+				and filled_order.get("terminal_failure")
+			)
+		):
 			clear_exit_guard = True
 		elif is_regular_hours:
 			clear_exit_guard = True
@@ -1517,3 +1566,4 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
+sequence_count

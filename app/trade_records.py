@@ -2,7 +2,8 @@ import os
 #import threading
 from concurrent.futures import ThreadPoolExecutor
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
+import statistics
 
 logger = logging.getLogger("tv-webhook")
 
@@ -408,6 +409,18 @@ class TradeRecords:
 		pipe.sadd(global_index_key, f"{strat}|{sym}")
 		pipe.sadd(strategies_index_key, strat)
 		pipe.execute()
+
+		try:
+			self.update_daily_max_open_exposure(
+				strategy_name=strategy_name,
+				prices={ticker: {"market": fill_price}},
+			)
+		except Exception:
+			logger.exception(
+				"Failed updating daily max open exposure: strategy=%r ticker=%r",
+				strategy_name,
+				ticker,
+			)		
 
 		event = self.record_trade_event(
 			strategy_name=strat,
@@ -1415,4 +1428,101 @@ class TradeRecords:
 				"side": fields.get("side"),
 			})
 
-		return records		
+		return records	
+
+
+	def update_daily_max_open_exposure(self, strategy_name, prices, trading_day=None):
+		"""
+		Update the daily max gross open exposure for a strategy.
+
+		Gross exposure = sum(abs(num_shares * latest_market_price)) across all open
+		positions for the strategy.
+		"""
+		trading_day = trading_day or self.get_current_trading_day()
+
+		positions = self.get_all_positions_for_strategy(strategy_name)
+
+		total_exposure = 0.0
+
+		for position in positions:
+			ticker = str(position.get("ticker") or "").upper().strip()
+			num_shares = abs(float(position.get("num_shares") or 0.0))
+
+			if num_shares <= 0:
+				continue
+
+			market_price = None
+
+			if ticker in prices:
+				market_price = prices.get(ticker, {}).get("market")
+
+			if market_price is None:
+				market_price = position.get("last_market_price")
+
+			try:
+				market_price = float(market_price)
+			except Exception:
+				continue
+
+			total_exposure += abs(num_shares * market_price)
+
+		key = f"tv:exposure:daily_max:{strategy_name}"
+
+		current_value = self.r.hget(key, trading_day)
+		current_value = float(current_value or 0.0)
+
+		if total_exposure > current_value:
+			self.r.hset(key, trading_day, total_exposure)
+
+		return {
+			"strategy_name": strategy_name,
+			"trading_day": trading_day,
+			"gross_open_exposure": total_exposure,
+			"daily_max_gross_open_exposure": max(current_value, total_exposure),
+		}			
+
+
+	def get_daily_max_open_exposure_summary(self, days=14):
+		
+		strategies = sorted(self.r.smembers(self._strategies_index_key()))
+		result = {}
+
+		days_list = [
+			(date.today() - timedelta(days=i)).isoformat()
+			for i in range(days - 1, -1, -1)
+		]
+
+		for strategy_name in strategies:
+			key = f"tv:exposure:daily_max:{strategy_name}"
+
+			values = []
+			daily = []
+
+			for day in days_list:
+				raw = self.r.hget(key, day)
+				value = float(raw or 0.0)
+
+				daily.append({
+					"date": day,
+					"daily_max_gross_open_exposure": value,
+				})
+
+				if value > 0:
+					values.append(value)
+
+			mean_value = statistics.mean(values) if values else 0.0
+			stddev_value = statistics.stdev(values) if len(values) > 1 else 0.0
+
+			result[strategy_name] = {
+				"daily": daily,
+				"summary": {
+					"days_with_exposure": len(values),
+					"mean": mean_value,
+					"standard_deviation": stddev_value,
+					"max": max(values) if values else 0.0,
+					"min": min(values) if values else 0.0,
+				},
+			}
+
+		return result
+
