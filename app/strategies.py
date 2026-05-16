@@ -1566,4 +1566,3 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
-sequence_count
