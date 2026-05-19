@@ -1431,13 +1431,17 @@ class TradeRecords:
 		return records	
 
 
-	def update_daily_max_open_exposure(self, strategy_name, prices, trading_day=None):
+	def update_daily_max_open_exposure(self, strategy_name, prices=None, trading_day=None):
 		"""
 		Update the daily max gross open exposure for a strategy.
 
 		Gross exposure = sum(abs(num_shares * latest_market_price)) across all open
 		positions for the strategy.
+
+		This function is safe to call even when no fresh price map is provided because
+		it falls back to each position's last_market_price.
 		"""
+		prices = prices or {}
 		trading_day = trading_day or self.get_current_trading_day()
 
 		positions = self.get_all_positions_for_strategy(strategy_name)
@@ -1462,6 +1466,15 @@ class TradeRecords:
 			try:
 				market_price = float(market_price)
 			except Exception:
+				logger.exception(
+					"Skipping exposure calculation for strategy=%r ticker=%r due to invalid market_price=%r",
+					strategy_name,
+					ticker,
+					market_price,
+				)
+				continue
+
+			if market_price <= 0:
 				continue
 
 			total_exposure += abs(num_shares * market_price)
@@ -1471,26 +1484,52 @@ class TradeRecords:
 		current_value = self.r.hget(key, trading_day)
 		current_value = float(current_value or 0.0)
 
-		if total_exposure > current_value:
-			self.r.hset(key, trading_day, total_exposure)
+		daily_max = max(current_value, total_exposure)
+
+		if daily_max > current_value:
+			self.r.hset(key, trading_day, daily_max)
 
 		return {
 			"strategy_name": strategy_name,
 			"trading_day": trading_day,
 			"gross_open_exposure": total_exposure,
-			"daily_max_gross_open_exposure": max(current_value, total_exposure),
-		}			
+			"daily_max_gross_open_exposure": daily_max,
+		}
 
 
-	def get_daily_max_open_exposure_summary(self, days=14):
-		
+	def get_daily_max_open_exposure_summary(self, days=14, refresh_current=True):
+		"""
+		Return daily max gross open exposure by strategy.
+
+		If refresh_current=True, the function first recalculates today's exposure
+		from currently open positions before reading the summary. This prevents the
+		endpoint from returning 0 for today simply because no fill occurred after
+		midnight/trading-day rollover.
+		"""
 		strategies = sorted(self.r.smembers(self._strategies_index_key()))
 		result = {}
 
+		today = self.get_current_trading_day()
+		today_date = date.fromisoformat(today)
+
 		days_list = [
-			(date.today() - timedelta(days=i)).isoformat()
+			(today_date - timedelta(days=i)).isoformat()
 			for i in range(days - 1, -1, -1)
 		]
+
+		if refresh_current:
+			for strategy_name in strategies:
+				try:
+					self.update_daily_max_open_exposure(
+						strategy_name=strategy_name,
+						prices={},
+						trading_day=today,
+					)
+				except Exception:
+					logger.exception(
+						"Failed refreshing current daily max open exposure for strategy=%r",
+						strategy_name,
+					)
 
 		for strategy_name in strategies:
 			key = f"tv:exposure:daily_max:{strategy_name}"
@@ -1525,4 +1564,3 @@ class TradeRecords:
 			}
 
 		return result
-

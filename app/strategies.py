@@ -537,119 +537,119 @@ class Strategies:
 
 
 
-	def get_live_progressive_entry_size_from_alpaca(
+	def get_signal_based_progressive_entry_size(
 		self,
-		alpaca_position_qty,
+		ticker,
 		side,
+		entry_tf,
+		anchor_tf,
 		base_num_shares,
 		smallest_share_size,
+		max_scan_entry_tf=1000,
+		max_scan_anchor_tf=500,
 	):
 		"""
-		Determines the next progressive entry size for a live (non-simulation) strategy
-		using Alpaca as the source of truth for the current position.
+		Determines progressive entry sizing based on the ordinal position of the
+		current qualifying entry signal since the latest valid same-side anchor
+		timeframe signal.
 
-		This function infers how many progressive entries have already been executed
-		by reconstructing the cumulative position size from the base entry size and
-		halving logic (e.g., base → base/2 → base/4 → ...). It then computes the next
-		entry size in the sequence.
+		Unlike position-based progressive sizing, this method does not infer the
+		next entry step from current Alpaca exposure or Redis bookkeeping state.
+		Instead, it reconstructs the sequence directly from historical signals.
 
-		For short positions, the computed size is adjusted to comply with Alpaca's
-		whole-share constraint by applying a floor operation.
-
-		Behavior:
-			- If there is no existing position (qty == 0), returns the base entry size.
-			- If an existing position is in the opposite direction, returns 0.0 (no entry).
-			- If an existing position is in the same direction, infers the number of
-			  prior entries and returns the next progressively reduced size.
-			- Returns 0.0 if the computed next size falls below the smallest allowed size.
-
-		Parameters:
-			alpaca_position_qty (float): Current position quantity from Alpaca.
-				Positive for long, negative for short, zero if flat.
-			side (str): Desired trade direction ("long" or "short").
-			base_num_shares (float): Initial entry size before progressive scaling.
-			smallest_share_size (float): Minimum allowable trade size threshold.
-
-		Returns:
-			float: The computed next entry size. Returns 0.0 if no valid entry
-			should be placed under current conditions.
-		"""	
-		side = str(side or "").strip().lower()
-
-		try:
-			base_num_shares = float(base_num_shares)
-			alpaca_position_qty = float(alpaca_position_qty or 0.0)
-		except Exception:
-			return 0.0
-
-		if side not in {"long", "short"} or base_num_shares <= 0:
-			return 0.0
-
-		current_qty = abs(alpaca_position_qty)
-
-		# Flat, or opposite-side position: first entry size.
-		if current_qty <= 0:
-			return base_num_shares
-
-		if side == "long" and alpaca_position_qty < 0:
-			return 0.0
-
-		if side == "short" and alpaca_position_qty > 0:
-			return 0.0
-
-		# Infer next progressive step from actual Alpaca exposure.
-		total = 0.0
-		sequence_count = 0
-
-		EPSILON = 1e-6
-		while (total + EPSILON) < current_qty and sequence_count < 20:	
-
-			step_qty = base_num_shares / (2 ** sequence_count)
-
-			if step_qty < smallest_share_size or step_qty <= 0:
-				break
-
-			total += step_qty
-			sequence_count += 1
-
-		next_qty = base_num_shares / (2 ** sequence_count)
-
-		if side == "short":
-			next_qty = math.floor(next_qty)
-
-		if next_qty < smallest_share_size:
-			return 0.0
-
-		return next_qty
-
-
-	def get_progressive_entry_size(self, strategy_name, ticker, side, base_num_shares, smallest_share_size):
-		"""
-		Computes progressively smaller same-side entry sizes for an open position
-		lifecycle, resetting after a full close.
+		Core concept:
+			- Every qualifying same-side entry timeframe signal after the latest
+			  valid same-side anchor signal contributes to the progressive sequence.
+			- The current signal's ordinal position within that sequence determines
+			  the position size using progressive halving logic.
 
 		Sizing rule:
-			entry_sequence_count = 0 -> next size = base_num_shares
-			entry_sequence_count = 1 -> next size = base_num_shares / 2
-			entry_sequence_count = 2 -> next size = base_num_shares / 4
-			entry_sequence_count = 3 -> next size = base_num_shares / 8
+			qualifying_signal_count = 1 -> size = base_num_shares
+			qualifying_signal_count = 2 -> size = base_num_shares / 2
+			qualifying_signal_count = 3 -> size = base_num_shares / 4
+			qualifying_signal_count = 4 -> size = base_num_shares / 8
 			...
 
-		If the computed size is less than smallest share size, returns 0.
+		Qualification requirements:
+			A signal qualifies if:
+				- it belongs to the specified entry timeframe
+				- its normalized side matches the requested side
+				- it occurred after the latest valid same-side anchor signal
 
-		Parameters:
-			strategy_name (str): Strategy name.
-			ticker (str): Ticker symbol.
-			side (str): "long" or "short".
-			base_num_shares (float): Original unscaled entry size.
-			smallest_share_size (float): Smallest num shares that can be bought/shorted
+			Signal normalization:
+				- "buy" and "buy+" are treated as "buy"
+				- "sell" and "sell+" are treated as "sell"
 
-		Returns:
-			float: Computed execution quantity, or 0 if below smallest share size.
-		"""
-		side = str(side or "").strip().lower()
+			Anchor behavior:
+				The anchor signal is determined using
+				get_latest_valid_same_side_signal(), meaning:
+					- the anchor must match the requested side
+					- any newer opposite-side anchor invalidates older anchors
 
-		if side not in {"long", "short"}:
+			Short position handling:
+				Because Alpaca does not support fractional short shares,
+				short execution quantities are floored to whole integers.
+
+			Parameters:
+				ticker (str):
+					Ticker symbol, e.g. "AAPL".
+
+				side (str):
+					Desired trade direction signal:
+						"buy", "buy+", "sell", or "sell+".
+
+				entry_tf (str):
+					The entry timeframe being evaluated,
+					e.g. "1m", "5m", or "15m".
+
+				anchor_tf (str):
+					The higher timeframe anchor used to establish the
+					current directional regime.
+
+				base_num_shares (float):
+					The original unscaled entry size.
+
+				smallest_share_size (float):
+					Minimum allowable execution quantity.
+
+				max_scan_entry_tf (int, optional):
+					Maximum number of entry timeframe signals to inspect.
+					Default is 1000.
+
+				max_scan_anchor_tf (int, optional):
+					Maximum number of anchor timeframe signals to inspect.
+					Default is 500.
+
+			Returns:
+				float:
+					The computed progressive execution quantity.
+
+					Returns 0.0 if:
+						- no valid anchor exists
+						- the signal side is invalid
+						- the computed size falls below smallest_share_size
+						- no qualifying signals are found
+						- required timestamps cannot be parsed
+
+			Example:
+				If:
+					base_num_shares = 10
+
+				and the qualifying entry signals since the current anchor are:
+					1st qualifying signal -> 10 shares
+					2nd qualifying signal -> 5 shares
+					3rd qualifying signal -> 2.5 shares
+					4th qualifying signal -> 1.25 shares
+
+				then the current signal's ordinal position determines
+				the execution quantity.
+		"""	
+		sym = str(ticker or "").upper().strip()
+		target_side = self.tvw_helpers.normalize_signal(side)
+		entry_tf_norm = self.tvw_helpers.normalize_tf(entry_tf)
+		anchor_tf_norm = self.tvw_helpers.normalize_tf(anchor_tf)
+
+		if target_side not in {"buy", "sell"}:
 			return 0.0
 
 		try:
@@ -660,35 +660,86 @@ class Strategies:
 		if base_num_shares <= 0:
 			return 0.0
 
-		position = None
-		try:
-			position = self.trade_records.get_position(strategy_name, ticker)
-		except Exception:
-			logger.exception(
-				"Failed retrieving position for progressive sizing: strategy=%r ticker=%r side=%r",
-				strategy_name,
-				ticker,
-				side,
-			)
+		anchor_signal = self.get_latest_valid_same_side_signal(
+			sym,
+			target_side,
+			anchor_tf_norm,
+			max_scan=max_scan_anchor_tf,
+		)
+
+		if not anchor_signal:
 			return 0.0
 
-		entry_sequence_count = 0
+		anchor_time_str = anchor_signal.get("bar_close_time_eastern")
+		if not anchor_time_str:
+			return 0.0
 
-		if position is not None:
-			position_side = str(position.get("side") or "").strip().lower()
-			position_qty = float(position.get("num_shares") or 0.0)
+		try:
+			anchor_time = datetime.fromisoformat(anchor_time_str)
+		except Exception:
+			logger.exception("Failed parsing anchor time for signal-based sizing: %r", anchor_time_str)
+			return 0.0
+
+		stream_key = self.tvw_helpers.stream_key(entry_tf_norm, sym)
+
+		try:
+			entries = self.r.xrevrange(stream_key, count=max_scan_entry_tf)
+		except Exception:
+			logger.exception("Failed reading %r stream for signal-based sizing: %r", entry_tf_norm, sym)
+			return 0.0
+
+		qualifying_count = 0
+
+		for entry_id, fields in entries:
+			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+
+			if entry_side not in {"buy", "sell"}:
+				continue
+
+			entry_time_str = fields.get("bar_close_time_eastern")
+			if not entry_time_str:
+				continue
+
 			try:
-				stored_sequence = max(0, int(float(position.get("entry_sequence_count") or 0)))
+				entry_time = datetime.fromisoformat(entry_time_str)
 			except Exception:
-				stored_sequence = 0
+				logger.exception(
+					"Failed parsing entry signal time for %r entry_id=%r value=%r",
+					sym,
+					entry_id,
+					entry_time_str,
+				)
+				continue
 
-			if position_qty > 0 and position_side == side:
-				entry_sequence_count = stored_sequence
+			if entry_time < anchor_time:
+				break
 
-		execution_qty = base_num_shares / (2 ** entry_sequence_count)
+			if entry_side != target_side:
+				return 0.0				
+
+			# At this point, signal is qualifying because it is same side to anchor and occurred later than anchor
+			qualifying_count += 1
+
+		if qualifying_count < 1:
+			return 0.0
+
+		execution_qty = base_num_shares / (2 ** (qualifying_count - 1))
+
+		if target_side == "sell":
+			execution_qty = math.floor(execution_qty)
 
 		if execution_qty < smallest_share_size:
 			return 0.0
+
+		logger.info(
+			"signal-based progressive sizing: ticker=%r side=%r entry_tf=%r anchor_tf=%r qualifying_count=%r execution_qty=%r",
+			sym,
+			target_side,
+			entry_tf_norm,
+			anchor_tf_norm,
+			qualifying_count,
+			execution_qty,
+		)
 
 		return execution_qty
 
@@ -758,8 +809,6 @@ class Strategies:
 		if tf != entry_tf:
 			return None
 
-		num_shares = NUM_SHARES
-
 		last_entry_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
 		last_anchor_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, anchor_tf, 1)
 
@@ -784,13 +833,34 @@ class Strategies:
 			)
 			return None
 
-		# Block entry if an opposite-side intermediary tf signal occurred after the
+		# Block entry if an opposite-side intermediary tf signal occurred after the anchor
 		if last_anchor_tf_signal == "buy" and last_entry_tf_signal == "buy":
 			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
 				ticker, "buy", intermediary_tf, anchor_tf, 1000, 500
 			):
 				logger.info("Blocked Strategy %r long entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
 				return None
+
+			num_shares = self.get_signal_based_progressive_entry_size(
+				ticker=ticker,
+				side=signal,
+				entry_tf=entry_tf,
+				anchor_tf=anchor_tf,
+				base_num_shares=NUM_SHARES,
+				smallest_share_size=self.SMALLEST_SHARE_SIZE,
+			)
+
+			if num_shares <= 0:
+				logger.info(
+					"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
+					ticker,
+					strategy_name,
+					signal,
+					entry_tf,
+					anchor_tf,
+				)
+				return None		
+							
 			return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		if last_anchor_tf_signal == "sell" and last_entry_tf_signal == "sell":
@@ -799,6 +869,27 @@ class Strategies:
 			):
 				logger.info("Blocked Strategy %r short entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
 				return None
+
+			num_shares = self.get_signal_based_progressive_entry_size(
+				ticker=ticker,
+				side=signal,
+				entry_tf=entry_tf,
+				anchor_tf=anchor_tf,
+				base_num_shares=NUM_SHARES,
+				smallest_share_size=self.SMALLEST_SHARE_SIZE,
+			)
+
+			if num_shares <= 0:
+				logger.info(
+					"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
+					ticker,
+					strategy_name,
+					signal,
+					entry_tf,
+					anchor_tf,
+				)
+				return None	
+
 			return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		logger.info(
@@ -818,6 +909,7 @@ class Strategies:
 		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal,
 		if a lower timeframe signal occured that is same side as the last exit tf (which may have occurred overnight), and opposite side to the anchor tf,
 		if an anchor tf signal occured, opposite side of the entry tf.
+		Note that intermediaty timeframe and exit timeframe are the same thing.
 
 		Parameters:
 			strategy_name (str): Strategy name.
@@ -834,7 +926,7 @@ class Strategies:
 
 		Returns:
 			sell_long_order() or cover_short_order() or None
-		"""
+		"""				
 		logger.info(
 			"exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
 			strategy_name,
@@ -851,35 +943,60 @@ class Strategies:
 		if tf not in exit_timeframes:
 			return None
 
+		redis_position_side = None
+		redis_num_shares = 0.0
+		alpaca_position = None
+		alpaca_position_qty = 0.0
+
+		if simulation_only:
+			try:
+				redis_position = self.trade_records.get_position(strategy_name, ticker)
+			except Exception:
+				logger.exception(
+					"exit %r failed to fetch Redis position for %r",
+					strategy_name,
+					ticker,
+				)
+				return None
+
+			if not redis_position:
+				return None
+
+			redis_position_side = str(redis_position.get("side") or "").strip().lower()
+			redis_num_shares = abs(float(redis_position.get("num_shares") or 0.0))
+
+			if redis_position_side not in {"long", "short"} or redis_num_shares <= 0:
+				return None
+
+		else:
+			try:
+				alpaca_position = alpaca_api.get_position(ticker)
+				alpaca_position_qty = float(getattr(alpaca_position, "qty", 0.0) or 0.0)
+			except Exception:
+				return None
+
+			if abs(alpaca_position_qty) <= 0:
+				return None
+
+
+		# There is a qualifying open position, so proceed with exit condition checks.
+
+		position_qty_for_anchor_check = alpaca_position_qty
+
+		if simulation_only:
+			if redis_position_side == "long":
+				position_qty_for_anchor_check = redis_num_shares
+			elif redis_position_side == "short":
+				position_qty_for_anchor_check = -redis_num_shares		
+
 		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite")
 
 		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf)
 
-		alpaca_position = None
-		try:
-			alpaca_position = alpaca_api.get_position(ticker)
-			logger.info(
-				"exit %r Alpaca position for %r => qty=%r side=%r avg_entry_price=%r",
-				strategy_name,
-				ticker,
-				getattr(alpaca_position, "qty", None),
-				getattr(alpaca_position, "side", None),
-				getattr(alpaca_position, "avg_entry_price", None),
-			)
-		except Exception:
-			logger.exception("exit %r failed to fetch Alpaca position for %r", strategy_name, ticker)
-
-		alpaca_position_qty = 0.0
-		if alpaca_position is not None:
-			try:
-				alpaca_position_qty = float(alpaca_position.qty)
-			except Exception:
-				alpaca_position_qty = 0.0
-
 		anchor_opposite_open_position = self.is_latest_anchor_opposite_of_open_position(
 			ticker,
 			anchor_tf,
-			alpaca_position_qty,
+			position_qty_for_anchor_check,
 		)
 
 		should_exit = (
@@ -900,27 +1017,6 @@ class Strategies:
 		if not should_exit:
 			return None
 
-		# should_exit is True at this point
-		redis_position_side = None
-		redis_num_shares = 0.0
-
-		if simulation_only:
-			redis_position = None
-			try:
-				redis_position = self.trade_records.get_position(strategy_name, ticker)
-				logger.info("exit_strategy Redis position for %r/%r => %r", strategy_name, ticker, redis_position)
-			except Exception:
-				logger.exception("exit_strategy failed to fetch Redis position for strategy=%r ticker=%r", strategy_name, ticker)
-
-			redis_position_qty = 0.0
-			if redis_position is not None:
-				try:
-					redis_position_qty = float(redis_position.get("num_shares") or 0.0)
-				except Exception:
-					redis_position_qty = 0.0
-				redis_position_side = str(redis_position.get("side") or "").strip().lower()
-
-			redis_num_shares = abs(redis_position_qty)
 
 		alpaca_num_shares = abs(alpaca_position_qty)		
 
@@ -941,7 +1037,6 @@ class Strategies:
 			redis_num_shares,
 			alpaca_num_shares,
 		)
-
 
 		if signal_intermediary_tf not in {"buy", "sell"}:
 			logger.info(
@@ -1344,22 +1439,22 @@ class Strategies:
 			)
 			return None
 
-		if order_type in {"long", "short"}:
-			if simulation_only:
-				execution_qty = self.get_progressive_entry_size(
-					strategy_name,
-					ticker,
-					order_type,
-					num_shares,
-					self.SMALLEST_SHARE_SIZE,
-				)
-			else:
-				execution_qty = self.get_live_progressive_entry_size_from_alpaca(
-					alpaca_position_qty,
-					order_type,
-					num_shares,
-					self.SMALLEST_SHARE_SIZE,
-				)
+		#if order_type in {"long", "short"}:
+			#if simulation_only:
+				#execution_qty = self.get_progressive_entry_size(
+					#strategy_name,
+					#ticker,
+					#order_type,
+					#num_shares,
+					#self.SMALLEST_SHARE_SIZE,
+				#)
+			#else:
+				#execution_qty = self.get_live_progressive_entry_size_from_alpaca(
+					#alpaca_position_qty,
+					#order_type,
+					#num_shares,
+					#self.SMALLEST_SHARE_SIZE,
+				#)
 
 		# Enforce Alpaca constraint FIRST
 		if order_type == "short":
@@ -1377,6 +1472,14 @@ class Strategies:
 				execution_qty,
 			)
 			return None
+
+		#if execution_qty < self.SMALLEST_SHARE_SIZE:
+			#logger.info(
+				#"Execution qty below minimum threshold for %r: %r",
+				#ticker,
+				#execution_qty,
+			#)
+			#return None			
 
 		if execution_qty <= 0:
 			logger.info(
