@@ -1437,6 +1437,23 @@ class Strategies:
 				order_id,
 				timeout_seconds,
 			)
+
+			try:
+				alpaca_api.cancel_order(order_id)
+				logger.info(
+					"Canceled unfilled Alpaca order after timeout: ticker=%r order_id=%r",
+					ticker,
+					order_id,
+				)
+				time.sleep(0.5)
+				
+			except Exception:
+				logger.exception(
+					"Failed canceling unfilled Alpaca order after timeout: ticker=%r order_id=%r",
+					ticker,
+					order_id,
+				)
+
 			return None
 
 		#if order_type in {"long", "short"}:
@@ -1669,3 +1686,4 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
+submit_to_alpaca_and_wait_for_fill()
