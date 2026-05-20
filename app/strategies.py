@@ -1446,7 +1446,7 @@ class Strategies:
 					order_id,
 				)
 				time.sleep(0.5)
-				
+
 			except Exception:
 				logger.exception(
 					"Failed canceling unfilled Alpaca order after timeout: ticker=%r order_id=%r",
@@ -1686,4 +1686,3 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
-submit_to_alpaca_and_wait_for_fill()
