@@ -318,19 +318,19 @@ def risk_daily_max_open_exposure(days: int = 14):
 	From EC2:
 		curl "http://localhost:8000/risk/daily-max-open-exposure"
 	"""	
-	return trade_records.get_daily_max_open_exposure_summary(
+	return trade_recs.get_daily_max_open_exposure_summary(
 		days=days,
 		refresh_current=True,
 	)	
 
 
-@app.get("/risk/daily-max-open-exposure_tabulated", response_class=PlainTextResponse)
+@app.get("/risk/daily-max-open-exposure-tabulated", response_class=PlainTextResponse)
 def risk_daily_max_open_exposure_tabulated(days: int = 14):
 	"""
 	From EC2:
-		curl "http://localhost:8000/risk/daily-max-open-exposure_tabulated"
+		curl "http://localhost:8000/risk/daily-max-open-exposure-tabulated"
 	"""		
-	data = trade_records.get_daily_max_open_exposure_summary(
+	data = trade_recs.get_daily_max_open_exposure_summary(
 		days=days,
 		refresh_current=True,
 	)
