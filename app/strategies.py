@@ -712,10 +712,10 @@ class Strategies:
 				continue
 
 			if entry_time < anchor_time:
-				break
+				break		
 
-			if entry_side != target_side:
-				return 0.0				
+			if entry_side != target_side: # Skip over opposite side entry tf signals. We only want same sides.
+				continue					
 
 			# At this point, signal is qualifying because it is same side to anchor and occurred later than anchor
 			qualifying_count += 1
