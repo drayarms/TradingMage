@@ -1194,30 +1194,50 @@ class Strategies:
 		is_regular_hours = self.tvw_helpers._is_regular_hours_et()
 
 		if not is_regular_hours:
-			if order_type in {"long", "cover"}:
-				ask = prices.get(ticker, {}).get("ask")
-				if ask is None:
-					logger.info("No ask price available for off-hours %r order_type=%r", ticker, order_type)
-					return None
-				price = ask + 0.01
+			ask = prices.get(ticker, {}).get("ask")
+			bid = prices.get(ticker, {}).get("bid")
 
+			if ask is None or bid is None:
+				logger.info(
+					"Missing bid/ask for off-hours %r order_type=%r ask=%r bid=%r",
+					ticker,
+					order_type,
+					ask,
+					bid,
+				)
+				return None
+
+			ask = float(ask)
+			bid = float(bid)
+			spread = max(ask - bid, 0.01)
+
+			is_exit_order = order_type in {"sell", "cover"}
+
+			if is_exit_order: # Dynamically compute buffer to be half spread or 5c whichever is more.
+				buffer = max(0.05, spread * 0.50) # Exit attempts should be more aggressive.
+			else:
+				buffer = max(0.02, spread * 0.25) # Entry attempts more conservative.
+
+			if order_type in {"long", "cover"}:
+				price = ask + buffer
 			elif order_type in {"short", "sell"}:
-				bid = prices.get(ticker, {}).get("bid")
-				if bid is None:
-					logger.info("No bid price available for off-hours %r order_type=%r", ticker, order_type)
-					return None
-				price = bid - 0.01
+				price = bid - buffer
 
 			price = float(
 				Decimal(str(price)).quantize(
 					Decimal("0.01"),
 					rounding=ROUND_HALF_UP,
 				)
-			)	
+			)
+
 			logger.info(
-				"Rounded off-hours limit price: ticker=%r order_type=%r limit_price=%r",
+				"Rounded off-hours dynamic limit price: ticker=%r order_type=%r ask=%r bid=%r spread=%r buffer=%r limit_price=%r",
 				ticker,
 				order_type,
+				ask,
+				bid,
+				spread,
+				buffer,
 				price,
 			)						
 
