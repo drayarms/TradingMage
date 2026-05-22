@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 import math
 from decimal import Decimal, ROUND_HALF_UP
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger("tv-webhook")
 
@@ -12,6 +13,7 @@ class Strategies:
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.trade_records = trade_records
 		self.SMALLEST_SHARE_SIZE = 0.25
+		self.order_monitor_executor = ThreadPoolExecutor(max_workers=20)
 		
 
 	def is_tf_relative_to_last_higher_tf(
@@ -782,6 +784,207 @@ class Strategies:
 		return is_true		
 			
 
+	def _monitor_alpaca_order_fill(
+		self,
+		strategy_name,
+		ticker,
+		date,
+		alpaca_api,
+		order_id,
+		order_type,
+		execution_qty,
+		fallback_price,
+		do_redis_bookkeeping,
+		pending_exit_key=None,
+		timeout_seconds=90,
+		poll_interval=1.0,
+	):
+		"""
+		Monitors a submitted Alpaca order asynchronously until it either fills,
+		reaches a terminal failure state, or times out.
+
+		This function is intended to run in a background thread so that webhook
+		and strategy-processing execution paths remain non-blocking. It repeatedly
+		polls Alpaca for order status updates, optionally synchronizes confirmed
+		fills back into Redis bookkeeping, and cancels stale unfilled orders after
+		the timeout window expires.
+
+		Execution flow:
+			1. Poll Alpaca order status repeatedly.
+			2. If order fills:
+				- retrieve updated Alpaca position state
+				- optionally synchronize fill into Redis
+				- stop monitoring
+			3. If order reaches a terminal failure state:
+				- stop monitoring
+			4. If timeout expires before fill:
+				- cancel the order
+				- stop monitoring
+			5. Clear any pending-exit guard keys.
+
+		Parameters:
+			strategy_name (str):
+				Strategy associated with the order.
+
+			ticker (str):
+				Ticker symbol (e.g. "AMD").
+
+			date (str):
+				Order submission timestamp.
+
+			alpaca_api (REST):
+				Authenticated Alpaca REST client.
+
+			order_id (str):
+				Alpaca order identifier.
+
+			order_type (str):
+				One of:
+					- "long"
+					- "short"
+					- "sell"
+					- "cover"
+
+			execution_qty (float):
+				Expected execution quantity.
+
+			fallback_price (float):
+				Price used if Alpaca does not provide a filled average price.
+
+			do_redis_bookkeeping (bool):
+				If True, synchronize confirmed fills into Redis using
+				record_live_alpaca_fill().
+
+			pending_exit_key (Optional[str]):
+				Redis key used to prevent duplicate exit submissions while
+				an exit order is still pending.
+
+			timeout_seconds (int):
+				Maximum number of seconds to wait for a fill before canceling
+				the order.
+
+			poll_interval (float):
+				Seconds between Alpaca order-status checks.
+
+		Returns:
+			None
+
+		Behavior:
+			- Designed for asynchronous execution via ThreadPoolExecutor.
+			- Does not block the webhook request path.
+			- Intended to improve after-hours execution handling where fills
+			  may take significantly longer than during regular market hours.
+		"""	
+		try:
+			deadline = time.time() + timeout_seconds
+			terminal_bad_statuses = {
+				"canceled",
+				"expired",
+				"rejected",
+				"suspended",
+				"stopped",
+			}
+
+			while time.time() < deadline:
+				try:
+					order = alpaca_api.get_order(order_id)
+					status = str(getattr(order, "status", "") or "").lower()
+
+					logger.info(
+						"Background Alpaca order status check: ticker=%r order_id=%r status=%r filled_qty=%r avg_fill_price=%r",
+						ticker,
+						order_id,
+						status,
+						getattr(order, "filled_qty", None),
+						getattr(order, "filled_avg_price", None),
+					)
+
+					if status == "filled":
+						fill_price = getattr(order, "filled_avg_price", None) or fallback_price
+
+						time.sleep(0.5)
+
+						alpaca_position_qty_after_fill = 0.0
+						alpaca_avg_entry_price_after_fill = None
+
+						try:
+							position = alpaca_api.get_position(ticker)
+							alpaca_position_qty_after_fill = float(getattr(position, "qty", 0.0) or 0.0)
+							alpaca_avg_entry_price_after_fill = getattr(position, "avg_entry_price", None)
+
+							logger.info(
+								"Background post-fill Alpaca position check: ticker=%r qty=%r side=%r avg_entry_price=%r",
+								ticker,
+								getattr(position, "qty", None),
+								getattr(position, "side", None),
+								alpaca_avg_entry_price_after_fill,
+							)
+						except Exception:
+							logger.info(
+								"No Alpaca position found after background fill for ticker=%r order_type=%r; treating position as flat",
+								ticker,
+								order_type,
+							)
+
+						if do_redis_bookkeeping:
+							self.trade_records.record_live_alpaca_fill(
+								strategy_name=strategy_name,
+								ticker=ticker,
+								date=date,
+								fill_price=fill_price,
+								filled_qty=execution_qty,
+								order_type=order_type,
+								alpaca_position_qty=alpaca_position_qty_after_fill,
+								alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
+							)
+
+						return
+
+					if status in terminal_bad_statuses:
+						logger.info(
+							"Background Alpaca order reached terminal failure: strategy=%r ticker=%r order_type=%r order_id=%r status=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							order_id,
+							status,
+						)
+						return
+
+				except Exception:
+					logger.exception("Background failed polling Alpaca order status: ticker=%r order_id=%r", ticker, order_id)
+
+				time.sleep(poll_interval)
+
+			logger.info(
+				"Background Alpaca order not filled before timeout: ticker=%r order_id=%r timeout_seconds=%r",
+				ticker,
+				order_id,
+				timeout_seconds,
+			)
+
+			try:
+				alpaca_api.cancel_order(order_id)
+				logger.info(
+					"Background canceled unfilled Alpaca order after timeout: ticker=%r order_id=%r",
+					ticker,
+					order_id,
+				)
+			except Exception:
+				logger.exception(
+					"Background failed canceling unfilled Alpaca order after timeout: ticker=%r order_id=%r",
+					ticker,
+					order_id,
+				)
+
+		finally:
+			if pending_exit_key:
+				try:
+					self.r.delete(pending_exit_key)
+				except Exception:
+					logger.exception("Failed clearing pending exit guard in background: key=%r", pending_exit_key)
+
+
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
 		"""
 		Strategy relies on latest signals of three different timeframes; an anchor timeframe (highest timeframe), an entry timeframe (lowerst timeframe)
@@ -1295,7 +1498,7 @@ class Strategies:
 
 		execution_qty = num_shares
 
-		def submit_to_alpaca_and_wait_for_fill(timeout_seconds=10, poll_interval=0.5):
+		def submit_to_alpaca_only():
 			order_type_name = "market" if is_regular_hours else "limit"
 			submitted_order = None
 
@@ -1414,84 +1617,8 @@ class Strategies:
 				logger.info("Submitted Alpaca order missing order id for %r", ticker)
 				return None
 
-			deadline = time.time() + timeout_seconds
-			terminal_bad_statuses = {
-				"canceled",
-				"expired",
-				"rejected",
-				"suspended",
-				"stopped",
-			}
+			return submitted_order
 
-			while time.time() < deadline:
-				try:
-					order = alpaca_api.get_order(order_id)
-					status = str(getattr(order, "status", "") or "").lower()
-
-					logger.info(
-						"Alpaca order status check: ticker=%r order_id=%r status=%r filled_qty=%r avg_fill_price=%r",
-						ticker,
-						order_id,
-						status,
-						getattr(order, "filled_qty", None),
-						getattr(order, "filled_avg_price", None),
-					)
-
-					if status == "filled":
-						return order
-
-					if status in terminal_bad_statuses:
-						return {
-							"terminal_failure": True,
-							"status": status,
-						}						
-
-				except Exception:
-					logger.exception("Failed polling Alpaca order status: ticker=%r order_id=%r", ticker, order_id)
-
-				time.sleep(poll_interval)
-
-			logger.info(
-				"Alpaca order not filled before timeout: ticker=%r order_id=%r timeout_seconds=%r",
-				ticker,
-				order_id,
-				timeout_seconds,
-			)
-
-			try:
-				alpaca_api.cancel_order(order_id)
-				logger.info(
-					"Canceled unfilled Alpaca order after timeout: ticker=%r order_id=%r",
-					ticker,
-					order_id,
-				)
-				time.sleep(0.5)
-
-			except Exception:
-				logger.exception(
-					"Failed canceling unfilled Alpaca order after timeout: ticker=%r order_id=%r",
-					ticker,
-					order_id,
-				)
-
-			return None
-
-		#if order_type in {"long", "short"}:
-			#if simulation_only:
-				#execution_qty = self.get_progressive_entry_size(
-					#strategy_name,
-					#ticker,
-					#order_type,
-					#num_shares,
-					#self.SMALLEST_SHARE_SIZE,
-				#)
-			#else:
-				#execution_qty = self.get_live_progressive_entry_size_from_alpaca(
-					#alpaca_position_qty,
-					#order_type,
-					#num_shares,
-					#self.SMALLEST_SHARE_SIZE,
-				#)
 
 		# Enforce Alpaca constraint FIRST
 		if order_type == "short":
@@ -1564,35 +1691,17 @@ class Strategies:
 				return None			
 
 
-		filled_order = submit_to_alpaca_and_wait_for_fill() # Alpaca order
+		submitted_order = submit_to_alpaca_only()
 
-		clear_exit_guard = False
+		if submitted_order is None:
+			if pending_exit_key:
+				try:
+					self.r.delete(pending_exit_key)
+				except Exception:
+					logger.exception("Failed clearing pending exit guard after submit failure: key=%r", pending_exit_key)
 
-		if (
-			filled_order is not None
-			and not (
-				isinstance(filled_order, dict)
-				and filled_order.get("terminal_failure")
-			)
-		):
-			clear_exit_guard = True
-		elif is_regular_hours:
-			clear_exit_guard = True
-
-		if clear_exit_guard and exit_guard_acquired and pending_exit_key:
-			try:
-				self.r.delete(pending_exit_key)
-			except Exception:
-				logger.exception(
-					"Failed clearing pending exit guard: strategy=%r ticker=%r key=%r",
-					strategy_name,
-					ticker,
-					pending_exit_key,
-				)					
-
-		if filled_order is None:
 			logger.info(
-				"Skipping Redis bookkeeping because Alpaca order was not filled: strategy=%r ticker=%r order_type=%r qty=%r",
+				"Skipping Redis bookkeeping because Alpaca order was not submitted: strategy=%r ticker=%r order_type=%r qty=%r",
 				strategy_name,
 				ticker,
 				order_type,
@@ -1600,59 +1709,44 @@ class Strategies:
 			)
 			return None
 
-		if isinstance(filled_order, dict) and filled_order.get("terminal_failure"):
-			logger.info(
-				"Alpaca order reached terminal failure: strategy=%r ticker=%r order_type=%r status=%r",
-				strategy_name,
-				ticker,
-				order_type,
-				filled_order.get("status"),
-			)
+		order_id = getattr(submitted_order, "id", None)
+		if not order_id:
+			logger.info("Submitted Alpaca order missing order id for %r", ticker)
+			return None
 
-			return None			
+		timeout_seconds = 10 if is_regular_hours else 90
 
-		# If we are here, the Alpaca order got successfully filled
-		fill_price = getattr(filled_order, "filled_avg_price", None)
-		if fill_price is None:
-			fill_price = price
+		self.order_monitor_executor.submit(
+			self._monitor_alpaca_order_fill,
+			strategy_name,
+			ticker,
+			date,
+			alpaca_api,
+			order_id,
+			order_type,
+			execution_qty,
+			price,
+			do_redis_bookkeeping,
+			pending_exit_key,
+			timeout_seconds,
+			1.0,
+		)
 
-		time.sleep(0.5)
+		logger.info(
+			"Alpaca order monitoring scheduled in background: strategy=%r ticker=%r order_type=%r qty=%r order_id=%r timeout_seconds=%r",
+			strategy_name,
+			ticker,
+			order_type,
+			execution_qty,
+			order_id,
+			timeout_seconds,
+		)
 
-		alpaca_position_qty_after_fill = 0.0
-		alpaca_avg_entry_price_after_fill = None
-
-		try:
-			position = alpaca_api.get_position(ticker)
-			alpaca_position_qty_after_fill = float(getattr(position, "qty", 0.0) or 0.0)
-			alpaca_avg_entry_price_after_fill = getattr(position, "avg_entry_price", None)
-
-			logger.info(
-				"Post-fill Alpaca position check: ticker=%r qty=%r side=%r avg_entry_price=%r",
-				ticker,
-				getattr(position, "qty", None),
-				getattr(position, "side", None),
-				alpaca_avg_entry_price_after_fill,
-			)
-		except Exception:
-			logger.info(
-				"No Alpaca position found after fill for ticker=%r order_type=%r; treating position as flat",
-				ticker,
-				order_type,
-			)
-
-		if do_redis_bookkeeping:
-			return self.trade_records.record_live_alpaca_fill(
-				strategy_name=strategy_name,
-				ticker=ticker,
-				date=date,
-				fill_price=fill_price,
-				filled_qty=execution_qty,
-				order_type=order_type,
-				alpaca_position_qty=alpaca_position_qty_after_fill,
-				alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
-			)
-
-		return None
+		return {
+			"submitted": True,
+			"order_id": order_id,
+			"background_monitoring": True,
+		}		
 
 
 	def place_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
