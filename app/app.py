@@ -89,18 +89,37 @@ stgs = strategies.Strategies(tvw_helpers, trade_recs)
 plotter = plot.Plot()
 
 
+class SignalFlags(BaseModel):
+	normal_buy: Optional[str] = None
+	normal_sell: Optional[str] = None
+	strong_buy_plus: Optional[str] = None
+	strong_sell_plus: Optional[str] = None
+	exit_long: Optional[str] = None
+	exit_short: Optional[str] = None
+
+
+class MLClassifierLevels(BaseModel):
+	level_1: Optional[str] = None
+	level_2: Optional[str] = None
+	level_3: Optional[str] = None
+	level_4: Optional[str] = None
+
+
 class TradingViewWebhook(BaseModel):
 	secret: str
+	signal_role: str
 	symbol: str
 	timeframe: str
-	signal: str
 	bar_close_time: str
-	price: Optional[float] = None
+
 	open: Optional[float] = None
 	high: Optional[float] = None
 	low: Optional[float] = None
 	close: Optional[float] = None
 	volume: Optional[float] = None
+
+	signals: SignalFlags
+	ml_classifier_levels: MLClassifierLevels	
 
 
 # When app starts, this function runs once
@@ -379,6 +398,8 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		5. Schedule strategy processing in the background.
 		6. Return 200 quickly to TradingView.
 	"""
+
+	"""
 	rr = tvw_helpers.require_redis()
 
 	if payload.secret != TV_WEBHOOK_SECRET:
@@ -569,6 +590,96 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"state": state_key,
 		"stream_id": stream_id,
 		"maxlen": TV_MAXLEN,
+	}
+	"""
+
+	if payload.secret != TV_WEBHOOK_SECRET:
+		raise HTTPException(status_code=401, detail="Invalid secret")
+
+	received_at = tvw_helpers.utc_now_iso()
+	tf = tvw_helpers.normalize_tf(payload.timeframe)
+	symbol = str(payload.symbol or "").upper().strip()
+	bar_close_time_raw = str(payload.bar_close_time or "").strip()
+	try:
+		bar_close_time_eastern = tvw_helpers.parse_iso_to_eastern(bar_close_time_raw)
+	except Exception:
+		logger.exception("Invalid bar_close_time: %r", bar_close_time_raw)
+		raise HTTPException(status_code=400, detail="Invalid bar_close_time")
+
+	if not tf or not symbol or not bar_close_time_raw:
+		raise HTTPException(
+			status_code=400,
+			detail="Missing/invalid timeframe, symbol, or bar_close_time",
+		)
+
+	signal_role = str(payload.signal_role or "").strip().lower()
+
+	signals = payload.signals
+	ml_levels = payload.ml_classifier_levels
+
+	normal_buy = tvw_helpers.safe_float(signals.normal_buy)
+	normal_sell = tvw_helpers.safe_float(signals.normal_sell)
+	strong_buy_plus = tvw_helpers.safe_float(signals.strong_buy_plus)
+	strong_sell_plus = tvw_helpers.safe_float(signals.strong_sell_plus)
+	exit_long = tvw_helpers.safe_float(signals.exit_long)
+	exit_short = tvw_helpers.safe_float(signals.exit_short)
+
+	ml_level_1 = tvw_helpers.safe_float(ml_levels.level_1)
+	ml_level_2 = tvw_helpers.safe_float(ml_levels.level_2)
+	ml_level_3 = tvw_helpers.safe_float(ml_levels.level_3)
+	ml_level_4 = tvw_helpers.safe_float(ml_levels.level_4)	
+
+	logger.info(
+		"\n{\n"
+		"[TV] recv_utc=%s\n"
+		"symbol=%s\n"
+		"tf=%s\n"
+		"signal_role=%s\n"
+		"bar_close_time_eastern=%s\n"
+		"open=%s\n"
+		"high=%s\n"
+		"low=%s\n"
+		"close=%s\n"
+		"volume=%s\n"
+		"normal_buy=%s\n"
+		"normal_sell=%s\n"
+		"strong_buy_plus=%s\n"
+		"strong_sell_plus=%s\n"
+		"exit_long=%s\n"
+		"exit_short=%s\n"
+		"ml_level_1=%s\n"
+		"ml_level_2=%s\n"
+		"ml_level_3=%s\n"
+		"ml_level_4=%s\n"
+		"}\n",
+		received_at,
+		symbol,
+		tf,
+		signal_role,
+		bar_close_time_eastern,
+		payload.open,
+		payload.high,
+		payload.low,
+		payload.close,
+		payload.volume,
+		normal_buy,
+		normal_sell,
+		strong_buy_plus,
+		strong_sell_plus,
+		exit_long,
+		exit_short,
+		ml_level_1,
+		ml_level_2,
+		ml_level_3,
+		ml_level_4,
+	)	
+
+	return {
+		"ok": True,
+		"accepted": True,
+		"symbol": symbol,
+		"timeframe": tf,
+		"signal_role": signal_role,
 	}
 
 
