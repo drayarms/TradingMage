@@ -97,6 +97,8 @@ class SignalFlags(BaseModel):
 	sell_plus: Optional[str] = None
 	bullish_exit: Optional[str] = None
 	bearish_exit: Optional[str] = None
+	trend_strength: Optional[str] = None
+	bar_color_value: Optional[str] = None
 
 
 class TradingViewWebhook(BaseModel):
