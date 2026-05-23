@@ -18,7 +18,6 @@ import trading_view_webhook_helpers
 import strategies
 import trade_records
 import plot
-from typing import Optional, Dict
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
 # Redis indexes use epoch timestamps derived from those timezone-aware values. Git change.
@@ -114,7 +113,7 @@ class TradingViewWebhook(BaseModel):
 	close: Optional[float] = None
 	volume: Optional[float] = None
 
-	signals: dict
+	signals: SignalFlags
 	
 
 
@@ -612,7 +611,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 
 	signals = payload.signals
 
-	"""buy = tvw_helpers.safe_float(signals.buy)
+	buy = tvw_helpers.safe_float(signals.buy)
 	buy_plus = tvw_helpers.safe_float(signals.buy_plus)
 	sell = tvw_helpers.safe_float(signals.sell)
 	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
@@ -657,9 +656,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		sell_plus,
 		bullish_exit,
 		bearish_exit,
-	)"""
-
-	logger.info("Raw TradingView signals payload: %r", payload.signals)
+	)
 
 	return {
 		"ok": True,
