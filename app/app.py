@@ -617,7 +617,8 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
 	bullish_exit = tvw_helpers.safe_float(signals.bullish_exit)
 	bearish_exit = tvw_helpers.safe_float(signals.bearish_exit)
-
+	trend_strength = tvw_helpers.safe_float(signals.trend_strength)
+	bar_color_value = tvw_helpers.safe_float(signals.bar_color_value)
 
 	logger.info(
 		"\n{\n"
@@ -638,6 +639,8 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"sell_plus=%s\n"
 		"bullish_exit=%s\n"
 		"bearish_exit=%s\n"
+		"trend_strength=%s\n"
+		"bar_color_value=%s\n"
 		"}\n",
 		received_at,
 		symbol,
@@ -656,6 +659,8 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		sell_plus,
 		bullish_exit,
 		bearish_exit,
+		trend_strength,
+		bar_color_value
 	)
 
 	return {
