@@ -89,20 +89,14 @@ stgs = strategies.Strategies(tvw_helpers, trade_recs)
 plotter = plot.Plot()
 
 
+
 class SignalFlags(BaseModel):
-	normal_buy: Optional[str] = None
-	normal_sell: Optional[str] = None
-	strong_buy_plus: Optional[str] = None
-	strong_sell_plus: Optional[str] = None
-	exit_long: Optional[str] = None
-	exit_short: Optional[str] = None
-
-
-class MLClassifierLevels(BaseModel):
-	level_1: Optional[str] = None
-	level_2: Optional[str] = None
-	level_3: Optional[str] = None
-	level_4: Optional[str] = None
+	buy: Optional[str] = None
+	buy_plus: Optional[str] = None
+	sell: Optional[str] = None
+	sell_plus: Optional[str] = None
+	bullish_exit: Optional[str] = None
+	bearish_exit: Optional[str] = None
 
 
 class TradingViewWebhook(BaseModel):
@@ -111,6 +105,7 @@ class TradingViewWebhook(BaseModel):
 	symbol: str
 	timeframe: str
 	bar_close_time: str
+	ml_grade: Optional[str] = None
 
 	open: Optional[float] = None
 	high: Optional[float] = None
@@ -119,7 +114,7 @@ class TradingViewWebhook(BaseModel):
 	volume: Optional[float] = None
 
 	signals: SignalFlags
-	ml_classifier_levels: MLClassifierLevels	
+	
 
 
 # When app starts, this function runs once
@@ -615,19 +610,14 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	signal_role = str(payload.signal_role or "").strip().lower()
 
 	signals = payload.signals
-	ml_levels = payload.ml_classifier_levels
 
-	normal_buy = tvw_helpers.safe_float(signals.normal_buy)
-	normal_sell = tvw_helpers.safe_float(signals.normal_sell)
-	strong_buy_plus = tvw_helpers.safe_float(signals.strong_buy_plus)
-	strong_sell_plus = tvw_helpers.safe_float(signals.strong_sell_plus)
-	exit_long = tvw_helpers.safe_float(signals.exit_long)
-	exit_short = tvw_helpers.safe_float(signals.exit_short)
+	buy = tvw_helpers.safe_float(signals.buy)
+	buy_plus = tvw_helpers.safe_float(signals.buy_plus)
+	sell = tvw_helpers.safe_float(signals.sell)
+	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
+	bullish_exit = tvw_helpers.safe_float(signals.bullish_exit)
+	bearish_exit = tvw_helpers.safe_float(signals.bearish_exit)
 
-	ml_level_1 = tvw_helpers.safe_float(ml_levels.level_1)
-	ml_level_2 = tvw_helpers.safe_float(ml_levels.level_2)
-	ml_level_3 = tvw_helpers.safe_float(ml_levels.level_3)
-	ml_level_4 = tvw_helpers.safe_float(ml_levels.level_4)	
 
 	logger.info(
 		"\n{\n"
@@ -635,44 +625,38 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"symbol=%s\n"
 		"tf=%s\n"
 		"signal_role=%s\n"
+		"ml_grade=%s\n"
 		"bar_close_time_eastern=%s\n"
 		"open=%s\n"
 		"high=%s\n"
 		"low=%s\n"
 		"close=%s\n"
 		"volume=%s\n"
-		"normal_buy=%s\n"
-		"normal_sell=%s\n"
-		"strong_buy_plus=%s\n"
-		"strong_sell_plus=%s\n"
-		"exit_long=%s\n"
-		"exit_short=%s\n"
-		"ml_level_1=%s\n"
-		"ml_level_2=%s\n"
-		"ml_level_3=%s\n"
-		"ml_level_4=%s\n"
+		"buy=%s\n"
+		"buy_plus=%s\n"
+		"sell=%s\n"
+		"sell_plus=%s\n"
+		"bullish_exit=%s\n"
+		"bearish_exit=%s\n"
 		"}\n",
 		received_at,
 		symbol,
 		tf,
 		signal_role,
+		payload.ml_grade,
 		bar_close_time_eastern,
 		payload.open,
 		payload.high,
 		payload.low,
 		payload.close,
 		payload.volume,
-		normal_buy,
-		normal_sell,
-		strong_buy_plus,
-		strong_sell_plus,
-		exit_long,
-		exit_short,
-		ml_level_1,
-		ml_level_2,
-		ml_level_3,
-		ml_level_4,
-	)	
+		buy,
+		buy_plus,
+		sell,
+		sell_plus,
+		bullish_exit,
+		bearish_exit,
+	)
 
 	return {
 		"ok": True,
