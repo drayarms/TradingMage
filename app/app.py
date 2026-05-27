@@ -103,11 +103,10 @@ class SignalFlags(BaseModel):
 
 class TradingViewWebhook(BaseModel):
 	secret: str
-	signal_role: str
 	symbol: str
 	timeframe: str
 	bar_close_time: str
-	ml_grade: Optional[str] = None
+	signal_role: str
 
 	open: Optional[float] = None
 	high: Optional[float] = None
@@ -116,7 +115,6 @@ class TradingViewWebhook(BaseModel):
 	volume: Optional[float] = None
 
 	signals: SignalFlags
-	
 
 
 # When app starts, this function runs once
@@ -394,26 +392,65 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		4. Mark idempotency key done.
 		5. Schedule strategy processing in the background.
 		6. Return 200 quickly to TradingView.
-	"""
-
-	"""
+	"""			
 	rr = tvw_helpers.require_redis()
 
 	if payload.secret != TV_WEBHOOK_SECRET:
 		raise HTTPException(status_code=401, detail="Invalid secret")
 
+	signals = payload.signals
+
+	buy = tvw_helpers.safe_float(signals.buy)
+	buy_plus = tvw_helpers.safe_float(signals.buy_plus)
+	sell = tvw_helpers.safe_float(signals.sell)
+	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
+	bullish_exit = tvw_helpers.safe_float(signals.bullish_exit)
+	bearish_exit = tvw_helpers.safe_float(signals.bearish_exit)
+	trend_strength = tvw_helpers.safe_float(signals.trend_strength)
+	bar_color_value = tvw_helpers.safe_float(signals.bar_color_value)
+
+	signal_role = str(payload.signal_role or "").strip().lower()
+
+	signal = None
+
+	if buy_plus == 1:
+		signal = "buy+"
+	elif buy == 1:
+		signal = "buy"
+	elif sell_plus == 1:
+		signal = "sell+"
+	elif sell == 1:
+		signal = "sell"
+	elif bullish_exit not in {None, 0.0}:
+		signal = "bullish_exit"
+	elif bearish_exit not in {None, 0.0}:
+		signal = "bearish_exit"
+
+	if signal is None:
+		logger.warning(
+			"No actionable signal detected in webhook payload: symbol=%r tf=%r signal_role=%r",
+			payload.symbol,
+			payload.timeframe,
+			signal_role,
+		)
+
+		raise HTTPException(
+			status_code=400,
+			detail="No actionable signal found in payload",
+		)	
+
 	tf = tvw_helpers.normalize_tf(payload.timeframe)
 	symbol = str(payload.symbol or "").upper().strip()
-	signal = payload.signal
 	bar_close_time_raw = str(payload.bar_close_time or "").strip()
 
-	if not tf or not symbol or not signal or not bar_close_time_raw:
+	if not tf or not symbol or not signal or not bar_close_time_raw or not signal_role:
 		logger.warning(
-			"Invalid webhook payload: timeframe=%r symbol=%r signal=%r bar_close_time=%r",
+			"Invalid webhook payload: timeframe=%r symbol=%r signal=%r bar_close_time=%r signal_role=%r",
 			payload.timeframe,
 			payload.symbol,
-			payload.signal,
+			signal,
 			payload.bar_close_time,
+			signal_role,
 		)
 		raise HTTPException(
 			status_code=400,
@@ -425,6 +462,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		timeframe=tf,
 		signal=signal,
 		bar_close_time=bar_close_time_raw,
+		signal_role=signal_role
 	)
 
 	if not acquired:
@@ -432,11 +470,12 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 
 		if existing == "processing":
 			logger.info(
-				"TradingView alert already in progress: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s",
+				"TradingView alert already in progress: symbol=%s tf=%s signal=%s bar_close_time=%s signal_role=%s dedupe_key=%s",
 				symbol,
 				tf,
 				signal,
 				bar_close_time_raw,
+				signal_role,
 				dedupe_key,
 			)
 			return {
@@ -448,16 +487,18 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 				"timeframe": tf,
 				"signal": signal,
 				"bar_close_time": bar_close_time_raw,
+				"signal_role": signal_role
 			}
 
 		if existing and existing.startswith("done:"):
 			existing_stream_id = existing.split("done:", 1)[1]
 			logger.info(
-				"Duplicate TradingView alert ignored: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s stream_id=%s",
+				"Duplicate TradingView alert ignored: symbol=%s tf=%s signal=%s bar_close_time=%s signal_role=%s dedupe_key=%s stream_id=%s",
 				symbol,
 				tf,
 				signal,
 				bar_close_time_raw,
+				signal_role,
 				dedupe_key,
 				existing_stream_id,
 			)
@@ -470,15 +511,17 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 				"timeframe": tf,
 				"signal": signal,
 				"bar_close_time": bar_close_time_raw,
+				"signal_role": signal_role,
 				"stream_id": existing_stream_id,
 			}
 
 		logger.info(
-			"Duplicate TradingView alert ignored with unexpected dedupe state: symbol=%s tf=%s signal=%s bar_close_time=%s dedupe_key=%s value=%r",
+			"Duplicate TradingView alert ignored with unexpected dedupe state: symbol=%s tf=%s signal=%s bar_close_time=%s signal_role=%s dedupe_key=%s value=%r",
 			symbol,
 			tf,
 			signal,
 			bar_close_time_raw,
+			signal_role,
 			dedupe_key,
 			existing,
 		)
@@ -490,6 +533,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 			"timeframe": tf,
 			"signal": signal,
 			"bar_close_time": bar_close_time_raw,
+			"signal_role": signal_role,
 		}
 
 	stream_key = tvw_helpers.stream_key(tf, symbol)
@@ -503,8 +547,10 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"timeframe": tf,
 		"signal": signal,
 		"bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
+		"trend_strength": tvw_helpers.to_str(trend_strength),
+		"bar_color_value": tvw_helpers.to_str(bar_color_value),
+		"signal_role": tvw_helpers.to_str(signal_role),
 		"received_at": received_at,
-		"price": tvw_helpers.to_str(payload.price),
 		"open": tvw_helpers.to_str(payload.open),
 		"high": tvw_helpers.to_str(payload.high),
 		"low": tvw_helpers.to_str(payload.low),
@@ -517,8 +563,10 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"timeframe": tf,
 		"signal": signal,
 		"bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
+		"trend_strength": tvw_helpers.to_str(trend_strength),
+		"bar_color_value": tvw_helpers.to_str(bar_color_value),
+		"signal_role": tvw_helpers.to_str(signal_role),
 		"received_at": received_at,
-		"price": tvw_helpers.to_str(payload.price),
 		"open": tvw_helpers.to_str(payload.open),
 		"high": tvw_helpers.to_str(payload.high),
 		"low": tvw_helpers.to_str(payload.low),
@@ -556,13 +604,15 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		raise HTTPException(status_code=500, detail="Redis write failed")
 
 	logger.info(
-		"\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_eastern=%s\nprice=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
+		"\n{\n[TV] recv_utc=%s\nsymbol=%s\ntf=%s\nsignal=%s\nbar_close_time_eastern=%s\ntrend_strength=%s\nbar_color_value=%s\nsignal_role=%s\nopen=%s\nhigh=%s\nlow=%s\nclose=%s\nvolume=%s\n}\n",
 		received_at,
 		symbol,
 		tf,
-		signal.upper(),
+		str(signal).upper(),
 		bar_close_time_eastern,
-		payload.price,
+		trend_strength,
+		bar_color_value,
+		signal_role,
 		payload.open,
 		payload.high,
 		payload.low,
@@ -583,95 +633,15 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
+		"trend_strength":tvw_helpers.to_str(trend_strength),
+		"bar_color_value":tvw_helpers.to_str(bar_color_value),
+		"signal_role": tvw_helpers.to_str(signal_role),
 		"stream": stream_key,
 		"state": state_key,
 		"stream_id": stream_id,
 		"maxlen": TV_MAXLEN,
 	}
-	"""
-
-	if payload.secret != TV_WEBHOOK_SECRET:
-		raise HTTPException(status_code=401, detail="Invalid secret")
-
-	received_at = tvw_helpers.utc_now_iso()
-	tf = tvw_helpers.normalize_tf(payload.timeframe)
-	symbol = str(payload.symbol or "").upper().strip()
-	bar_close_time_raw = str(payload.bar_close_time or "").strip()
-	try:
-		bar_close_time_eastern = tvw_helpers.parse_iso_to_eastern(bar_close_time_raw)
-	except Exception:
-		logger.exception("Invalid bar_close_time: %r", bar_close_time_raw)
-		raise HTTPException(status_code=400, detail="Invalid bar_close_time")
-
-	if not tf or not symbol or not bar_close_time_raw:
-		raise HTTPException(
-			status_code=400,
-			detail="Missing/invalid timeframe, symbol, or bar_close_time",
-		)
-
-	signal_role = str(payload.signal_role or "").strip().lower()
-
-	signals = payload.signals
-
-	buy = tvw_helpers.safe_float(signals.buy)
-	buy_plus = tvw_helpers.safe_float(signals.buy_plus)
-	sell = tvw_helpers.safe_float(signals.sell)
-	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
-	bullish_exit = tvw_helpers.safe_float(signals.bullish_exit)
-	bearish_exit = tvw_helpers.safe_float(signals.bearish_exit)
-	trend_strength = tvw_helpers.safe_float(signals.trend_strength)
-	bar_color_value = tvw_helpers.safe_float(signals.bar_color_value)
-
-	logger.info(
-		"\n{\n"
-		"[TV] recv_utc=%s\n"
-		"symbol=%s\n"
-		"tf=%s\n"
-		"signal_role=%s\n"
-		"ml_grade=%s\n"
-		"bar_close_time_eastern=%s\n"
-		"open=%s\n"
-		"high=%s\n"
-		"low=%s\n"
-		"close=%s\n"
-		"volume=%s\n"
-		"buy=%s\n"
-		"buy_plus=%s\n"
-		"sell=%s\n"
-		"sell_plus=%s\n"
-		"bullish_exit=%s\n"
-		"bearish_exit=%s\n"
-		"trend_strength=%s\n"
-		"bar_color_value=%s\n"
-		"}\n",
-		received_at,
-		symbol,
-		tf,
-		signal_role,
-		payload.ml_grade,
-		bar_close_time_eastern,
-		payload.open,
-		payload.high,
-		payload.low,
-		payload.close,
-		payload.volume,
-		buy,
-		buy_plus,
-		sell,
-		sell_plus,
-		bullish_exit,
-		bearish_exit,
-		trend_strength,
-		bar_color_value
-	)
-
-	return {
-		"ok": True,
-		"accepted": True,
-		"symbol": symbol,
-		"timeframe": tf,
-		"signal_role": signal_role,
-	}
+	
 
 
 @app.get("/retrieve_nth_last_alert")
@@ -705,7 +675,6 @@ def retrieve_nth_last_alert(
 			"id": entry_id,
 			"fields": {
 				**fields,
-				"price": tvw_helpers.safe_float(fields.get("price")),
 				"open": tvw_helpers.safe_float(fields.get("open")),
 				"high": tvw_helpers.safe_float(fields.get("high")),
 				"low": tvw_helpers.safe_float(fields.get("low")),
@@ -763,7 +732,7 @@ async def debug_state_symbol(
 	timeframe: str,
 	symbol: str,
 	fields: str = Query(
-		default="symbol,timeframe,signal,bar_close_time_eastern,received_at,price,open,high,low,close,volume,stream_key"
+		default="symbol,timeframe,signal,bar_close_time_eastern,received_at,open,high,low,close,volume,stream_key"
 	),
 ):
 	"""
@@ -772,9 +741,9 @@ async def debug_state_symbol(
 	Example calls:
 		From EC2:
 			curl "http://localhost:8000/debug/state/15m/AAPL" uses default fiels: symbol,timeframe,signal,bar_close_time,...
-			curl "http://localhost:8000/debug/state/15m/AAPL?fields=price,signal"  specifies custom fields
+			curl "http://localhost:8000/debug/state/15m/AAPL?fields=signal"  specifies custom fields
 		From laptop:
-			curl "http://<EC2_PUBLIC_IP>/debug/state/15m/AAPL?fields=price,signal"
+			curl "http://<EC2_PUBLIC_IP>/debug/state/15m/AAPL?fields=signal"
 	"""
 	rr = tvw_helpers.require_redis()
 
@@ -801,7 +770,7 @@ async def debug_state_symbol(
 
 	data = {field: value for field, value in zip(field_list, values)}
 
-	for numeric_field in ("price", "open", "high", "low", "close", "volume"):
+	for numeric_field in ("open", "high", "low", "close", "volume"):
 		if numeric_field in data:
 			data[numeric_field] = tvw_helpers.safe_float(data[numeric_field])
 
@@ -857,7 +826,6 @@ async def debug_stream_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"price": tvw_helpers.safe_float(fields.get("price")),
 					"open": tvw_helpers.safe_float(fields.get("open")),
 					"high": tvw_helpers.safe_float(fields.get("high")),
 					"low": tvw_helpers.safe_float(fields.get("low")),
@@ -916,7 +884,6 @@ async def debug_stream_range_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"price": tvw_helpers.safe_float(fields.get("price")),
 					"open": tvw_helpers.safe_float(fields.get("open")),
 					"high": tvw_helpers.safe_float(fields.get("high")),
 					"low": tvw_helpers.safe_float(fields.get("low")),

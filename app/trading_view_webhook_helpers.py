@@ -181,6 +181,7 @@ class TradingViewWebhookHelpers:
 		timeframe: str,
 		signal: str,
 		bar_close_time: str,
+		signal_role: str,
 	) -> str:
 		"""
 		Builds a unique fingerpirnt for each alert so that can be compared against an already executed
@@ -193,11 +194,13 @@ class TradingViewWebhookHelpers:
 		tf = self.normalize_tf(timeframe)
 		sig = str(signal or "").strip()
 		bar_time = str(bar_close_time or "").strip()
+		role = str(signal_role or "").strip().lower()
 
-		fingerprint = f"{sym}|{tf}|{sig}|{bar_time}"
+		fingerprint = f"{sym}|{tf}|{sig}|{bar_time}|{role}"
 		digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
 		return f"tv:idempotency:{digest}"
+
 
 	def acquire_alert_idempotency(
 		self,
@@ -205,6 +208,7 @@ class TradingViewWebhookHelpers:
 		timeframe: str,
 		signal: str,
 		bar_close_time: str,
+		signal_role: str,
 		ttl_seconds: Optional[int] = None,
 	) -> tuple[bool, str]:
 		"""
@@ -215,6 +219,7 @@ class TradingViewWebhookHelpers:
 			timeframe (str):
 			signal (str):
 			bar_close_time (str):
+			signal_role (str):
 			ttl_seconds (int):
 		Returns:
 			bool, key (tuple):
@@ -226,6 +231,7 @@ class TradingViewWebhookHelpers:
 			timeframe=timeframe,
 			signal=signal,
 			bar_close_time=bar_close_time,
+			signal_role=signal_role,
 		)
 
 		ttl = ttl_seconds or self.alert_dedupe_ttl_seconds

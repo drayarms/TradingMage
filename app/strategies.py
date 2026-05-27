@@ -75,9 +75,10 @@ class Strategies:
 			- current_tf="1h", higher_tf="4h", relation="opposite"
 			  → True if latest 1h signal is opposite of latest 4h signal
 		"""
-
 		tf = self.tvw_helpers.normalize_tf(timeframe)
-		if tf != current_tf:
+		current_tf_norm = self.tvw_helpers.normalize_tf(current_tf)
+
+		if tf != current_tf_norm:
 			return False
 
 		sym = str(ticker or "").upper().strip()
@@ -86,15 +87,33 @@ class Strategies:
 		if current_side not in {"buy", "sell"}:
 			return False
 
-		last_alert = self.tvw_helpers.get_nth_last_alert(sym, higher_tf, 1)
-		if last_alert is None:
+		current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
+
+		if current_alert is None:
 			return False
 
-		_, last_fields = last_alert
-		last_side = self.tvw_helpers.normalize_signal(last_fields.get("signal"))
+		_, current_fields = current_alert
 
-		if last_side not in {"buy", "sell"}:
+		if not self.is_confirmation_signal(current_fields):
+			logger.info(
+				"tf-relative check skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
+				tf,
+				sym,
+				current_fields.get("signal"),
+				current_fields.get("signal_role"),
+			)
 			return False
+
+		latest_higher_signal = self.get_latest_confirmation_directional_signal(
+			sym,
+			higher_tf,
+			max_scan=500,
+		)
+
+		if latest_higher_signal is None:
+			return False
+
+		last_side = latest_higher_signal["side"]
 
 		if relation == "opposite":
 			return current_side != last_side
@@ -193,6 +212,9 @@ class Strategies:
 			return None
 
 		for entry_id, fields in entries:
+			if not self.is_confirmation_signal(fields):
+				continue	
+						
 			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
 
 			if entry_side not in {"buy", "sell"}:
@@ -306,52 +328,48 @@ class Strategies:
 		if current_side not in {"buy", "sell"}:
 			return False
 
-		if not mid_tf_norm or not higher_tf_norm:
+		current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
+
+		if current_alert is None:
+			return False
+
+		_, current_fields = current_alert
+
+		if not self.is_confirmation_signal(current_fields):
 			logger.info(
-				"Invalid timeframe configuration in lower_tf_confirms_mid_tf_opposite_of_higher_tf: mid_tf=%r higher_tf=%r",
-				mid_tf,
-				higher_tf,
-			)
-			return False
-
-		last_mid_alert = self.tvw_helpers.get_nth_last_alert(sym, mid_tf_norm, 1)
-		if last_mid_alert is None:
-			return False
-
-		last_higher_alert = self.tvw_helpers.get_nth_last_alert(sym, higher_tf_norm, 1)
-		if last_higher_alert is None:
-			return False
-
-		_, last_mid_fields = last_mid_alert
-		_, last_higher_fields = last_higher_alert
-
-		last_mid_signal = self.tvw_helpers.normalize_signal(last_mid_fields.get("signal"))
-		last_higher_signal = self.tvw_helpers.normalize_signal(last_higher_fields.get("signal"))
-
-		if last_mid_signal not in {"buy", "sell"}:
-			logger.info(
-				"lower-tf confirms %r vs %r: INVALID last_mid_signal=%r for ticker=%r",
-				mid_tf_norm,
-				higher_tf_norm,
-				last_mid_signal,
+				"lower-tf confirms skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
+				tf,
 				sym,
+				current_fields.get("signal"),
+				current_fields.get("signal_role"),
 			)
 			return False
 
-		if last_higher_signal not in {"buy", "sell"}:
-			logger.info(
-				"lower-tf confirms %r vs %r: INVALID last_higher_signal=%r for ticker=%r",
-				mid_tf_norm,
-				higher_tf_norm,
-				last_higher_signal,
-				sym,
-			)
+		last_mid_signal = self.get_latest_confirmation_directional_signal(
+			sym,
+			mid_tf_norm,
+			max_scan=500,
+		)
+
+		if last_mid_signal is None:
 			return False
+
+		last_higher_signal = self.get_latest_confirmation_directional_signal(
+			sym,
+			higher_tf_norm,
+			max_scan=500,
+		)
+
+		if last_higher_signal is None:
+			return False
+
+		last_mid_side = last_mid_signal["side"]
+		last_higher_side = last_higher_signal["side"]
 
 		is_true = (
-			(current_side == last_mid_signal) and
-			(last_mid_signal != last_higher_signal)
-		)
+			(current_side == last_mid_side) and
+			(last_mid_side != last_higher_side)
+		)		
 
 		logger.info(
 			"lower-tf confirms %r vs %r: ticker=%r tf=%r current=%r last_mid=%r last_higher=%r result=%r",
@@ -360,12 +378,12 @@ class Strategies:
 			sym,
 			tf,
 			current_side,
-			last_mid_signal,
-			last_higher_signal,
+			last_mid_side,
+			last_higher_side,
 			is_true,
 		)
 
-		return is_true		
+		return is_true
 
 
 	def has_opposite_signal_since_last_valid_same_side_higher_tf(
@@ -457,25 +475,29 @@ class Strategies:
 			)
 			return False
 
-		latest_valid_same_side_anchor_signal = self.get_latest_valid_same_side_signal(
+		latest_anchor_signal = self.get_latest_confirmation_directional_signal(
 			sym,
-			target_side,
 			anchor_tf_norm,
 			max_scan=max_scan_anchor_tf,
 		)
 
-		if not latest_valid_same_side_anchor_signal:
-			logger.info("No same-side valid %r anchor found for %r", anchor_tf_norm, sym)
+		if not latest_anchor_signal:
+			logger.info("No confirmation %r anchor found for %r", anchor_tf_norm, sym)
 			return False
 
-		anchor_time_str = latest_valid_same_side_anchor_signal.get("bar_close_time_eastern")
-		if not anchor_time_str:
+		if latest_anchor_signal["side"] != target_side:
 			logger.info(
-				"Anchor %r signal for %r is missing bar_close_time_eastern",
+				"Latest confirmation %r anchor for %r is not same-side: target_side=%r anchor_side=%r",
 				anchor_tf_norm,
 				sym,
+				target_side,
+				latest_anchor_signal["side"],
 			)
 			return False
+
+		anchor_time_str = latest_anchor_signal["fields"].get(
+			"bar_close_time_eastern"
+		)		
 
 		try:
 			anchor_time = datetime.fromisoformat(anchor_time_str)
@@ -502,6 +524,10 @@ class Strategies:
 			return False
 
 		for entry_id, fields in entries:
+
+			if not self.is_confirmation_signal(fields):
+				continue
+
 			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
 			if entry_side != opposite_side:
 				continue
@@ -662,9 +688,8 @@ class Strategies:
 		if base_num_shares <= 0:
 			return 0.0
 
-		anchor_signal = self.get_latest_valid_same_side_signal(
+		anchor_signal = self.get_latest_confirmation_directional_signal(
 			sym,
-			target_side,
 			anchor_tf_norm,
 			max_scan=max_scan_anchor_tf,
 		)
@@ -672,7 +697,10 @@ class Strategies:
 		if not anchor_signal:
 			return 0.0
 
-		anchor_time_str = anchor_signal.get("bar_close_time_eastern")
+		if anchor_signal["side"] != target_side:
+			return 0.0
+
+		anchor_time_str = anchor_signal["fields"].get("bar_close_time_eastern")
 		if not anchor_time_str:
 			return 0.0
 
@@ -693,6 +721,10 @@ class Strategies:
 		qualifying_count = 0
 
 		for entry_id, fields in entries:
+
+			if not self.is_confirmation_signal(fields):
+				continue
+
 			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
 
 			if entry_side not in {"buy", "sell"}:
@@ -763,12 +795,16 @@ class Strategies:
 		expected_anchor_side = "buy" if position_side == "long" else "sell"
 		opposite_anchor_side = "sell" if expected_anchor_side == "buy" else "buy"
 
-		last_anchor_alert = self.tvw_helpers.get_nth_last_alert(ticker, anchor_tf, 1)
-		if last_anchor_alert is None:
+		latest_anchor_signal = self.get_latest_confirmation_directional_signal(
+			ticker,
+			anchor_tf,
+			max_scan=500,
+		)
+
+		if latest_anchor_signal is None:
 			return False
 
-		_, last_anchor_fields = last_anchor_alert
-		last_anchor_signal = self.tvw_helpers.normalize_signal(last_anchor_fields.get("signal"))
+		last_anchor_signal = latest_anchor_signal["side"]
 
 		is_true = last_anchor_signal == opposite_anchor_side
 
@@ -781,8 +817,8 @@ class Strategies:
 			is_true,
 		)
 
-		return is_true		
-			
+		return is_true			
+
 
 	def _monitor_alpaca_order_fill(
 		self,
@@ -985,6 +1021,211 @@ class Strategies:
 					logger.exception("Failed clearing pending exit guard in background: key=%r", pending_exit_key)
 
 
+	def get_latest_directional_signal(self, ticker, timeframe, signal_role, max_scan=100):
+		"""
+		Retrieve the most recent directional trading signal from a Redis stream, filtered by signal role.
+
+		Scans the stream in reverse chronological order and returns the latest
+		directional signal entry whose normalized signal is either "buy" or "sell".
+
+		Exit signals such as "bullish_exit" / "bearish_exit", unknown values,
+		and non-directional events are ignored.
+
+		This helper is primarily used by exit logic to determine whether an
+		intermediary timeframe exit signal should liquidate a long or short
+		position.
+
+		Parameters:
+			ticker (str):
+				Ticker symbol to inspect.
+
+			timeframe (str):
+				Timeframe stream to inspect (ex: "5m", "15m", "1h").
+
+			signal_role (str):
+				confirmation or contrarian
+
+			max_scan (int):
+				Maximum number of recent stream entries to scan backwards.
+				Default is 100.
+
+		Returns:
+			dict | None:
+				Returns a dictionary containing:
+					{
+						"id": <redis stream entry id>,
+						"side": "buy" | "sell",
+						"fields": <raw redis stream fields>,
+					}
+
+				Returns None if no directional signal is found.
+		"""
+		sym = str(ticker or "").upper().strip()
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		expected_signal_role = str(signal_role or "").strip().lower()
+		stream_key = self.tvw_helpers.stream_key(tf, sym)
+
+		try:
+			entries = self.r.xrevrange(stream_key, count=max_scan)
+		except Exception:
+			logger.exception(
+				"Failed reading latest directional signal: ticker=%r tf=%r signal_role=%r",
+				sym,
+				tf,
+				expected_signal_role,
+			)
+			return None
+
+		for entry_id, fields in entries:
+			entry_signal_role = str(fields.get("signal_role") or "").strip().lower()
+
+			if expected_signal_role and entry_signal_role != expected_signal_role:
+				continue
+
+			side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+
+			if side in {"buy", "sell"}:
+				return {
+					"id": entry_id,
+					"side": side,
+					"signal_role": entry_signal_role,
+					"fields": fields,
+				}
+
+		return None		
+
+
+	def is_confirmation_signal(self, fields):
+		"""
+		Determine whether a Redis stream/state entry represents
+		a confirmation signal.
+
+		Checks the "signal_role" field and returns True only when
+		the normalized role equals "confirmation".
+
+		Parameters:
+			fields (dict):
+				Redis stream/state fields associated with a TradingView alert.
+
+		Returns:
+			bool:
+				True if the signal_role is "confirmation",
+				otherwise False.
+		"""		
+		return str(fields.get("signal_role") or "").strip().lower() == "confirmation"
+
+
+	def latest_tf_signal_is_confirmation(self, ticker, timeframe):
+		"""
+		Check whether the latest alert for a timeframe is a
+		confirmation signal.
+
+		Retrieves the most recent Redis stream entry for the specified
+		ticker/timeframe and evaluates whether its signal_role is
+		"confirmation".
+
+		This helper is primarily used by strategy validation logic to
+		quickly determine whether the latest timeframe context is based
+		on confirmation signals rather than contrarian or unknown signals.
+
+		Parameters:
+			ticker (str):
+				Ticker symbol to inspect.
+
+			timeframe (str):
+				Timeframe stream to inspect (ex: "1m", "5m", "15m", "1h").
+
+		Returns:
+			bool:
+				True if the latest alert exists and is a confirmation signal.
+				False otherwise.
+		"""		
+		last_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+		if last_alert is None:
+			return False
+
+		_, fields = last_alert
+		return self.is_confirmation_signal(fields)
+			
+
+	def get_latest_confirmation_directional_signal(self, ticker, timeframe, max_scan=500):
+		"""
+		Retrieve the most recent confirmation-based directional signal
+		from a Redis stream.
+
+		Scans the specified timeframe stream in reverse chronological order
+		and returns the latest directional signal whose:
+
+			1. signal_role == "confirmation"
+			2. normalized signal is either "buy" or "sell"
+
+		Non-confirmation signals such as:
+			- contrarian
+			- unknown
+			- exit signals
+			- malformed signals
+
+		are ignored.
+
+		This helper is primarily used by strategy logic to ensure that
+		entry/exit decisions are based only on confirmation regime signals,
+		even if newer contrarian or unknown signals exist in the stream.
+
+		Parameters:
+			ticker (str):
+				Ticker symbol to inspect.
+
+			timeframe (str):
+				Timeframe stream to inspect (ex: "1m", "5m", "15m", "1h").
+
+			max_scan (int):
+				Maximum number of recent Redis stream entries to scan
+				backwards before giving up.
+				Default is 500.
+
+		Returns:
+			dict | None:
+				Returns a dictionary containing:
+
+					{
+						"id": <redis stream entry id>,
+						"side": "buy" | "sell",
+						"fields": <raw redis stream fields>,
+					}
+
+				Returns None if no qualifying confirmation directional
+				signal is found.
+		"""		
+		sym = str(ticker or "").upper().strip()
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		stream_key = self.tvw_helpers.stream_key(tf, sym)
+
+		try:
+			entries = self.r.xrevrange(stream_key, count=max_scan)
+		except Exception:
+			logger.exception(
+				"Failed reading latest confirmation directional signal: ticker=%r tf=%r",
+				sym,
+				tf,
+			)
+			return None
+
+		for entry_id, fields in entries:
+			signal_role = str(fields.get("signal_role") or "").strip().lower()
+			if signal_role != "confirmation":
+				continue
+
+			side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+			if side in {"buy", "sell"}:
+				return {
+					"id": entry_id,
+					"side": side,
+					"fields": fields,
+				}
+
+		return None			
+
+
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
 		"""
 		Strategy relies on latest signals of three different timeframes; an anchor timeframe (highest timeframe), an entry timeframe (lowerst timeframe)
@@ -1012,15 +1253,42 @@ class Strategies:
 		if tf != entry_tf:
 			return None
 
-		last_entry_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
-		last_anchor_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, anchor_tf, 1)
+		current_entry_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
+
+		if current_entry_tf_alert is None:
+			logger.info("Entry skipped: missing current %r alert for %r", tf, ticker)
+			return None
+
+		_, current_entry_tf_fields = current_entry_tf_alert
+
+		current_entry_tf_signal_role = str(
+			current_entry_tf_fields.get("signal_role") or ""
+		).strip().lower()
+
+		if current_entry_tf_signal_role != "confirmation":
+			logger.info(
+				"Entry skipped: current entry_tf alert is not confirmation for %r tf=%r signal=%r signal_role=%r",
+				ticker,
+				tf,
+				current_entry_tf_fields.get("signal"),
+				current_entry_tf_signal_role,
+			)
+			return None
+
+		last_entry_tf_alert = current_entry_tf_alert
+
+		last_anchor_tf_alert = self.get_latest_confirmation_directional_signal(
+			ticker,
+			anchor_tf,
+			max_scan=500,
+		)
 
 		if last_entry_tf_alert is None or last_anchor_tf_alert is None:
 			logger.info("Strategy skipped: missing alert context for %r", ticker)
 			return None
 
 		_, last_entry_tf_fields = last_entry_tf_alert
-		_, last_anchor_tf_fields = last_anchor_tf_alert
+		last_anchor_tf_fields = last_anchor_tf_alert["fields"]
 
 		last_entry_tf_signal = self.tvw_helpers.normalize_signal(last_entry_tf_fields.get("signal"))
 		last_anchor_tf_signal = self.tvw_helpers.normalize_signal(last_anchor_tf_fields.get("signal"))
@@ -1192,6 +1460,9 @@ class Strategies:
 			elif redis_position_side == "short":
 				position_qty_for_anchor_check = -redis_num_shares		
 
+
+		# EXIT CONDITIONS
+
 		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite")
 
 		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf)
@@ -1202,40 +1473,97 @@ class Strategies:
 			position_qty_for_anchor_check,
 		)
 
+		# Exit signal roles are unkown. So we use which type (confirmation buy or sell) they follow to determine if they qualify for exit
+		is_intermediary_tf_exit_signal = (
+			tf == self.tvw_helpers.normalize_tf(intermediary_tf)
+			and signal in {"bullish_exit", "bearish_exit"}
+		)
+
+		exit_signal_matches_open_position = False
+		latest_intermediary_direction = None
+
+		if is_intermediary_tf_exit_signal:
+			latest_directional_alert = self.get_latest_directional_signal(
+				ticker,
+				intermediary_tf,
+				"confirmation",
+				max_scan=100,
+			)
+
+			if latest_directional_alert: # Bullish exit matches confirmation buy or bearish exit matches confirmation sell
+				latest_intermediary_direction = latest_directional_alert["side"]
+
+				if simulation_only:
+					exit_signal_matches_open_position = (
+						(
+							redis_position_side == "long"
+							and latest_intermediary_direction == "buy"
+							and signal == "bullish_exit"
+						)
+						or
+						(
+							redis_position_side == "short"
+							and latest_intermediary_direction == "sell"
+							and signal == "bearish_exit"
+						)
+					)
+				else:
+					exit_signal_matches_open_position = (
+						(
+							alpaca_position_qty > 0
+							and latest_intermediary_direction == "buy"
+							and signal == "bullish_exit"
+						)
+						or
+						(
+							alpaca_position_qty < 0
+							and latest_intermediary_direction == "sell"
+							and signal == "bearish_exit"
+						)
+					)		
+
 		should_exit = (
 			is_intermediary_tf_opposite_of_last_anchor_tf
 			or lower_tf_confirms_intermediary_opposite_of_anchor
 			or anchor_opposite_open_position
+			or exit_signal_matches_open_position
 		)
 
 		logger.info(
-			"exit %r opposite-check for %r => intermediary opp anchor: %r  lower tf confirms intermediary opp anchor: %r  anchor opp open position: %r",
+			"exit %r checks for %r => intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
 			strategy_name,
 			ticker,
 			is_intermediary_tf_opposite_of_last_anchor_tf,
 			lower_tf_confirms_intermediary_opposite_of_anchor,
 			anchor_opposite_open_position,
-		)
+			is_intermediary_tf_exit_signal,
+			latest_intermediary_direction,
+			exit_signal_matches_open_position,
+		)		
 
 		if not should_exit:
 			return None
 
-
 		alpaca_num_shares = abs(alpaca_position_qty)		
 
+		latest_intermediary_tf_signal = self.get_latest_directional_signal(
+			ticker,
+			intermediary_tf,
+			"confirmation",
+			max_scan=100,
+		)
 
-		last_intermediary_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, intermediary_tf, 1)
-		if last_intermediary_tf_alert is None:
-			logger.info("No %r signal found for %r", intermediary_tf, ticker)
+		if latest_intermediary_tf_signal is None:
+			logger.info("No confirmation %r directional signal found for %r", intermediary_tf, ticker)
 			return None
 
-		_, last_intermediary_tf_fields = last_intermediary_tf_alert
-		signal_intermediary_tf = self.tvw_helpers.normalize_signal(last_intermediary_tf_fields.get("signal"))
+		signal_intermediary_tf = latest_intermediary_tf_signal["side"]
 
 		logger.info(
-			"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
+			"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
 			ticker,
 			signal_intermediary_tf,
+			latest_intermediary_tf_signal.get("signal_role"),
 			redis_position_side,
 			redis_num_shares,
 			alpaca_num_shares,
@@ -1243,11 +1571,11 @@ class Strategies:
 
 		if signal_intermediary_tf not in {"buy", "sell"}:
 			logger.info(
-				"Latest intermediary_tf signal is invalid/unknown for %r: %r",
+				"Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
 				ticker,
 				signal_intermediary_tf,
 			)
-			return None
+			return None		
 
 		# At this point, should_exit is already True.
 		# So liquidation should be based on the actual open position side,
@@ -1635,15 +1963,7 @@ class Strategies:
 				num_shares,
 				execution_qty,
 			)
-			return None
-
-		#if execution_qty < self.SMALLEST_SHARE_SIZE:
-			#logger.info(
-				#"Execution qty below minimum threshold for %r: %r",
-				#ticker,
-				#execution_qty,
-			#)
-			#return None			
+			return None			
 
 		if execution_qty <= 0:
 			logger.info(
