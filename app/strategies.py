@@ -912,7 +912,8 @@ class Strategies:
 			  may take significantly longer than during regular market hours.
 		"""	
 		try:
-			deadline = time.time() + timeout_seconds
+			accepted_at = None
+			hard_deadline = time.time() + max(timeout_seconds * 4, 90)
 			terminal_bad_statuses = {
 				"canceled",
 				"expired",
@@ -921,7 +922,7 @@ class Strategies:
 				"stopped",
 			}
 
-			while time.time() < deadline:
+			while time.time() < hard_deadline:
 				try:
 					order = alpaca_api.get_order(order_id)
 					status = str(getattr(order, "status", "") or "").lower()
@@ -934,6 +935,27 @@ class Strategies:
 						getattr(order, "filled_qty", None),
 						getattr(order, "filled_avg_price", None),
 					)
+
+					accepted_statuses = {
+						"accepted",
+						"new",
+						"pending_new",
+						"partially_filled",
+						"pending_replace",
+						"pending_cancel",
+					}
+
+					if accepted_at is None and status in accepted_statuses:
+						accepted_at = time.time()
+						logger.info(
+							"Background Alpaca order accepted/submitted; starting fill timeout: strategy=%r ticker=%r order_type=%r order_id=%r status=%r timeout_seconds=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							order_id,
+							status,
+							timeout_seconds,
+						)						
 
 					if status == "filled":
 						fill_price = getattr(order, "filled_avg_price", None) or fallback_price
@@ -962,13 +984,17 @@ class Strategies:
 								order_type,
 							)
 
+						actual_filled_qty = float(
+						    getattr(order, "filled_qty", execution_qty) or execution_qty
+						)							
+
 						if do_redis_bookkeeping:
 							self.trade_records.record_live_alpaca_fill(
 								strategy_name=strategy_name,
 								ticker=ticker,
 								date=date,
 								fill_price=fill_price,
-								filled_qty=execution_qty,
+								filled_qty=actual_filled_qty,
 								order_type=order_type,
 								alpaca_position_qty=alpaca_position_qty_after_fill,
 								alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
@@ -987,14 +1013,43 @@ class Strategies:
 						)
 						return
 
+					if accepted_at is not None and (time.time() - accepted_at) >= timeout_seconds:
+						logger.warning(
+							"Background Alpaca order not filled after accepted/submitted timeout: strategy=%r ticker=%r order_type=%r order_id=%r status=%r timeout_seconds=%r",
+							strategy_name,
+							ticker,
+							order_type,
+							order_id,
+							status,
+							timeout_seconds,
+						)
+
+						try:
+							alpaca_api.cancel_order(order_id)
+							logger.info(
+								"Background canceled unfilled Alpaca order after accepted/submitted timeout: ticker=%r order_id=%r",
+								ticker,
+								order_id,
+							)
+						except Exception:
+							logger.exception(
+								"Background failed canceling unfilled Alpaca order after accepted/submitted timeout: ticker=%r order_id=%r",
+								ticker,
+								order_id,
+							)
+
+						return						
+
 				except Exception:
 					logger.exception("Background failed polling Alpaca order status: ticker=%r order_id=%r", ticker, order_id)
 
 				time.sleep(poll_interval)
 
-			logger.info(
-				"Background Alpaca order not filled before timeout: ticker=%r order_id=%r timeout_seconds=%r",
+			logger.warning(
+				"Background Alpaca order monitor reached hard deadline before order became accepted/submitted: strategy=%r ticker=%r order_type=%r order_id=%r timeout_seconds=%r",
+				strategy_name,
 				ticker,
+				order_type,
 				order_id,
 				timeout_seconds,
 			)
@@ -1843,7 +1898,16 @@ class Strategies:
 					if existing_symbol != ticker or existing_side != broker_side:
 						continue
 
-					if existing_status not in {"new", "accepted", "partially_filled"}:
+					active_statuses = {
+					    "pending_new",
+					    "new",
+					    "accepted",
+					    "partially_filled",
+					    "pending_replace",
+					    "pending_cancel",
+					}
+
+					if existing_status not in active_statuses:
 						continue
 
 					if existing_type == "market":
@@ -1912,6 +1976,7 @@ class Strategies:
 							type="limit",
 							time_in_force="day",
 							limit_price=price,
+							extended_hours=True,
 						)
 
 					logger.info(
@@ -1977,6 +2042,11 @@ class Strategies:
 			return None
 
 		# Ensures execution attempt is complete (with either a success or failure) before next attempt fires
+		if order_type in {"sell", "cover"}:
+		    timeout_seconds = 60 if is_regular_hours else 120
+		else:
+		    timeout_seconds = 20 if is_regular_hours else 90
+
 		pending_exit_key = None
 		exit_guard_acquired = False
 
@@ -1989,7 +2059,7 @@ class Strategies:
 						pending_exit_key,
 						"1",
 						nx=True,
-						ex=120,
+						ex=max(timeout_seconds * 5, 600),
 					)
 				)
 			except Exception:
@@ -2031,10 +2101,17 @@ class Strategies:
 
 		order_id = getattr(submitted_order, "id", None)
 		if not order_id:
+			if pending_exit_key:
+				try:
+					self.r.delete(pending_exit_key)
+				except Exception:
+					logger.exception(
+						"Failed clearing pending exit guard after missing order id: key=%r",
+						pending_exit_key,
+					)
+
 			logger.info("Submitted Alpaca order missing order id for %r", ticker)
 			return None
-
-		timeout_seconds = 10 if is_regular_hours else 90
 
 		self.order_monitor_executor.submit(
 			self._monitor_alpaca_order_fill,
