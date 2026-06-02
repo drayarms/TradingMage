@@ -134,7 +134,7 @@ class TradeRecords:
 		"""
 		return datetime.now(self.tvw_helpers.eastern_tz).date().isoformat()
 
-	
+
 	def _load_position(self, strategy_name: str, ticker: str):
 		"""
 		Retrieves the current position for a given strategy and ticker from Redis.
@@ -187,6 +187,34 @@ class TradeRecords:
 			Optional[dict]: The position data dictionary if it exists, or None if no position is found.
 		"""
 		return self._load_position(strategy_name, ticker)
+
+
+	def get_all_positions_for_strategy(self, strategy_name: str):
+		"""
+		Retrieve all Redis position records currently tracked for a given strategy.
+
+		This method reads the strategy-specific position index, loads each ticker's
+		position record, and returns only records that still exist. Closed positions
+		may still be returned with num_shares=0 if their Redis hash is still present;
+		callers should decide whether to include or ignore flat positions.
+
+		Parameters:
+			strategy_name (str): The strategy whose tracked ticker positions should be loaded.
+
+		Returns:
+			list[dict]: A list of normalized position dictionaries for the strategy.
+		"""
+		strat = self._normalize_strategy(strategy_name)
+		tickers = sorted(self.r.smembers(self._strategy_positions_key(strat)))
+
+		positions = []
+
+		for ticker in tickers:
+			position = self.get_position(strat, ticker)
+			if position is not None:
+				positions.append(position)
+
+		return positions		
 
 
 	def record_trade_event(
@@ -1592,4 +1620,3 @@ class TradeRecords:
 			}
 
 		return result
-
