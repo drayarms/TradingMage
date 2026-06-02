@@ -107,6 +107,34 @@ class TradeRecords:
 		raise ValueError(f"Invalid side: {side}")
 
 
+	def get_current_trading_day(self) -> str:
+		"""
+		Returns the current trading day in Eastern Time as an ISO-formatted date string.
+
+		The trading system uses U.S. market time (America/New_York) as the canonical
+		reference for daily aggregations, exposure tracking, and risk reporting.
+		This helper ensures that all daily calculations remain aligned to the market
+		calendar regardless of the server's local timezone (e.g., UTC).
+
+		Parameters:
+			None
+
+		Returns:
+			str: The current trading day in YYYY-MM-DD format based on Eastern Time.
+
+		Example:
+			If the server time is:
+				2026-06-02 00:30:00 UTC
+
+			and Eastern Time is:
+				2026-06-01 20:30:00 EDT
+
+			then this function returns:
+				"2026-06-01"
+		"""
+		return datetime.now(self.tvw_helpers.eastern_tz).date().isoformat()
+
+	
 	def _load_position(self, strategy_name: str, ticker: str):
 		"""
 		Retrieves the current position for a given strategy and ticker from Redis.
@@ -1564,3 +1592,4 @@ class TradeRecords:
 			}
 
 		return result
+

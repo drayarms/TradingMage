@@ -326,60 +326,6 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		)
 
 
-@app.get("/risk/daily-max-open-exposure")
-def risk_daily_max_open_exposure(days: int = 14):
-	"""
-	From EC2:
-		curl "http://localhost:8000/risk/daily-max-open-exposure"
-	"""	
-	return trade_recs.get_daily_max_open_exposure_summary(
-		days=days,
-		refresh_current=True,
-	)	
-
-
-@app.get("/risk/daily-max-open-exposure-tabulated", response_class=PlainTextResponse)
-def risk_daily_max_open_exposure_tabulated(days: int = 14):
-	"""
-	From EC2:
-		curl "http://localhost:8000/risk/daily-max-open-exposure-tabulated"
-	"""		
-	data = trade_recs.get_daily_max_open_exposure_summary(
-		days=days,
-		refresh_current=True,
-	)
-
-	lines = []
-	lines.append("DAILY MAX OPEN EXPOSURE")
-	lines.append("=" * 80)
-	lines.append("")
-
-	for strategy_name, payload in data.items():
-		summary = payload.get("summary", {})
-		daily = payload.get("daily", [])
-
-		lines.append(f"Strategy: {strategy_name}")
-		lines.append("-" * 80)
-		lines.append(f"{'Date':<15} {'Daily Max Gross Open Exposure':>35}")
-		lines.append(f"{'-' * 15} {'-' * 35}")
-
-		for row in daily:
-			day = row.get("date")
-			value = float(row.get("daily_max_gross_open_exposure") or 0.0)
-			lines.append(f"{day:<15} ${value:>34,.2f}")
-
-		lines.append("")
-		lines.append("Summary")
-		lines.append(f"  Days with exposure: {summary.get('days_with_exposure', 0)}")
-		lines.append(f"  Mean:               ${float(summary.get('mean', 0.0)):,.2f}")
-		lines.append(f"  Standard deviation: ${float(summary.get('standard_deviation', 0.0)):,.2f}")
-		lines.append(f"  Max:                ${float(summary.get('max', 0.0)):,.2f}")
-		lines.append(f"  Min:                ${float(summary.get('min', 0.0)):,.2f}")
-		lines.append("")
-
-	return "\n".join(lines)	
-
-
 @app.post("/webhook/tradingview")
 async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: BackgroundTasks):
 	"""
@@ -644,6 +590,60 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	
 
 
+@app.get("/risk/daily-max-open-exposure")
+def risk_daily_max_open_exposure(days: int = 14):
+	"""
+	From EC2:
+		curl "http://localhost:8000/risk/daily-max-open-exposure"
+	"""	
+	return trade_recs.get_daily_max_open_exposure_summary(
+		days=days,
+		refresh_current=True,
+	)	
+
+
+@app.get("/risk/daily-max-open-exposure-tabulated", response_class=PlainTextResponse)
+def risk_daily_max_open_exposure_tabulated(days: int = 14):
+	"""
+	From EC2:
+		curl "http://localhost:8000/risk/daily-max-open-exposure-tabulated"
+	"""		
+	data = trade_recs.get_daily_max_open_exposure_summary(
+		days=days,
+		refresh_current=True,
+	)
+
+	lines = []
+	lines.append("DAILY MAX OPEN EXPOSURE")
+	lines.append("=" * 80)
+	lines.append("")
+
+	for strategy_name, payload in data.items():
+		summary = payload.get("summary", {})
+		daily = payload.get("daily", [])
+
+		lines.append(f"Strategy: {strategy_name}")
+		lines.append("-" * 80)
+		lines.append(f"{'Date':<15} {'Daily Max Gross Open Exposure':>35}")
+		lines.append(f"{'-' * 15} {'-' * 35}")
+
+		for row in daily:
+			day = row.get("date")
+			value = float(row.get("daily_max_gross_open_exposure") or 0.0)
+			lines.append(f"{day:<15} ${value:>34,.2f}")
+
+		lines.append("")
+		lines.append("Summary")
+		lines.append(f"  Days with exposure: {summary.get('days_with_exposure', 0)}")
+		lines.append(f"  Mean:               ${float(summary.get('mean', 0.0)):,.2f}")
+		lines.append(f"  Standard deviation: ${float(summary.get('standard_deviation', 0.0)):,.2f}")
+		lines.append(f"  Max:                ${float(summary.get('max', 0.0)):,.2f}")
+		lines.append(f"  Min:                ${float(summary.get('min', 0.0)):,.2f}")
+		lines.append("")
+
+	return "\n".join(lines)	
+
+	
 @app.get("/retrieve_nth_last_alert")
 def retrieve_nth_last_alert(
 	ticker: str = Query(..., min_length=1),
