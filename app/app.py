@@ -17,6 +17,7 @@ import alpaca_trade_api as tradeapi
 import trading_view_webhook_helpers
 import strategies
 import trade_records
+import backtester
 import plot
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
@@ -83,10 +84,11 @@ MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
 
 app = FastAPI(title="TradingView Webhook")
 
-tvw_helpers = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
-trade_recs = trade_records.TradeRecords(tvw_helpers)
-stgs = strategies.Strategies(tvw_helpers, trade_recs)
-plotter = plot.Plot()
+trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
+trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
+strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
+backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance)
+plot_instance = plot.Plot()
 
 
 
@@ -115,7 +117,7 @@ class TradingViewWebhook(BaseModel):
 	volume: Optional[float] = None
 
 	signals: SignalFlags
-
+ 
 
 # When app starts, this function runs once
 # systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
@@ -135,7 +137,7 @@ def _startup():
 
 @app.get("/health")
 def health():
-	rr = tvw_helpers.require_redis()
+	rr = trading_view_webhook_helpers_instance.require_redis()
 	try:
 		rr.ping()
 		return {"ok": True, "redis": "up"}
@@ -162,9 +164,9 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 	execution happen here after the HTTP 200 response has been prepared.
 	"""
 	try:
-		now_et = tvw_helpers._now_et()
+		now_et = trading_view_webhook_helpers_instance._now_et()
 
-		if not tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+		if not trading_view_webhook_helpers_instance.is_between_8pm_sun_and_8pm_fri_et(now_et):
 			logger.info(
 				"Strategy processing skipped outside trading window: symbol=%s tf=%s signal=%s now_et=%s",
 				symbol,
@@ -174,7 +176,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 			return
 
-		if not tvw_helpers.is_symbol_tradable_now(MARKET_DATA_API, symbol, now_et):
+		if not trading_view_webhook_helpers_instance.is_symbol_tradable_now(MARKET_DATA_API, symbol, now_et):
 			logger.info(
 				"Strategy processing skipped because symbol is not tradable now: symbol=%s tf=%s signal=%s now_et=%s",
 				symbol,
@@ -184,7 +186,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 			return		
 
-		prices = trade_recs.get_market_prices([symbol], MARKET_DATA_API)
+		prices = trade_records_instance.get_market_prices([symbol], MARKET_DATA_API)
 		market_price = prices.get(symbol, {}).get("market")
 
 		if market_price is None or market_price <= 0:
@@ -201,7 +203,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		NUM_SHARES2 = POSITION_SIZE_1H / market_price
 		NUM_SHARES3 = POSITION_SIZE_4H / market_price
 
-		#stgs.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
+		#strategies_instance.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
 			#"real_money",
 			#"1m",
 			#"5m",
@@ -216,7 +218,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			#ALPACA_APIS["real_money"],
 		#)
 
-		#stgs.exit_strategy1(
+		#strategies_instance.exit_strategy1(
 			#"real_money",
 			#{"1m"},
 			#"5m",
@@ -230,7 +232,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			#ALPACA_APIS["real_money"],
 		#)		
 
-		stgs.entry_strategy1(
+		strategies_instance.entry_strategy1(
 			"strategy1_15m_anchor",
 			"1m",
 			"5m",
@@ -245,7 +247,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy1_15m_anchor"],
 		)
 
-		stgs.exit_strategy1(
+		strategies_instance.exit_strategy1(
 			"strategy1_15m_anchor",
 			{"1m"},
 			"5m",
@@ -259,7 +261,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy1_15m_anchor"],
 		)
 
-		stgs.entry_strategy1(
+		strategies_instance.entry_strategy1(
 			"strategy1_1h_anchor",
 			"5m",
 			"15m",
@@ -274,7 +276,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy1_1h_anchor"],
 		)
 
-		stgs.exit_strategy1(
+		strategies_instance.exit_strategy1(
 			"strategy1_1h_anchor",
 			{"1m", "5m"},
 			"15m",
@@ -288,7 +290,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy1_1h_anchor"],
 		)
 
-		stgs.entry_strategy1(
+		strategies_instance.entry_strategy1(
 			"strategy1_4h_anchor",
 			"15m",
 			"1h",
@@ -303,7 +305,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy1_4h_anchor"],
 		)
 
-		stgs.exit_strategy1(
+		strategies_instance.exit_strategy1(
 			"strategy1_4h_anchor",
 			{"1m", "5m", "15m"},
 			"1h",
@@ -339,21 +341,21 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		5. Schedule strategy processing in the background.
 		6. Return 200 quickly to TradingView.
 	"""			
-	rr = tvw_helpers.require_redis()
+	rr = trading_view_webhook_helpers_instance.require_redis()
 
 	if payload.secret != TV_WEBHOOK_SECRET:
 		raise HTTPException(status_code=401, detail="Invalid secret")
 
 	signals = payload.signals
 
-	buy = tvw_helpers.safe_float(signals.buy)
-	buy_plus = tvw_helpers.safe_float(signals.buy_plus)
-	sell = tvw_helpers.safe_float(signals.sell)
-	sell_plus = tvw_helpers.safe_float(signals.sell_plus)
-	bullish_exit = tvw_helpers.safe_float(signals.bullish_exit)
-	bearish_exit = tvw_helpers.safe_float(signals.bearish_exit)
-	trend_strength = tvw_helpers.safe_float(signals.trend_strength)
-	bar_color_value = tvw_helpers.safe_float(signals.bar_color_value)
+	buy = trading_view_webhook_helpers_instance.safe_float(signals.buy)
+	buy_plus = trading_view_webhook_helpers_instance.safe_float(signals.buy_plus)
+	sell = trading_view_webhook_helpers_instance.safe_float(signals.sell)
+	sell_plus = trading_view_webhook_helpers_instance.safe_float(signals.sell_plus)
+	bullish_exit = trading_view_webhook_helpers_instance.safe_float(signals.bullish_exit)
+	bearish_exit = trading_view_webhook_helpers_instance.safe_float(signals.bearish_exit)
+	trend_strength = trading_view_webhook_helpers_instance.safe_float(signals.trend_strength)
+	bar_color_value = trading_view_webhook_helpers_instance.safe_float(signals.bar_color_value)
 
 	signal_role = str(payload.signal_role or "").strip().lower()
 
@@ -385,7 +387,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 			detail="No actionable signal found in payload",
 		)	
 
-	tf = tvw_helpers.normalize_tf(payload.timeframe)
+	tf = trading_view_webhook_helpers_instance.normalize_tf(payload.timeframe)
 	symbol = str(payload.symbol or "").upper().strip()
 	bar_close_time_raw = str(payload.bar_close_time or "").strip()
 
@@ -403,7 +405,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 			detail="Missing/invalid timeframe, symbol, signal, or bar close time",
 		)
 
-	acquired, dedupe_key = tvw_helpers.acquire_alert_idempotency(
+	acquired, dedupe_key = trading_view_webhook_helpers_instance.acquire_alert_idempotency(
 		symbol=symbol,
 		timeframe=tf,
 		signal=signal,
@@ -482,42 +484,42 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 			"signal_role": signal_role,
 		}
 
-	stream_key = tvw_helpers.stream_key(tf, symbol)
-	state_key = tvw_helpers.state_key(tf, symbol)
+	stream_key = trading_view_webhook_helpers_instance.stream_key(tf, symbol)
+	state_key = trading_view_webhook_helpers_instance.state_key(tf, symbol)
 
-	received_at = tvw_helpers.utc_now_iso()
-	bar_close_time_eastern = tvw_helpers.parse_iso_to_eastern(bar_close_time_raw)
+	received_at = trading_view_webhook_helpers_instance.utc_now_iso()
+	bar_close_time_eastern = trading_view_webhook_helpers_instance.parse_iso_to_eastern(bar_close_time_raw)
 
 	stream_fields = {
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
-		"bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
-		"trend_strength": tvw_helpers.to_str(trend_strength),
-		"bar_color_value": tvw_helpers.to_str(bar_color_value),
-		"signal_role": tvw_helpers.to_str(signal_role),
+		"bar_close_time_eastern": trading_view_webhook_helpers_instance.to_str(bar_close_time_eastern),
+		"trend_strength": trading_view_webhook_helpers_instance.to_str(trend_strength),
+		"bar_color_value": trading_view_webhook_helpers_instance.to_str(bar_color_value),
+		"signal_role": trading_view_webhook_helpers_instance.to_str(signal_role),
 		"received_at": received_at,
-		"open": tvw_helpers.to_str(payload.open),
-		"high": tvw_helpers.to_str(payload.high),
-		"low": tvw_helpers.to_str(payload.low),
-		"close": tvw_helpers.to_str(payload.close),
-		"volume": tvw_helpers.to_str(payload.volume),
+		"open": trading_view_webhook_helpers_instance.to_str(payload.open),
+		"high": trading_view_webhook_helpers_instance.to_str(payload.high),
+		"low": trading_view_webhook_helpers_instance.to_str(payload.low),
+		"close": trading_view_webhook_helpers_instance.to_str(payload.close),
+		"volume": trading_view_webhook_helpers_instance.to_str(payload.volume),
 	}
 
 	state_fields = {
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
-		"bar_close_time_eastern": tvw_helpers.to_str(bar_close_time_eastern),
-		"trend_strength": tvw_helpers.to_str(trend_strength),
-		"bar_color_value": tvw_helpers.to_str(bar_color_value),
-		"signal_role": tvw_helpers.to_str(signal_role),
+		"bar_close_time_eastern": trading_view_webhook_helpers_instance.to_str(bar_close_time_eastern),
+		"trend_strength": trading_view_webhook_helpers_instance.to_str(trend_strength),
+		"bar_color_value": trading_view_webhook_helpers_instance.to_str(bar_color_value),
+		"signal_role": trading_view_webhook_helpers_instance.to_str(signal_role),
 		"received_at": received_at,
-		"open": tvw_helpers.to_str(payload.open),
-		"high": tvw_helpers.to_str(payload.high),
-		"low": tvw_helpers.to_str(payload.low),
-		"close": tvw_helpers.to_str(payload.close),
-		"volume": tvw_helpers.to_str(payload.volume),
+		"open": trading_view_webhook_helpers_instance.to_str(payload.open),
+		"high": trading_view_webhook_helpers_instance.to_str(payload.high),
+		"low": trading_view_webhook_helpers_instance.to_str(payload.low),
+		"close": trading_view_webhook_helpers_instance.to_str(payload.close),
+		"volume": trading_view_webhook_helpers_instance.to_str(payload.volume),
 		"stream_key": stream_key,
 	}
 
@@ -537,7 +539,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 			dedupe_key,
 			f"done:{stream_id}",
 			xx=True,
-			ex=tvw_helpers.alert_dedupe_ttl_seconds,
+			ex=trading_view_webhook_helpers_instance.alert_dedupe_ttl_seconds,
 		)
 
 	except Exception:
@@ -579,9 +581,9 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
-		"trend_strength":tvw_helpers.to_str(trend_strength),
-		"bar_color_value":tvw_helpers.to_str(bar_color_value),
-		"signal_role": tvw_helpers.to_str(signal_role),
+		"trend_strength":trading_view_webhook_helpers_instance.to_str(trend_strength),
+		"bar_color_value":trading_view_webhook_helpers_instance.to_str(bar_color_value),
+		"signal_role": trading_view_webhook_helpers_instance.to_str(signal_role),
 		"stream": stream_key,
 		"state": state_key,
 		"stream_id": stream_id,
@@ -596,7 +598,7 @@ def risk_daily_max_open_exposure(days: int = 14):
 	From EC2:
 		curl "http://localhost:8000/risk/daily-max-open-exposure"
 	"""	
-	return trade_recs.get_daily_max_open_exposure_summary(
+	return trade_records_instance.get_daily_max_open_exposure_summary(
 		days=days,
 		refresh_current=True,
 	)	
@@ -608,7 +610,7 @@ def risk_daily_max_open_exposure_tabulated(days: int = 14):
 	From EC2:
 		curl "http://localhost:8000/risk/daily-max-open-exposure-tabulated"
 	"""		
-	data = trade_recs.get_daily_max_open_exposure_summary(
+	data = trade_records_instance.get_daily_max_open_exposure_summary(
 		days=days,
 		refresh_current=True,
 	)
@@ -643,7 +645,7 @@ def risk_daily_max_open_exposure_tabulated(days: int = 14):
 
 	return "\n".join(lines)	
 
-	
+
 @app.get("/retrieve_nth_last_alert")
 def retrieve_nth_last_alert(
 	ticker: str = Query(..., min_length=1),
@@ -660,7 +662,7 @@ def retrieve_nth_last_alert(
 	Most recent: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=1"
 	Normalization: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=aapl&tf=1&n=2"
 	"""
-	entry = tvw_helpers.get_nth_last_alert(ticker, tf, n)
+	entry = trading_view_webhook_helpers_instance.get_nth_last_alert(ticker, tf, n)
 
 	if entry is None:
 		raise HTTPException(status_code=404, detail="Not enough alerts found")
@@ -669,17 +671,17 @@ def retrieve_nth_last_alert(
 
 	return {
 		"ticker": ticker.upper().strip(),
-		"timeframe": tvw_helpers.normalize_tf(tf),
+		"timeframe": trading_view_webhook_helpers_instance.normalize_tf(tf),
 		"n": n,
 		"entry": {
 			"id": entry_id,
 			"fields": {
 				**fields,
-				"open": tvw_helpers.safe_float(fields.get("open")),
-				"high": tvw_helpers.safe_float(fields.get("high")),
-				"low": tvw_helpers.safe_float(fields.get("low")),
-				"close": tvw_helpers.safe_float(fields.get("close")),
-				"volume": tvw_helpers.safe_float(fields.get("volume")),
+				"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
+				"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
+				"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
+				"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
+				"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
 			},
 		},
 	}
@@ -701,10 +703,10 @@ def get_trades(
 	"""
 	try:
 		if start is None:
-			start = trade_recs.get_first_trade_time()
+			start = trade_records_instance.get_first_trade_time()
 
 		if end is None:
-			end = trade_recs.get_last_trade_time()
+			end = trade_records_instance.get_last_trade_time()
 
 		if not start or not end:
 			return {
@@ -714,7 +716,7 @@ def get_trades(
 				"records": [],
 			}
 
-		records = trade_recs.get_trade_records_between(start, end, tickers=tickers)
+		records = trade_records_instance.get_trade_records_between(start, end, tickers=tickers)
 
 	except ValueError:
 		raise HTTPException(status_code=400, detail="Invalid ISO date range")
@@ -745,9 +747,9 @@ async def debug_state_symbol(
 		From laptop:
 			curl "http://<EC2_PUBLIC_IP>/debug/state/15m/AAPL?fields=signal"
 	"""
-	rr = tvw_helpers.require_redis()
+	rr = trading_view_webhook_helpers_instance.require_redis()
 
-	tf = tvw_helpers.normalize_tf(timeframe)
+	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
@@ -757,7 +759,7 @@ async def debug_state_symbol(
 	if not field_list:
 		raise HTTPException(status_code=400, detail="No fields requested")
 
-	key = tvw_helpers.state_key(tf, sym)
+	key = trading_view_webhook_helpers_instance.state_key(tf, sym)
 
 	if not rr.exists(key):
 		raise HTTPException(status_code=404, detail="No state found for symbol/timeframe")
@@ -772,7 +774,7 @@ async def debug_state_symbol(
 
 	for numeric_field in ("open", "high", "low", "close", "volume"):
 		if numeric_field in data:
-			data[numeric_field] = tvw_helpers.safe_float(data[numeric_field])
+			data[numeric_field] = trading_view_webhook_helpers_instance.safe_float(data[numeric_field])
 
 	return {
 		"key": key,
@@ -799,15 +801,15 @@ async def debug_stream_symbol(
 		From Browser:
 			http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL?count=10
 	"""
-	rr = tvw_helpers.require_redis()
+	rr = trading_view_webhook_helpers_instance.require_redis()
 
-	tf = tvw_helpers.normalize_tf(timeframe)
+	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
 		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
 
-	key = tvw_helpers.stream_key(tf, sym)
+	key = trading_view_webhook_helpers_instance.stream_key(tf, sym)
 
 	if not rr.exists(key):
 		raise HTTPException(status_code=404, detail="Stream not found")
@@ -826,11 +828,11 @@ async def debug_stream_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"open": tvw_helpers.safe_float(fields.get("open")),
-					"high": tvw_helpers.safe_float(fields.get("high")),
-					"low": tvw_helpers.safe_float(fields.get("low")),
-					"close": tvw_helpers.safe_float(fields.get("close")),
-					"volume": tvw_helpers.safe_float(fields.get("volume")),
+					"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
+					"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
+					"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
+					"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
+					"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
 				},
 			}
 			for entry_id, fields in entries
@@ -857,15 +859,15 @@ async def debug_stream_range_symbol(
 		From browser:
 			http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=50
 	"""
-	rr = tvw_helpers.require_redis()
+	rr = trading_view_webhook_helpers_instance.require_redis()
 
-	tf = tvw_helpers.normalize_tf(timeframe)
+	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
 	sym = str(symbol or "").upper().strip()
 
 	if not tf or not sym:
 		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
 
-	key = tvw_helpers.stream_key(tf, sym)
+	key = trading_view_webhook_helpers_instance.stream_key(tf, sym)
 
 	if not rr.exists(key):
 		raise HTTPException(status_code=404, detail="Stream not found")
@@ -884,11 +886,11 @@ async def debug_stream_range_symbol(
 				"id": entry_id,
 				"fields": {
 					**fields,
-					"open": tvw_helpers.safe_float(fields.get("open")),
-					"high": tvw_helpers.safe_float(fields.get("high")),
-					"low": tvw_helpers.safe_float(fields.get("low")),
-					"close": tvw_helpers.safe_float(fields.get("close")),
-					"volume": tvw_helpers.safe_float(fields.get("volume")),
+					"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
+					"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
+					"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
+					"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
+					"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
 				},
 			}
 			for entry_id, fields in entries
@@ -910,7 +912,7 @@ def run_pnl_snapshot(
 			curl -X POST "http://<EC2_PUBLIC_IP>/pnl/snapshot/run?strategy_name=simple%20strategy"
 	"""
 	try:
-		result = trade_recs.snapshot_pnl(strategy_name, MARKET_DATA_API)
+		result = trade_records_instance.snapshot_pnl(strategy_name, MARKET_DATA_API)
 	except Exception:
 		logger.exception("PnL snapshot failed")
 		raise HTTPException(status_code=500, detail="PnL snapshot failed")
@@ -944,7 +946,7 @@ def get_pnl_history(
 				curl "http://localhost:8000/pnl/history?strategy_name=simple%20strategy&start=2026-03-01T00:00:00Z&end=2026-03-13T23:59:59Z"  
 	"""
 	try:
-		history = trade_recs.get_pnl_history(
+		history = trade_records_instance.get_pnl_history(
 			strategy_name=strategy_name,
 			start=start,
 			end=end,
@@ -981,7 +983,7 @@ def get_pnl_plot(
 		ssh -i ~/.ssh/my-aws-ec2-key ubuntu@<EC2_PUBLIC_IP> 'curl -s "http://localhost:8000/pnl/plot?strategy_name=strategy1"' > pnl1.png
 	"""
 	try:
-		history = trade_recs.get_pnl_history(
+		history = trade_records_instance.get_pnl_history(
 			strategy_name=strategy_name,
 			start=start,
 			end=end,
@@ -1003,7 +1005,7 @@ def get_pnl_plot(
 		title = f"PnL History - {strategy_name} - Aggregate"
 
 	try:
-		image_buffer = plotter.plot_pnl_history(history, title=title)
+		image_buffer = plot_instance.plot_pnl_history(history, title=title)
 	except Exception:
 		logger.exception("PnL plot generation failed")
 		raise HTTPException(status_code=500, detail="PnL plot generation failed")
@@ -1023,7 +1025,7 @@ def get_trade_events(
 	curl "http://localhost:8000/trade-events?strategy_name=strategy2&ticker=TSLA"
 	"""
 	try:
-		events = trade_recs.get_trade_events(
+		events = trade_records_instance.get_trade_events(
 			strategy_name=strategy_name,
 			ticker=ticker,
 			start=start,
@@ -1052,7 +1054,7 @@ def reset_redis():
 	curl -X POST "http://localhost:8000/debug/reset-redis"
 	"""	
 	try:
-		result = trade_recs.reset_tv_data()
+		result = trade_records_instance.reset_tv_data()
 	except Exception:
 		logger.exception("Redis reset failed")
 		raise HTTPException(status_code=500, detail="Redis reset failed")
@@ -1090,9 +1092,81 @@ def run_all_pnl_snapshots():
 	curl "http://localhost/trade-events?strategy_name=simple%20strategy"
 	"""	
 	try:
-		result = trade_recs.snapshot_all_pnl(MARKET_DATA_API)
+		result = trade_records_instance.snapshot_all_pnl(MARKET_DATA_API)
 	except Exception:
 		logger.exception("All-strategy PnL snapshot failed")
 		raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")
 
 	return result
+
+
+@app.get("/backtest/run")
+def run_backtest(
+	strategy_name: str = Query(..., min_length=1),
+	start: str = Query(..., min_length=1),
+	end: str = Query(..., min_length=1),
+	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
+	position_size: Optional[float] = Query(default=None, gt=0),
+):
+	"""
+	Run an isolated Redis-signal backtest and return JSON results.
+
+	This endpoint reads historical TradingView signal streams from Redis, simulates
+	strategy decisions in chronological order, keeps positions/PnL/exposure in memory,
+	prints the simulated daily max exposure table, and does not touch live Alpaca or
+	live Redis trade/PnL/position state.
+
+	Example:
+		curl "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"
+	"""
+	try:
+		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
+		return backtester_instance.run(
+			strategy_name=strategy_name,
+			start=start,
+			end=end,
+			tickers=ticker_list,
+			position_size=position_size,
+		)
+	except ValueError as exc:
+		raise HTTPException(status_code=400, detail=str(exc))
+	except Exception:
+		logger.exception("Backtest failed")
+		raise HTTPException(status_code=500, detail="Backtest failed")
+
+
+@app.get("/backtest/plot")
+def plot_backtest(
+	strategy_name: str = Query(..., min_length=1),
+	start: str = Query(..., min_length=1),
+	end: str = Query(..., min_length=1),
+	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
+	position_size: Optional[float] = Query(default=None, gt=0),
+):
+	"""
+	Run an isolated Redis-signal backtest and stream the overall PnL plot as PNG.
+
+	The simulation is recomputed in memory for this request. It reads Redis signal
+	streams only and does not write simulated positions, trade events, PnL, or exposure
+	into the live Redis keys.
+
+	Example:
+		curl "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000" --output backtest.png
+	"""
+	try:
+		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
+		result = backtester_instance.run(
+			strategy_name=strategy_name,
+			start=start,
+			end=end,
+			tickers=ticker_list,
+			position_size=position_size,
+		)
+		image_buffer = backtester_instance.plot_overall_pnl(result)
+		return StreamingResponse(image_buffer, media_type="image/png")
+	except ValueError as exc:
+		raise HTTPException(status_code=400, detail=str(exc))
+	except Exception:
+		logger.exception("Backtest plot failed")
+		raise HTTPException(status_code=500, detail="Backtest plot failed")
+
