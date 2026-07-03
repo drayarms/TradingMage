@@ -46,21 +46,21 @@ class BackTester:
 			"intermediary_tf": "5m",
 			"anchor_tf": "15m",
 			"lower_timeframes": {"1m"},
-			"default_position_size": 1000.0,
+			"default_position_size": 2000.0,
 		},
 		"strategy1_1h_anchor": {
 			"entry_tf": "5m",
 			"intermediary_tf": "15m",
 			"anchor_tf": "1h",
 			"lower_timeframes": {"1m", "5m"},
-			"default_position_size": 1000.0,
+			"default_position_size": 6000.0,
 		},
 		"strategy1_4h_anchor": {
 			"entry_tf": "15m",
 			"intermediary_tf": "1h",
 			"anchor_tf": "4h",
 			"lower_timeframes": {"1m", "5m", "15m"},
-			"default_position_size": 1000.0,
+			"default_position_size": 20000.0,
 		},
 	}
 
@@ -77,7 +77,7 @@ class BackTester:
 		"1d": 10,
 	}
 
-	def __init__(self, trading_view_webhook_helpers):
+	def __init__(self, trading_view_webhook_helpers, strategies_instance):
 		"""
 		Create a BackTester.
 
@@ -86,6 +86,7 @@ class BackTester:
 			timeframe normalization, timestamp parsing, and safe float conversion.
 		"""
 		self.tvw_helpers = trading_view_webhook_helpers
+		self.strategies_instance = strategies_instance
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.smallest_share_size = 0.25
 
@@ -124,9 +125,12 @@ class BackTester:
 		symbols = self._normalize_tickers(tickers) or self._discover_tickers(timeframes)
 		events = self._load_signal_events(symbols, timeframes, start_dt, end_dt)
 
+		#PRINT ALL EVENTS HERE TO ENSURE THEY ARE IN THE RIGHT CHRONOLOGICAL ORDER
+		print(f"All Events in chronological order\n{events}")
+
 		for event in events:
 			self._register_event_context(state, event)
-			self._process_strategy1_event(state, config, event, position_size)
+			self._process_strategy1_event(strategy_name, state, config, event, position_size)
 			self._record_snapshots(state, event["dt"])
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
@@ -181,7 +185,7 @@ class BackTester:
 	def _get_strategy_config(self, strategy_name: str) -> dict[str, Any]:
 		"""Return a normalized strategy configuration or raise ValueError if unknown."""
 		name = str(strategy_name or "").strip()
-		if name not in self.STRATEGY_CONFIGS:
+		if name not in self.STRATEGY_CONFIGS: # Iterate through the keys in STRATEGY_CONFIGS dict
 			raise ValueError(f"Unsupported backtest strategy: {name}")
 		config = dict(self.STRATEGY_CONFIGS[name])
 		config["entry_tf"] = self.tvw_helpers.normalize_tf(config["entry_tf"])
@@ -281,104 +285,168 @@ class BackTester:
 		if event["signal_role"] == "confirmation" and event["side"] in {"buy", "sell"}:
 			state.latest_directional[key] = event
 
-	def _process_strategy1_event(self, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
+
+	def _process_strategy1_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
 		"""Apply Strategy 1 entry and exit rules to one chronological signal event."""
-		self._try_strategy1_entry(state, config, event, position_size)
-		self._try_strategy1_exit(state, config, event)
+		#self._try_strategy1_entry(state, config, event, position_size)
+		#self._try_strategy1_exit(state, config, event)
+		
+		now_et = event["dt"] 
+		signal = event["side"] 
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		NUM_SHARES = position_size / market_price
 
-	def _try_strategy1_entry(self, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
-		"""Open or add to an in-memory position when the current event qualifies as an entry."""
-		if event["timeframe"] != config["entry_tf"]:
-			return
-		if event["signal_role"] != "confirmation" or event["side"] not in {"buy", "sell"}:
-			return
-
-		anchor = state.latest_directional.get((event["ticker"], config["anchor_tf"]))
-		if not anchor or anchor["side"] != event["side"]:
-			return
-		if self._has_opposite_signal_after_anchor(state, event["ticker"], event["side"], config["intermediary_tf"], anchor["dt"]):
-			return
-
-		base_qty = position_size / event["price"]
-		qty = self._progressive_entry_size(state, event["ticker"], event["side"], config["entry_tf"], anchor["dt"], base_qty)
-		if qty <= 0:
-			return
-
-		if event["side"] == "buy":
-			self._open_or_add_position(state, event, "long", qty)
-		else:
-			qty = math.floor(qty)
-			if qty >= self.smallest_share_size:
-				self._open_or_add_position(state, event, "short", qty)
-
-	def _try_strategy1_exit(self, state: SimState, config: dict[str, Any], event: dict[str, Any]) -> None:
-		"""Close an in-memory position when the current event qualifies as an exit."""
-		exit_tfs = set(config["lower_timeframes"]) | {config["intermediary_tf"]}
-		if event["timeframe"] not in exit_tfs:
-			return
-
-		position = state.positions.get(event["ticker"])
-		if not position or position.num_shares <= 0:
-			return
-
-		anchor = state.latest_directional.get((event["ticker"], config["anchor_tf"]))
-		intermediary = state.latest_directional.get((event["ticker"], config["intermediary_tf"]))
-		if not anchor:
-			return
-
-		position_anchor_opposite = (
-			(position.side == "long" and anchor["side"] == "sell")
-			or (position.side == "short" and anchor["side"] == "buy")
-		)
-		intermediary_opposite_anchor = (
-			event["timeframe"] == config["intermediary_tf"]
-			and event["signal_role"] == "confirmation"
-			and event["side"] in {"buy", "sell"}
-			and event["side"] != anchor["side"]
-		)
-		lower_confirms_intermediary_opposite_anchor = (
-			event["timeframe"] in config["lower_timeframes"]
-			and intermediary is not None
-			and event["signal_role"] == "confirmation"
-			and event["side"] == intermediary["side"]
-			and intermediary["side"] != anchor["side"]
-		)
-		exit_signal_matches_position = self._exit_signal_matches_position(event, intermediary, position)
-
-		if position_anchor_opposite or intermediary_opposite_anchor or lower_confirms_intermediary_opposite_anchor or exit_signal_matches_position:
-			self._close_position(state, event)
-
-	def _exit_signal_matches_position(self, event: dict[str, Any], intermediary: Optional[dict[str, Any]], position: SimPosition) -> bool:
-		"""Return True when an intermediary timeframe exit signal matches the current open position side."""
-		if event["signal"] not in {"bullish_exit", "bearish_exit"}:
-			return False
-		if intermediary is None:
-			return False
-		return (
-			(position.side == "long" and intermediary["side"] == "buy" and event["signal"] == "bullish_exit")
-			or (position.side == "short" and intermediary["side"] == "sell" and event["signal"] == "bearish_exit")
+		self.strategies_instance.entry_strategy1(
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			NUM_SHARES,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self
 		)
 
-	def _has_opposite_signal_after_anchor(self, state: SimState, ticker: str, side: str, opposite_tf: str, anchor_dt: datetime) -> bool:
-		"""Check whether an opposite-side intermediary signal occurred after the anchor signal."""
-		opposite_side = "sell" if side == "buy" else "buy"
-		for candidate in state.all_events_by_ticker_tf.get((ticker, opposite_tf), []):
-			if candidate["signal_role"] == "confirmation" and candidate["side"] == opposite_side and candidate["dt"] > anchor_dt:
-				return True
-		return False
+		self.strategies_instance.exit_strategy1(
+			strategy_name,
+			config["lower_timeframes"],
+			config["intermediary_tf"],
+			config["anchor_tf"],			
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self			
+		)
 
-	def _progressive_entry_size(self, state: SimState, ticker: str, side: str, entry_tf: str, anchor_dt: datetime, base_qty: float) -> float:
-		"""Compute progressive halving size from qualifying same-side entry signals since anchor time."""
-		count = 0
-		for candidate in state.all_events_by_ticker_tf.get((ticker, entry_tf), []):
-			if candidate["signal_role"] == "confirmation" and candidate["side"] == side and candidate["dt"] > anchor_dt:
-				count += 1
-		if count <= 0:
-			return 0.0
-		qty = base_qty / (2 ** (count - 1))
-		if qty < self.smallest_share_size:
-			return 0.0
-		return qty
+
+	def get_nth_last_alert(self, state: SimState, ticker: str, timeframe: str, n: int = 1):
+		"""
+		Return the nth most recent simulated alert for ticker/timeframe using only
+		events already processed in the current backtest.
+
+		Returns:
+			Tuple of (stream_id, raw_fields) to match TradingViewWebhookHelpers.get_nth_last_alert().
+		"""
+		if n <= 0:
+			return None
+
+		sym = str(ticker or "").upper().strip()
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+
+		events = state.all_events_by_ticker_tf.get((sym, tf), [])
+		if len(events) < n:
+			return None
+
+		event = events[-n]
+		return event["stream_id"], event["raw_fields"]
+
+
+	def get_latest_directional_signal(
+		self,
+		state: SimState,
+		ticker: str,
+		timeframe: str,
+		signal_role: str,
+		max_scan: int = 100,
+	):
+		"""
+		Return the latest simulated directional signal for ticker/timeframe,
+		filtered by signal_role, using only already-processed backtest events.
+
+		This mirrors Strategies.get_latest_directional_signal().
+		"""
+		sym = str(ticker or "").upper().strip()
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		expected_signal_role = str(signal_role or "").strip().lower()
+
+		events = state.all_events_by_ticker_tf.get((sym, tf), [])
+		scanned = 0
+
+		for event in reversed(events):
+			if scanned >= max_scan:
+				break
+
+			scanned += 1
+
+			entry_signal_role = str(event.get("signal_role") or "").strip().lower()
+
+			if expected_signal_role and entry_signal_role != expected_signal_role:
+				continue
+
+			side = event.get("side")
+
+			if side in {"buy", "sell"}:
+				return {
+					"id": event["stream_id"],
+					"side": side,
+					"signal_role": entry_signal_role,
+					"fields": event["raw_fields"],
+					"event": event,
+				}
+
+		return None
+
+
+	def get_latest_confirmation_directional_signal(
+		self,
+		state: SimState,
+		ticker: str,
+		timeframe: str,
+		max_scan: int = 500,
+	):
+		"""
+		Return the latest simulated confirmation directional signal for ticker/timeframe
+		using only events already processed in the current backtest.
+
+		Returns:
+			Dict shaped like Strategies.get_latest_confirmation_directional_signal().
+		"""
+		sym = str(ticker or "").upper().strip()
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+
+		events = state.all_events_by_ticker_tf.get((sym, tf), [])
+		scanned = 0
+
+		for event in reversed(events):
+			if scanned >= max_scan:
+				break
+
+			scanned += 1
+
+			if event.get("signal_role") != "confirmation":
+				continue
+
+			side = event.get("side")
+			if side in {"buy", "sell"}:
+				return {
+					"id": event["stream_id"],
+					"side": side,
+					"fields": event["raw_fields"],
+					"signal_role": event["signal_role"],
+					"event": event,
+				}
+
+		return None
+
 
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> None:
 		"""Open a new position or add to an existing same-side position in memory."""

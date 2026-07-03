@@ -87,7 +87,7 @@ app = FastAPI(title="TradingView Webhook")
 trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
 trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
-backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance)
+backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance, strategies_instance)
 plot_instance = plot.Plot()
 
 
@@ -245,6 +245,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES1,
 			ALPACA_APIS["strategy1_15m_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
 		)
 
 		strategies_instance.exit_strategy1(
@@ -259,6 +264,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			symbol,
 			tf,
 			ALPACA_APIS["strategy1_15m_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,			
 		)
 
 		strategies_instance.entry_strategy1(
@@ -274,6 +284,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES2,
 			ALPACA_APIS["strategy1_1h_anchor"],
+			None,
+			None,
+			None,
+			None,	
+			None,		
 		)
 
 		strategies_instance.exit_strategy1(
@@ -288,6 +303,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			symbol,
 			tf,
 			ALPACA_APIS["strategy1_1h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,			
 		)
 
 		strategies_instance.entry_strategy1(
@@ -303,6 +323,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES3,
 			ALPACA_APIS["strategy1_4h_anchor"],
+			None,
+			None,
+			None,
+			None,	
+			None,		
 		)
 
 		strategies_instance.exit_strategy1(
@@ -317,6 +342,11 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			symbol,
 			tf,
 			ALPACA_APIS["strategy1_4h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,			
 		)
 
 	except Exception:
@@ -592,25 +622,25 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	
 
 
-@app.get("/risk/daily-max-open-exposure")
-def risk_daily_max_open_exposure(days: int = 14):
+#@app.get("/risk/daily-max-open-exposure")
+#def risk_daily_max_open_exposure(days: int = 14):
 	"""
 	From EC2:
 		curl "http://localhost:8000/risk/daily-max-open-exposure"
 	"""	
-	return trade_records_instance.get_daily_max_open_exposure_summary(
-		days=days,
+	#return trade_records_instance.get_daily_max_open_exposure_summary(
+		#days=days,
 		refresh_current=True,
-	)	
+	#)	
 
 
-@app.get("/risk/daily-max-open-exposure-tabulated", response_class=PlainTextResponse)
-def risk_daily_max_open_exposure_tabulated(days: int = 14):
+#@app.get("/risk/daily-max-open-exposure-tabulated", response_class=PlainTextResponse)
+#def risk_daily_max_open_exposure_tabulated(days: int = 14):
 	"""
 	From EC2:
 		curl "http://localhost:8000/risk/daily-max-open-exposure-tabulated"
 	"""		
-	data = trade_records_instance.get_daily_max_open_exposure_summary(
+	"""data = trade_records_instance.get_daily_max_open_exposure_summary(
 		days=days,
 		refresh_current=True,
 	)
@@ -643,7 +673,7 @@ def risk_daily_max_open_exposure_tabulated(days: int = 14):
 		lines.append(f"  Min:                ${float(summary.get('min', 0.0)):,.2f}")
 		lines.append("")
 
-	return "\n".join(lines)	
+	return "\n".join(lines)	"""
 
 
 @app.get("/retrieve_nth_last_alert")
@@ -687,12 +717,12 @@ def retrieve_nth_last_alert(
 	}
 
 
-@app.get("/trades")
+"""@app.get("/trades")
 def get_trades(
 	start: Optional[str] = Query(None, description="ISO start datetime"),
 	end: Optional[str] = Query(None, description="ISO end datetime"),
 	tickers: Optional[list[str]] = Query(None, description="Ticker filter"),
-):
+):"""
 	"""
 	Returns trade records between dates and tickers specified.
 		start (str iso format!): Optional. Start date.
@@ -701,7 +731,7 @@ def get_trades(
 	Example call: 
 		curl "http://localhost:8000/trades?start=2026-03-10T00:00:00Z&end=2026-03-11T00:00:00Z&tickers=AAPL&tickers=MSFT"
 	"""
-	try:
+	"""try:
 		if start is None:
 			start = trade_records_instance.get_first_trade_time()
 
@@ -726,7 +756,7 @@ def get_trades(
 		"end": end,
 		"count": len(records),
 		"records": records,
-	}
+	}"""
 
 
 @app.get("/debug/state/{timeframe}/{symbol}")
@@ -898,10 +928,10 @@ async def debug_stream_range_symbol(
 	}
 
 
-@app.post("/pnl/snapshot/run")
-def run_pnl_snapshot(
-	strategy_name: str = Query(..., min_length=1),
-):
+#@app.post("/pnl/snapshot/run")
+#def run_pnl_snapshot(
+	#strategy_name: str = Query(..., min_length=1),
+#):
 	"""
 	Triggers a PnL snapshot calculation for a given strategy. Used to manually trigger PnL calculation,
 	test our strategy performance, debug pricing + trade records, verify our cron job behavior.
@@ -911,22 +941,22 @@ def run_pnl_snapshot(
 		From laptop:
 			curl -X POST "http://<EC2_PUBLIC_IP>/pnl/snapshot/run?strategy_name=simple%20strategy"
 	"""
-	try:
-		result = trade_records_instance.snapshot_pnl(strategy_name, MARKET_DATA_API)
-	except Exception:
-		logger.exception("PnL snapshot failed")
-		raise HTTPException(status_code=500, detail="PnL snapshot failed")
+	#try:
+		#result = trade_records_instance.snapshot_pnl(strategy_name, MARKET_DATA_API)
+	#except Exception:
+		#logger.exception("PnL snapshot failed")
+		#raise HTTPException(status_code=500, detail="PnL snapshot failed")
 
-	return result
+	#return result
 
 
-@app.get("/pnl/history")
+"""@app.get("/pnl/history")
 def get_pnl_history(
 	strategy_name: str = Query(..., min_length=1),
 	start: Optional[str] = Query(default=None),
 	end: Optional[str] = Query(default=None),
 	ticker: Optional[str] = Query(default=None),
-):
+):"""
 	"""
 	Retrieves historical PnL snapshots for a given strategy, with optional filters.
 	Example calls:
@@ -945,7 +975,7 @@ def get_pnl_history(
 			Agg history for a date range
 				curl "http://localhost:8000/pnl/history?strategy_name=simple%20strategy&start=2026-03-01T00:00:00Z&end=2026-03-13T23:59:59Z"  
 	"""
-	try:
+	"""try:
 		history = trade_records_instance.get_pnl_history(
 			strategy_name=strategy_name,
 			start=start,
@@ -965,16 +995,16 @@ def get_pnl_history(
 		"ticker": ticker,
 		"count": len(history),
 		"history": history,
-	}
+	}"""
 
 
-@app.get("/pnl/plot")
+"""@app.get("/pnl/plot")
 def get_pnl_plot(
 	strategy_name: str = Query(..., min_length=1),
 	start: Optional[str] = Query(default=None),
 	end: Optional[str] = Query(default=None),
 	ticker: Optional[str] = Query(default=None),
-):
+):"""
 	"""
 	Plot aggregate PNL
 	curl "http://localhost:8000/pnl/plot?strategy_name=simple%20strategy" --output pnl.png
@@ -982,7 +1012,7 @@ def get_pnl_plot(
 	Laptop:
 		ssh -i ~/.ssh/my-aws-ec2-key ubuntu@<EC2_PUBLIC_IP> 'curl -s "http://localhost:8000/pnl/plot?strategy_name=strategy1"' > pnl1.png
 	"""
-	try:
+	"""try:
 		history = trade_records_instance.get_pnl_history(
 			strategy_name=strategy_name,
 			start=start,
@@ -1010,21 +1040,21 @@ def get_pnl_plot(
 		logger.exception("PnL plot generation failed")
 		raise HTTPException(status_code=500, detail="PnL plot generation failed")
 
-	return StreamingResponse(image_buffer, media_type="image/png")
+	return StreamingResponse(image_buffer, media_type="image/png")"""
 
 
-@app.get("/trade-events")
+"""@app.get("/trade-events")
 def get_trade_events(
 	strategy_name: Optional[str] = Query(default=None),
 	ticker: Optional[str] = Query(default=None),
 	start: Optional[str] = Query(default=None),
 	end: Optional[str] = Query(default=None),
-):
+):"""
 	""" DUMP
 	Get individual trade events
 	curl "http://localhost:8000/trade-events?strategy_name=strategy2&ticker=TSLA"
 	"""
-	try:
+	"""try:
 		events = trade_records_instance.get_trade_events(
 			strategy_name=strategy_name,
 			ticker=ticker,
@@ -1044,16 +1074,16 @@ def get_trade_events(
 		"end": end,
 		"count": len(events),
 		"events": events,
-	}
+	}"""
 
 
-@app.post("/debug/reset-redis")
-def reset_redis():
+#@app.post("/debug/reset-redis")
+#def reset_redis():
 	"""
 	Reset all app redis data
 	curl -X POST "http://localhost:8000/debug/reset-redis"
 	"""	
-	try:
+	"""try:
 		result = trade_records_instance.reset_tv_data()
 	except Exception:
 		logger.exception("Redis reset failed")
@@ -1062,11 +1092,11 @@ def reset_redis():
 	return {
 		"ok": True,
 		**result,
-	}
+	}"""
 
 
-@app.post("/pnl/snapshot/run-all")
-def run_all_pnl_snapshots():
+#@app.post("/pnl/snapshot/run-all")
+#def run_all_pnl_snapshots():
 	"""
 	ssh into EC2
 	crontab -e 
@@ -1091,13 +1121,13 @@ def run_all_pnl_snapshots():
 	And trade events
 	curl "http://localhost/trade-events?strategy_name=simple%20strategy"
 	"""	
-	try:
-		result = trade_records_instance.snapshot_all_pnl(MARKET_DATA_API)
-	except Exception:
-		logger.exception("All-strategy PnL snapshot failed")
-		raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")
+	#try:
+		#result = trade_records_instance.snapshot_all_pnl(MARKET_DATA_API)
+	#except Exception:
+		#logger.exception("All-strategy PnL snapshot failed")
+		#raise HTTPException(status_code=500, detail="All-strategy PnL snapshot failed")
 
-	return result
+	#return result
 
 
 @app.get("/backtest/run")
@@ -1118,6 +1148,9 @@ def run_backtest(
 
 	Example:
 		curl "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"
+	Or
+		curl -s "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000" \
+> backtest.json	
 	"""
 	try:
 		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
@@ -1151,7 +1184,13 @@ def plot_backtest(
 	into the live Redis keys.
 
 	Example:
-		curl "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000" --output backtest.png
+		In laptop
+
+			ssh -i ~/.ssh/my-aws-ec2-key.pem ubuntu@54.176.151.9 \
+			'curl -s "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
+			> backtest.png
+
+			open backtest.png		
 	"""
 	try:
 		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None

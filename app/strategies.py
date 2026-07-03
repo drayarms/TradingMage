@@ -24,6 +24,9 @@ class Strategies:
 		current_tf,
 		higher_tf,
 		relation="opposite",
+		simulation=False,
+		backtester=None,
+		state=None
 	):
 		"""
 		Evaluates the relationship between the current signal's timeframe and the
@@ -59,6 +62,10 @@ class Strategies:
 					- "same" → returns True if sides match
 				Default is "opposite".
 
+			simulation (Boolean): True if mode is simualtion and False if live.
+			backtester (Backtester): Instance of class Backtester.
+			state 
+
 		Returns:
 			bool:
 				True if the specified relationship condition is met, False otherwise.
@@ -87,7 +94,11 @@ class Strategies:
 		if current_side not in {"buy", "sell"}:
 			return False
 
-		current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
+		current_alert = None
+		if simulation:
+			current_alert = backtester.get_nth_last_alert(state, sym, tf, 1)
+		else:
+			current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
 
 		if current_alert is None:
 			return False
@@ -95,20 +106,31 @@ class Strategies:
 		_, current_fields = current_alert
 
 		if not self.is_confirmation_signal(current_fields):
-			logger.info(
-				"tf-relative check skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
-				tf,
-				sym,
-				current_fields.get("signal"),
-				current_fields.get("signal_role"),
-			)
+			if not simulation:
+				logger.info(
+					"tf-relative check skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
+					tf,
+					sym,
+					current_fields.get("signal"),
+					current_fields.get("signal_role"),
+				)
 			return False
 
-		latest_higher_signal = self.get_latest_confirmation_directional_signal(
-			sym,
-			higher_tf,
-			max_scan=500,
-		)
+		latest_higher_signal = None
+
+		if simulation:
+			latest_higher_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				sym,
+				higher_tf,
+				max_scan=500,
+			)
+		else:
+			latest_higher_signal = self.get_latest_confirmation_directional_signal(
+				sym,
+				higher_tf,
+				max_scan=500,
+			)		
 
 		if latest_higher_signal is None:
 			return False
@@ -262,6 +284,9 @@ class Strategies:
 		valid_lower_tfs,
 		mid_tf,
 		higher_tf,
+		simulation,
+		backtester,
+		state
 	):
 		"""
 		Returns True if:
@@ -296,6 +321,10 @@ class Strategies:
 				The higher timeframe whose latest signal must be opposite of mid_tf,
 				e.g. "4h".
 
+			simulation (Boolean): True if mode is simualtion and False if live.
+			backtester (Backtester): Instance of class Backtester.
+			state 				
+
 		Returns:
 			bool:
 				True if:
@@ -328,7 +357,12 @@ class Strategies:
 		if current_side not in {"buy", "sell"}:
 			return False
 
-		current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
+		current_alert = None
+
+		if simulation:
+			current_alert = backtester.get_nth_last_alert(state, sym, tf, 1)
+		else:
+			current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
 
 		if current_alert is None:
 			return False
@@ -336,29 +370,50 @@ class Strategies:
 		_, current_fields = current_alert
 
 		if not self.is_confirmation_signal(current_fields):
-			logger.info(
-				"lower-tf confirms skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
-				tf,
-				sym,
-				current_fields.get("signal"),
-				current_fields.get("signal_role"),
-			)
+			if not simulation:
+				logger.info(
+					"lower-tf confirms skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
+					tf,
+					sym,
+					current_fields.get("signal"),
+					current_fields.get("signal_role"),
+				)
 			return False
 
-		last_mid_signal = self.get_latest_confirmation_directional_signal(
-			sym,
-			mid_tf_norm,
-			max_scan=500,
-		)
+		last_mid_signal = None
+
+		if simulation:
+			last_mid_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				sym,
+				mid_tf_norm,
+				max_scan=500,
+			)
+		else:
+			last_mid_signal = self.get_latest_confirmation_directional_signal(
+				sym,
+				mid_tf_norm,
+				max_scan=500,
+			)
 
 		if last_mid_signal is None:
 			return False
 
-		last_higher_signal = self.get_latest_confirmation_directional_signal(
-			sym,
-			higher_tf_norm,
-			max_scan=500,
-		)
+		last_higher_signal = None
+
+		if simulation:
+			last_higher_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				sym,
+				higher_tf_norm,
+				max_scan=500,
+			)
+		else:
+			last_higher_signal = self.get_latest_confirmation_directional_signal(
+				sym,
+				higher_tf_norm,
+				max_scan=500,
+			)		
 
 		if last_higher_signal is None:
 			return False
@@ -371,17 +426,18 @@ class Strategies:
 			(last_mid_side != last_higher_side)
 		)		
 
-		logger.info(
-			"lower-tf confirms %r vs %r: ticker=%r tf=%r current=%r last_mid=%r last_higher=%r result=%r",
-			mid_tf_norm,
-			higher_tf_norm,
-			sym,
-			tf,
-			current_side,
-			last_mid_side,
-			last_higher_side,
-			is_true,
-		)
+		if not simulation:
+			logger.info(
+				"lower-tf confirms %r vs %r: ticker=%r tf=%r current=%r last_mid=%r last_higher=%r result=%r",
+				mid_tf_norm,
+				higher_tf_norm,
+				sym,
+				tf,
+				current_side,
+				last_mid_side,
+				last_higher_side,
+				is_true,
+			)
 
 		return is_true
 
@@ -394,6 +450,9 @@ class Strategies:
 		anchor_tf,
 		max_scan_opposite_tf=1000,
 		max_scan_anchor_tf=500,
+		simulation=False,
+		backtester=None,
+		state=None
 	):
 		"""
 		Return True if there exists an opposite-side signal on opposite_tf that occurred
@@ -445,6 +504,10 @@ class Strategies:
 				The maximum number of recent opposite_tf entries to inspect.
 				Default is 1000.
 
+			simulation (Boolean): True if mode is simualtion and False if live.
+			backtester (Backtester): Instance of class Backtester.
+			state 				
+
 		Returns:
 			bool:
 				True if an opposite-side signal on opposite_tf exists after the anchor
@@ -461,38 +524,52 @@ class Strategies:
 		anchor_tf_norm = self.tvw_helpers.normalize_tf(anchor_tf)
 
 		if target_side not in {"buy", "sell"}:
-			logger.info(
-				"Invalid signal passed to has_opposite_signal_since_last_valid_same_side_higher_tf: %r",
-				signal,
-			)
+			if not simulation:
+				logger.info(
+					"Invalid signal passed to has_opposite_signal_since_last_valid_same_side_higher_tf: %r",
+					signal,
+				)
 			return False
 
 		if not opposite_tf_norm or not anchor_tf_norm:
-			logger.info(
-				"Invalid timeframe configuration in has_opposite_signal_since_last_valid_same_side_higher_tf: opposite_tf=%r anchor_tf=%r",
-				opposite_tf,
-				anchor_tf,
-			)
+			if not simulation:
+				logger.info(
+					"Invalid timeframe configuration in has_opposite_signal_since_last_valid_same_side_higher_tf: opposite_tf=%r anchor_tf=%r",
+					opposite_tf,
+					anchor_tf,
+				)
 			return False
 
-		latest_anchor_signal = self.get_latest_confirmation_directional_signal(
-			sym,
-			anchor_tf_norm,
-			max_scan=max_scan_anchor_tf,
-		)
+		latest_anchor_signal = None
+
+		if simulation:
+			latest_anchor_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				sym,
+				anchor_tf_norm,
+				max_scan=max_scan_anchor_tf,
+			)
+		else:
+			latest_anchor_signal = self.get_latest_confirmation_directional_signal(
+				sym,
+				anchor_tf_norm,
+				max_scan=max_scan_anchor_tf,
+			)		
 
 		if not latest_anchor_signal:
-			logger.info("No confirmation %r anchor found for %r", anchor_tf_norm, sym)
+			if not simulation:
+				logger.info("No confirmation %r anchor found for %r", anchor_tf_norm, sym)
 			return False
 
 		if latest_anchor_signal["side"] != target_side:
-			logger.info(
-				"Latest confirmation %r anchor for %r is not same-side: target_side=%r anchor_side=%r",
-				anchor_tf_norm,
-				sym,
-				target_side,
-				latest_anchor_signal["side"],
-			)
+			if not simulation:
+				logger.info(
+					"Latest confirmation %r anchor for %r is not same-side: target_side=%r anchor_side=%r",
+					anchor_tf_norm,
+					sym,
+					target_side,
+					latest_anchor_signal["side"],
+				)
 			return False
 
 		anchor_time_str = latest_anchor_signal["fields"].get(
@@ -502,67 +579,102 @@ class Strategies:
 		try:
 			anchor_time = datetime.fromisoformat(anchor_time_str)
 		except Exception:
-			logger.exception(
-				"Failed parsing anchor %r time for %r: %r",
-				anchor_tf_norm,
-				sym,
-				anchor_time_str,
-			)
+			if not simulation:
+				logger.exception(
+					"Failed parsing anchor %r time for %r: %r",
+					anchor_tf_norm,
+					sym,
+					anchor_time_str,
+				)
 			return False
 
 		opposite_side = "sell" if target_side == "buy" else "buy"
-		stream_key = self.tvw_helpers.stream_key(opposite_tf_norm, sym)
 
-		try:
-			entries = self.r.xrevrange(stream_key, count=max_scan_opposite_tf)
-		except Exception:
-			logger.exception("Failed reading %r stream for %r", opposite_tf_norm, sym)
+		if simulation:
+			opposite_events = state.all_events_by_ticker_tf.get((sym, opposite_tf_norm), [])
+
+			scanned = 0
+
+			for event in reversed(opposite_events):
+				if scanned >= max_scan_opposite_tf:
+					break
+
+				scanned += 1
+
+				if event.get("signal_role") != "confirmation":
+					continue
+
+				entry_side = event.get("side")
+				if entry_side != opposite_side:
+					continue
+
+				entry_time = event.get("dt")
+				if entry_time is None:
+					continue
+
+				if entry_time > anchor_time:
+					return True
+
 			return False
 
-		if not entries:
-			logger.info("No %r entries found for %r", opposite_tf_norm, sym)
-			return False
 
-		for entry_id, fields in entries:
+		else:
 
-			if not self.is_confirmation_signal(fields):
-				continue
-
-			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-			if entry_side != opposite_side:
-				continue
-
-			entry_time_str = fields.get("bar_close_time_eastern")
-			if not entry_time_str:
-				continue
+			stream_key = self.tvw_helpers.stream_key(opposite_tf_norm, sym)
 
 			try:
-				entry_time = datetime.fromisoformat(entry_time_str)
+				entries = self.r.xrevrange(stream_key, count=max_scan_opposite_tf)
 			except Exception:
-				logger.exception(
-					"Failed parsing %r signal time for %r entry_id=%r value=%r",
-					opposite_tf_norm,
-					sym,
-					entry_id,
-					entry_time_str,
-				)
-				continue
+				if not simulation:
+					logger.exception("Failed reading %r stream for %r", opposite_tf_norm, sym)
+				return False
 
-			if entry_time > anchor_time:
-				logger.info(
-					"Found opposite-side %r signal after anchor %r for %r: opposite_side=%r entry_id=%r entry_time=%r anchor_time=%r",
-					opposite_tf_norm,
-					anchor_tf_norm,
-					sym,
-					opposite_side,
-					entry_id,
-					entry_time_str,
-					anchor_time_str,
-				)
-				return True
+			if not entries:
+				if not simulation:
+					logger.info("No %r entries found for %r", opposite_tf_norm, sym)
+				return False
 
-		return False
+			for entry_id, fields in entries:
 
+				if not self.is_confirmation_signal(fields):
+					continue
+
+				entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+				if entry_side != opposite_side:
+					continue
+
+				entry_time_str = fields.get("bar_close_time_eastern")
+				if not entry_time_str:
+					continue
+
+				try:
+					entry_time = datetime.fromisoformat(entry_time_str)
+				except Exception:
+					if not simulation:
+						logger.exception(
+							"Failed parsing %r signal time for %r entry_id=%r value=%r",
+							opposite_tf_norm,
+							sym,
+							entry_id,
+							entry_time_str,
+						)
+					continue
+
+				if entry_time > anchor_time:
+					if not simulation:
+						logger.info(
+							"Found opposite-side %r signal after anchor %r for %r: opposite_side=%r entry_id=%r entry_time=%r anchor_time=%r",
+							opposite_tf_norm,
+							anchor_tf_norm,
+							sym,
+							opposite_side,
+							entry_id,
+							entry_time_str,
+							anchor_time_str,
+						)
+					return True
+
+			return False
 
 
 	def get_signal_based_progressive_entry_size(
@@ -575,6 +687,9 @@ class Strategies:
 		smallest_share_size,
 		max_scan_entry_tf=1000,
 		max_scan_anchor_tf=500,
+		simulation=False,
+		backtester=None,
+		state=None
 	):
 		"""
 		Determines progressive entry sizing based on the ordinal position of the
@@ -648,6 +763,10 @@ class Strategies:
 					Maximum number of anchor timeframe signals to inspect.
 					Default is 500.
 
+				simulation (Boolean): True if mode is simualtion and False if live.
+				backtester (Backtester): Instance of class Backtester.
+				state 					
+
 			Returns:
 				float:
 					The computed progressive execution quantity.
@@ -688,11 +807,21 @@ class Strategies:
 		if base_num_shares <= 0:
 			return 0.0
 
-		anchor_signal = self.get_latest_confirmation_directional_signal(
-			sym,
-			anchor_tf_norm,
-			max_scan=max_scan_anchor_tf,
-		)
+		anchor_signal = None
+
+		if simulation:
+			anchor_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				sym,
+				anchor_tf_norm,
+				max_scan=max_scan_anchor_tf,
+			)
+		else:
+			anchor_signal = self.get_latest_confirmation_directional_signal(
+				sym,
+				anchor_tf_norm,
+				max_scan=max_scan_anchor_tf,
+			)
 
 		if not anchor_signal:
 			return 0.0
@@ -707,52 +836,86 @@ class Strategies:
 		try:
 			anchor_time = datetime.fromisoformat(anchor_time_str)
 		except Exception:
-			logger.exception("Failed parsing anchor time for signal-based sizing: %r", anchor_time_str)
+			if not simulation:
+				logger.exception("Failed parsing anchor time for signal-based sizing: %r", anchor_time_str)
 			return 0.0
 
-		stream_key = self.tvw_helpers.stream_key(entry_tf_norm, sym)
 
-		try:
-			entries = self.r.xrevrange(stream_key, count=max_scan_entry_tf)
-		except Exception:
-			logger.exception("Failed reading %r stream for signal-based sizing: %r", entry_tf_norm, sym)
-			return 0.0
+		if simulation:
+		    entries = reversed(
+		        state.all_events_by_ticker_tf.get((sym, entry_tf_norm), [])
+		    )
 
-		qualifying_count = 0
+		    qualifying_count = 0
+		    scanned = 0
 
-		for entry_id, fields in entries:
+		    for event in entries:
+		        if scanned >= max_scan_entry_tf:
+		            break
+		        scanned += 1
 
-			if not self.is_confirmation_signal(fields):
-				continue
+		        if event.get("signal_role") != "confirmation":
+		            continue
 
-			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+		        if event.get("side") != target_side:
+		            continue
 
-			if entry_side not in {"buy", "sell"}:
-				continue
+		        entry_time = event.get("dt")
+		        if entry_time is None:
+		            continue
 
-			entry_time_str = fields.get("bar_close_time_eastern")
-			if not entry_time_str:
-				continue
+		        if entry_time < anchor_time:
+		            break
+
+		        qualifying_count += 1
+
+		else:
+
+			stream_key = self.tvw_helpers.stream_key(entry_tf_norm, sym)
 
 			try:
-				entry_time = datetime.fromisoformat(entry_time_str)
+				entries = self.r.xrevrange(stream_key, count=max_scan_entry_tf)
 			except Exception:
-				logger.exception(
-					"Failed parsing entry signal time for %r entry_id=%r value=%r",
-					sym,
-					entry_id,
-					entry_time_str,
-				)
-				continue
+				if not simulation:
+					logger.exception("Failed reading %r stream for signal-based sizing: %r", entry_tf_norm, sym)
+				return 0.0
 
-			if entry_time < anchor_time:
-				break		
+			qualifying_count = 0
 
-			if entry_side != target_side: # Skip over opposite side entry tf signals. We only want same sides.
-				continue					
+			for entry_id, fields in entries:
 
-			# At this point, signal is qualifying because it is same side to anchor and occurred later than anchor
-			qualifying_count += 1
+				if not self.is_confirmation_signal(fields):
+					continue
+
+				entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
+
+				if entry_side not in {"buy", "sell"}:
+					continue
+
+				entry_time_str = fields.get("bar_close_time_eastern")
+				if not entry_time_str:
+					continue
+
+				try:
+					entry_time = datetime.fromisoformat(entry_time_str)
+				except Exception:
+					if not simulation:
+						logger.exception(
+							"Failed parsing entry signal time for %r entry_id=%r value=%r",
+							sym,
+							entry_id,
+							entry_time_str,
+						)
+					continue
+
+				if entry_time < anchor_time:
+					break		
+
+				if entry_side != target_side: # Skip over opposite side entry tf signals. We only want same sides.
+					continue					
+
+				# At this point, signal is qualifying because it is same side to anchor and occurred later than anchor
+				qualifying_count += 1
 
 		if qualifying_count < 1:
 			return 0.0
@@ -765,23 +928,32 @@ class Strategies:
 		if execution_qty < smallest_share_size:
 			return 0.0
 
-		logger.info(
-			"signal-based progressive sizing: ticker=%r side=%r entry_tf=%r anchor_tf=%r qualifying_count=%r execution_qty=%r",
-			sym,
-			target_side,
-			entry_tf_norm,
-			anchor_tf_norm,
-			qualifying_count,
-			execution_qty,
-		)
+		if not simulation:
+			logger.info(
+				"signal-based progressive sizing: ticker=%r side=%r entry_tf=%r anchor_tf=%r qualifying_count=%r execution_qty=%r",
+				sym,
+				target_side,
+				entry_tf_norm,
+				anchor_tf_norm,
+				qualifying_count,
+				execution_qty,
+			)
 
 		return execution_qty
 
 
-	def is_latest_anchor_opposite_of_open_position(self, ticker, anchor_tf, alpaca_position_qty):
+	def is_latest_anchor_opposite_of_open_position(self, ticker, anchor_tf, alpaca_position_qty, simulation, backtester, state):
 		"""
 		Return True if the latest anchor timeframe signal is opposite
 		of the currently open Alpaca position side.
+		
+		Parameters:
+			ticker (str):Ticker symbol, e.g. "AAPL".
+			anchor_tf (str): The higher timeframe anchor used to establish the current directional regime.
+			alpaca_position_qty (float):
+			simulation (Boolean): True if mode is simualtion and False if live.
+			backtester (Backtester): Instance of class Backtester.
+			state 					
 		"""
 		try:
 			alpaca_position_qty = float(alpaca_position_qty or 0.0)
@@ -795,11 +967,21 @@ class Strategies:
 		expected_anchor_side = "buy" if position_side == "long" else "sell"
 		opposite_anchor_side = "sell" if expected_anchor_side == "buy" else "buy"
 
-		latest_anchor_signal = self.get_latest_confirmation_directional_signal(
-			ticker,
-			anchor_tf,
-			max_scan=500,
-		)
+		latest_anchor_signal = None
+
+		if simulation:
+			latest_anchor_signal = backtester.get_latest_confirmation_directional_signal(
+				state,
+				ticker,
+				anchor_tf,
+				max_scan=500,
+			)
+		else:
+			latest_anchor_signal = self.get_latest_confirmation_directional_signal(
+				ticker,
+				anchor_tf,
+				max_scan=500,
+			)
 
 		if latest_anchor_signal is None:
 			return False
@@ -808,14 +990,15 @@ class Strategies:
 
 		is_true = last_anchor_signal == opposite_anchor_side
 
-		logger.info(
-			"anchor-position exit check: ticker=%r anchor_tf=%r position_side=%r latest_anchor_signal=%r result=%r",
-			ticker,
-			anchor_tf,
-			position_side,
-			last_anchor_signal,
-			is_true,
-		)
+		if not simulation:
+			logger.info(
+				"anchor-position exit check: ticker=%r anchor_tf=%r position_side=%r latest_anchor_signal=%r result=%r",
+				ticker,
+				anchor_tf,
+				position_side,
+				last_anchor_signal,
+				is_true,
+			)
 
 		return is_true			
 
@@ -988,18 +1171,6 @@ class Strategies:
 						    getattr(order, "filled_qty", execution_qty) or execution_qty
 						)							
 
-						if do_redis_bookkeeping:
-							self.trade_records.record_live_alpaca_fill(
-								strategy_name=strategy_name,
-								ticker=ticker,
-								date=date,
-								fill_price=fill_price,
-								filled_qty=actual_filled_qty,
-								order_type=order_type,
-								alpaca_position_qty=alpaca_position_qty_after_fill,
-								alpaca_avg_entry_price=alpaca_avg_entry_price_after_fill,
-							)
-
 						return
 
 					if status in terminal_bad_statuses:
@@ -1170,7 +1341,7 @@ class Strategies:
 		return str(fields.get("signal_role") or "").strip().lower() == "confirmation"
 
 
-	def latest_tf_signal_is_confirmation(self, ticker, timeframe):
+	def latest_tf_signal_is_confirmation(self, ticker, timeframe, simulation, backtester, state):
 		"""
 		Check whether the latest alert for a timeframe is a
 		confirmation signal.
@@ -1190,12 +1361,22 @@ class Strategies:
 			timeframe (str):
 				Timeframe stream to inspect (ex: "1m", "5m", "15m", "1h").
 
+			simulation (Boolean): True if mode is simualtion and False if live.
+			backtester (Backtester): Instance of class Backtester.
+			state
+
 		Returns:
 			bool:
 				True if the latest alert exists and is a confirmation signal.
 				False otherwise.
 		"""		
-		last_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+		last_alert = None
+
+		if simulation:
+			last_alert = backtester.get_nth_last_alert(state, ticker, timeframe, 1)
+		else:
+			last_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
+
 		if last_alert is None:
 			return False
 
@@ -1258,11 +1439,11 @@ class Strategies:
 		try:
 			entries = self.r.xrevrange(stream_key, count=max_scan)
 		except Exception:
-			logger.exception(
-				"Failed reading latest confirmation directional signal: ticker=%r tf=%r",
-				sym,
-				tf,
-			)
+			#logger.exception(
+				#"Failed reading latest confirmation directional signal: ticker=%r tf=%r",
+				#sym,
+				#tf,
+			#)
 			return None
 
 		for entry_id, fields in entries:
@@ -1281,7 +1462,7 @@ class Strategies:
 		return None			
 
 
-	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api):
+	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
 		"""
 		Strategy relies on latest signals of three different timeframes; an anchor timeframe (highest timeframe), an entry timeframe (lowerst timeframe)
 		and an intermediary timeframe. A trade is taken upon the entry timeframe, if the latest anchor timeframe is the same side as the
@@ -1290,9 +1471,9 @@ class Strategies:
 		Parameters:
 			strategy_name (str): Strategy name.
 			entry_tf (str): Entry timeframe (lowest timeframe). 
-			intermediary_tf (str): Intermediary timeframe.
+			intermediary_tf (str): intermediary timeframe.
 			anchor_tf (str): Anchor timeframe (hihgest timeframe)
-			simulation_only (bool): True if we only want Redis simulation and no Alpaca execution. False if we want both.
+			simulation (bool): True for simulation and False for live mode.
 			date (str): Eastern time.
 			signal (str): "buy", "sell", "buy+" or "sell+".
 			prices (dict): Market, ask, and bid prices for ticker symbol.
@@ -1300,7 +1481,12 @@ class Strategies:
 			timeframe (str): Timeframe of signal.
 			NUM_SHARES (float): Number of shares to be traded.
 			alpaca_api
-
+			The following params only apply to simulation mode. For live, they will have values of None.
+			state
+			config
+			event
+			price (float): Current market price of ticker
+			backtester (Backtester): Instance of backtester class
 		Returns:
 			place_long_order() or place_short_order() or None
 		"""
@@ -1308,10 +1494,15 @@ class Strategies:
 		if tf != entry_tf:
 			return None
 
-		current_entry_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
+		current_entry_tf_alert = None
+		if simulation:
+			current_entry_tf_alert = backtester.get_nth_last_alert(state, ticker, tf, 1)
+		else:
+			current_entry_tf_alert = self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)		
 
 		if current_entry_tf_alert is None:
-			logger.info("Entry skipped: missing current %r alert for %r", tf, ticker)
+			if not simulation:
+				logger.info("Entry skipped: missing current %r alert for %r", tf, ticker)
 			return None
 
 		_, current_entry_tf_fields = current_entry_tf_alert
@@ -1321,25 +1512,37 @@ class Strategies:
 		).strip().lower()
 
 		if current_entry_tf_signal_role != "confirmation":
-			logger.info(
-				"Entry skipped: current entry_tf alert is not confirmation for %r tf=%r signal=%r signal_role=%r",
-				ticker,
-				tf,
-				current_entry_tf_fields.get("signal"),
-				current_entry_tf_signal_role,
-			)
+			if not simulation:
+				logger.info(
+					"Entry skipped: current entry_tf alert is not confirmation for %r tf=%r signal=%r signal_role=%r",
+					ticker,
+					tf,
+					current_entry_tf_fields.get("signal"),
+					current_entry_tf_signal_role,
+				)
 			return None
 
 		last_entry_tf_alert = current_entry_tf_alert
 
-		last_anchor_tf_alert = self.get_latest_confirmation_directional_signal(
-			ticker,
-			anchor_tf,
-			max_scan=500,
-		)
+		last_anchor_tf_alert = None
+
+		if simulation:
+			last_anchor_tf_alert = backtester.get_latest_confirmation_directional_signal(
+				state,
+				ticker,
+				anchor_tf,
+				max_scan=500,
+			)
+		else:
+			last_anchor_tf_alert = self.get_latest_confirmation_directional_signal(
+				ticker,
+				anchor_tf,
+				max_scan=500,
+			)		
 
 		if last_entry_tf_alert is None or last_anchor_tf_alert is None:
-			logger.info("Strategy skipped: missing alert context for %r", ticker)
+			if not simulation:
+				logger.info("Strategy skipped: missing alert context for %r", ticker)
 			return None
 
 		_, last_entry_tf_fields = last_entry_tf_alert
@@ -1349,22 +1552,24 @@ class Strategies:
 		last_anchor_tf_signal = self.tvw_helpers.normalize_signal(last_anchor_tf_fields.get("signal"))
 
 		if last_entry_tf_signal not in {"buy", "sell"} or last_anchor_tf_signal not in {"buy", "sell"}:
-			logger.info(
-				"Strategy skipped: invalid signal context for %r | %r=%r %r=%r",
-				ticker,
-				entry_tf,
-				last_entry_tf_signal,
-				intermediary_tf,
-				last_anchor_tf_signal,
-			)
+			if not simulation:
+				logger.info(
+					"Strategy skipped: invalid signal context for %r | %r=%r %r=%r",
+					ticker,
+					entry_tf,
+					last_entry_tf_signal,
+					intermediary_tf,
+					last_anchor_tf_signal,
+				)
 			return None
 
 		# Block entry if an opposite-side intermediary tf signal occurred after the anchor
 		if last_anchor_tf_signal == "buy" and last_entry_tf_signal == "buy":
 			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
-				ticker, "buy", intermediary_tf, anchor_tf, 1000, 500
+				ticker, "buy", intermediary_tf, anchor_tf, 1000, 500, simulation, backtester, state
 			):
-				logger.info("Blocked Strategy %r long entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
+				if not simulation:
+					logger.info("Blocked Strategy %r long entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
 				return None
 
 			num_shares = self.get_signal_based_progressive_entry_size(
@@ -1374,26 +1579,34 @@ class Strategies:
 				anchor_tf=anchor_tf,
 				base_num_shares=NUM_SHARES,
 				smallest_share_size=self.SMALLEST_SHARE_SIZE,
+				simulation=simulation,
+				backtester=backtester,
+				state=state
 			)
 
 			if num_shares <= 0:
-				logger.info(
-					"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
-					ticker,
-					strategy_name,
-					signal,
-					entry_tf,
-					anchor_tf,
-				)
+				if not simulation:
+					logger.info(
+						"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
+						ticker,
+						strategy_name,
+						signal,
+						entry_tf,
+						anchor_tf,
+					)
 				return None		
 							
-			return self.place_long_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+			if simulation:
+				return backtester._open_or_add_position(state, event, "long", num_shares)
+			else:
+				return self.place_long_order(strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
 		if last_anchor_tf_signal == "sell" and last_entry_tf_signal == "sell":
 			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
-				ticker, "sell", intermediary_tf, anchor_tf, 1000, 500
+				ticker, "sell", intermediary_tf, anchor_tf, 1000, 500, simulation, backtester, state
 			):
-				logger.info("Blocked Strategy %r short entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
+				if not simulation:
+					logger.info("Blocked Strategy %r short entry for %r due to opposite %r after anchor %r", strategy_name, ticker, intermediary_tf, anchor_tf)
 				return None
 
 			num_shares = self.get_signal_based_progressive_entry_size(
@@ -1403,34 +1616,41 @@ class Strategies:
 				anchor_tf=anchor_tf,
 				base_num_shares=NUM_SHARES,
 				smallest_share_size=self.SMALLEST_SHARE_SIZE,
+				simulation=simulation,
+				backtester=backtester,
+				state=state
 			)
 
 			if num_shares <= 0:
-				logger.info(
-					"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
-					ticker,
-					strategy_name,
-					signal,
-					entry_tf,
-					anchor_tf,
-				)
+				if not simulation:
+					logger.info(
+						"Strategy skipped: signal-based progressive size is zero for %r strategy=%r signal=%r entry_tf=%r anchor_tf=%r",
+						ticker,
+						strategy_name,
+						signal,
+						entry_tf,
+						anchor_tf,
+					)
 				return None	
 
-			return self.place_short_order(simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api)
+			if simulation:
+				return backtester._open_or_add_position(state, event, "short", num_shares)
+			else:
+				return self.place_short_order(strategy_name, ticker, date, prices, num_shares, alpaca_api)
 
-		logger.info(
-			"No trade condition met for %r | entry_tf=%r entry_signal=%r anchor_tf=%r anchor_signal=%r",
-			ticker,
-			entry_tf,
-			last_entry_tf_signal,
-			anchor_tf,
-			last_anchor_tf_signal,
-		)		
+		if not simulation:
+			logger.info(
+				"No trade condition met for %r | entry_tf=%r entry_signal=%r anchor_tf=%r anchor_signal=%r",
+				ticker,
+				entry_tf,
+				last_entry_tf_signal,
+				anchor_tf,
+				last_anchor_tf_signal,
+			)		
 
 		return None	
-
-
-	def exit_strategy1(self, strategy_name, lower_timeframes, intermediary_tf, anchor_tf, simulation_only, date, signal, prices, ticker, timeframe, alpaca_api):
+	
+	def exit_strategy1(self, strategy_name, lower_timeframes, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, alpaca_api, state, config, event, price, backtester):
 		"""
 		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal,
 		if a lower timeframe signal occured that is same side as the last exit tf (which may have occurred overnight), and opposite side to the anchor tf,
@@ -1442,59 +1662,45 @@ class Strategies:
 			lower_timeframes (Set): All timeframes for which we can get a potential signal, that are lower than intermediary timeframe.
 			intermediary_tf (str): Intermediary timeframe.
 			anchor_tf (str): Anchor timeframe (hihgest timeframe)
-			simulation_only (bool): True if we only want Redis simulation and no Alpaca execution. False if we want both.
+			simulation (bool): True for simulation and False for live mode.
 			date (str): Eastern time.
 			signal (str): "buy", "sell", "buy+" or "sell+".
 			prices (dict): Market, ask, and bid prices for ticker symbol.
 			ticker (str): Ticker symbol.
 			timeframe (str): Timeframe of signal.
 			alpaca_api
+			The following params only apply to simulation mode. For live, they will have values of None.
+			state
+			config
+			event
+			price (float): Current market price of ticker
+			backtester (Backtester): Instance of backtester class			
 
 		Returns:
 			sell_long_order() or cover_short_order() or None
-		"""				
-		logger.info(
-			"exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
-			strategy_name,
-			intermediary_tf,
-			anchor_tf,
-			ticker,
-			timeframe,
-			signal,
-			self.tvw_helpers.normalize_signal(signal),
-		)
+		"""	
+		if not simulation:			
+			logger.info(
+				"exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
+				strategy_name,
+				intermediary_tf,
+				anchor_tf,
+				ticker,
+				timeframe,
+				signal,
+				self.tvw_helpers.normalize_signal(signal),
+			)
 
 		exit_timeframes = lower_timeframes | {intermediary_tf} # union
 		tf = self.tvw_helpers.normalize_tf(timeframe)
 		if tf not in exit_timeframes:
 			return None
 
-		redis_position_side = None
-		redis_num_shares = 0.0
 		alpaca_position = None
 		alpaca_position_qty = 0.0
+		position_qty_for_anchor_check = 0.0
 
-		if simulation_only:
-			try:
-				redis_position = self.trade_records.get_position(strategy_name, ticker)
-			except Exception:
-				logger.exception(
-					"exit %r failed to fetch Redis position for %r",
-					strategy_name,
-					ticker,
-				)
-				return None
-
-			if not redis_position:
-				return None
-
-			redis_position_side = str(redis_position.get("side") or "").strip().lower()
-			redis_num_shares = abs(float(redis_position.get("num_shares") or 0.0))
-
-			if redis_position_side not in {"long", "short"} or redis_num_shares <= 0:
-				return None
-
-		else:
+		if not simulation:
 			try:
 				alpaca_position = alpaca_api.get_position(ticker)
 				alpaca_position_qty = float(getattr(alpaca_position, "qty", 0.0) or 0.0)
@@ -1504,28 +1710,32 @@ class Strategies:
 			if abs(alpaca_position_qty) <= 0:
 				return None
 
+		if simulation:
+			sim_position = state.positions.get(ticker)
 
-		# There is a qualifying open position, so proceed with exit condition checks.
+			# No simulated position exists, so there is nothing to exit.
+			if sim_position is None or sim_position.num_shares <= 0:
+				return None
 
-		position_qty_for_anchor_check = alpaca_position_qty
-
-		if simulation_only:
-			if redis_position_side == "long":
-				position_qty_for_anchor_check = redis_num_shares
-			elif redis_position_side == "short":
-				position_qty_for_anchor_check = -redis_num_shares		
+			position_qty_for_anchor_check = sim_position.num_shares
+		else:
+			position_qty_for_anchor_check = alpaca_position_qty	
+			position_side = "long" if alpaca_position_qty > 0 else "short"		
 
 
 		# EXIT CONDITIONS
 
-		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite")
+		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite", simulation, backtester, state)
 
-		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf)
+		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf, simulation, backtester, state)
 
 		anchor_opposite_open_position = self.is_latest_anchor_opposite_of_open_position(
 			ticker,
 			anchor_tf,
 			position_qty_for_anchor_check,
+			simulation,
+			backtester,
+			state
 		)
 
 		# Exit signal roles are unkown. So we use which type (confirmation buy or sell) they follow to determine if they qualify for exit
@@ -1538,26 +1748,35 @@ class Strategies:
 		latest_intermediary_direction = None
 
 		if is_intermediary_tf_exit_signal:
-			latest_directional_alert = self.get_latest_directional_signal(
-				ticker,
-				intermediary_tf,
-				"confirmation",
-				max_scan=100,
-			)
+			if simulation:
+				latest_directional_alert = backtester.get_latest_directional_signal(
+					state,
+					ticker,
+					intermediary_tf,
+					"confirmation",
+					max_scan=100,
+				)
+			else:
+				latest_directional_alert = self.get_latest_directional_signal(
+					ticker,
+					intermediary_tf,
+					"confirmation",
+					max_scan=100,
+				)
 
 			if latest_directional_alert: # Bullish exit matches confirmation buy or bearish exit matches confirmation sell
 				latest_intermediary_direction = latest_directional_alert["side"]
 
-				if simulation_only:
+				if simulation:
 					exit_signal_matches_open_position = (
 						(
-							redis_position_side == "long"
+							sim_position.side == "long"
 							and latest_intermediary_direction == "buy"
 							and signal == "bullish_exit"
 						)
 						or
 						(
-							redis_position_side == "short"
+							sim_position.side == "short"
 							and latest_intermediary_direction == "sell"
 							and signal == "bearish_exit"
 						)
@@ -1565,13 +1784,15 @@ class Strategies:
 				else:
 					exit_signal_matches_open_position = (
 						(
-							alpaca_position_qty > 0
+							#alpaca_position_qty > 0
+							position_side == "long"
 							and latest_intermediary_direction == "buy"
 							and signal == "bullish_exit"
 						)
 						or
 						(
-							alpaca_position_qty < 0
+							#alpaca_position_qty < 0
+							position_side == "short"
 							and latest_intermediary_direction == "sell"
 							and signal == "bearish_exit"
 						)
@@ -1584,168 +1805,121 @@ class Strategies:
 			or exit_signal_matches_open_position
 		)
 
-		logger.info(
-			"exit %r checks for %r => intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
-			strategy_name,
-			ticker,
-			is_intermediary_tf_opposite_of_last_anchor_tf,
-			lower_tf_confirms_intermediary_opposite_of_anchor,
-			anchor_opposite_open_position,
-			is_intermediary_tf_exit_signal,
-			latest_intermediary_direction,
-			exit_signal_matches_open_position,
-		)		
+		if not simulation:
+			logger.info(
+				"exit %r checks for %r => intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
+				strategy_name,
+				ticker,
+				is_intermediary_tf_opposite_of_last_anchor_tf,
+				lower_tf_confirms_intermediary_opposite_of_anchor,
+				anchor_opposite_open_position,
+				is_intermediary_tf_exit_signal,
+				latest_intermediary_direction,
+				exit_signal_matches_open_position,
+			)		
 
 		if not should_exit:
 			return None
 
-		alpaca_num_shares = abs(alpaca_position_qty)		
+		
+		alpaca_num_shares = 0
+		if not simulation:
+			alpaca_num_shares = abs(alpaca_position_qty)
+		#sim_num_shares = abs(state.positions.get(ticker).num_shares)		
 
-		latest_intermediary_tf_signal = self.get_latest_directional_signal(
-			ticker,
-			intermediary_tf,
-			"confirmation",
-			max_scan=100,
-		)
+		if simulation:
+			latest_intermediary_tf_signal = backtester.get_latest_directional_signal(
+				state,
+				ticker,
+				intermediary_tf,
+				"confirmation",
+				max_scan=100,
+			)
+		else:
+			latest_intermediary_tf_signal = self.get_latest_directional_signal(
+				ticker,
+				intermediary_tf,
+				"confirmation",
+				max_scan=100,
+			)
 
 		if latest_intermediary_tf_signal is None:
-			logger.info("No confirmation %r directional signal found for %r", intermediary_tf, ticker)
+			if not simulation:
+				logger.info("No confirmation %r directional signal found for %r", intermediary_tf, ticker)
 			return None
 
 		signal_intermediary_tf = latest_intermediary_tf_signal["side"]
 
-		logger.info(
-			"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r redis_side=%r redis_qty=%r alpaca_qty=%r",
-			ticker,
-			signal_intermediary_tf,
-			latest_intermediary_tf_signal.get("signal_role"),
-			redis_position_side,
-			redis_num_shares,
-			alpaca_num_shares,
-		)
-
-		if signal_intermediary_tf not in {"buy", "sell"}:
+		if not simulation:
 			logger.info(
-				"Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
+				"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r alpaca_qty=%r",
 				ticker,
 				signal_intermediary_tf,
+				latest_intermediary_tf_signal.get("signal_role"),
+				alpaca_num_shares,
 			)
+
+		if signal_intermediary_tf not in {"buy", "sell"}:
+			if not simulation:
+				logger.info(
+					"Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
+					ticker,
+					signal_intermediary_tf,
+				)
 			return None		
 
 		# At this point, should_exit is already True.
 		# So liquidation should be based on the actual open position side,
 		# not on the latest intermediary signal side.
 
-		if simulation_only:
-			if redis_position_side == "short" and redis_num_shares > 0:
+		if simulation:
+			return backtester._close_position(state, event)
+		else:
+			if alpaca_position_qty < 0 and alpaca_num_shares > 0:
 				logger.info(
-					"exit %r Redis bookkeeping cover for %r using redis_num_shares=%r",
+					"exit %r Alpaca cover for %r using alpaca_num_shares=%r",
 					strategy_name,
 					ticker,
-					redis_num_shares,
+					alpaca_num_shares,
 				)
-				try:
-					self.trade_records.create_trade_record(
-						strategy_name,
-						ticker,
-						date,
-						prices.get(ticker, {}).get("market"),
-						redis_num_shares,
-						"cover",
-						False,
-					)
-				except Exception:
-					logger.exception(
-						"exit Redis bookkeeping cover failed for strategy=%r ticker=%r qty=%r",
-						strategy_name,
-						ticker,
-						redis_num_shares,
-					)
-				return None
+				return self.cover_short_order(
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+					do_redis_bookkeeping=False,
+				)
 
-			if redis_position_side == "long" and redis_num_shares > 0:
+			if alpaca_position_qty > 0 and alpaca_num_shares > 0:
 				logger.info(
-					"exit %r Redis bookkeeping sell for %r using redis_num_shares=%r",
+					"exit %r Alpaca sell for %r using alpaca_num_shares=%r",
 					strategy_name,
 					ticker,
-					redis_num_shares,
+					alpaca_num_shares,
 				)
-				try:
-					self.trade_records.create_trade_record(
-						strategy_name,
-						ticker,
-						date,
-						prices.get(ticker, {}).get("market"),
-						redis_num_shares,
-						"sell",
-						False,
-					)
-				except Exception:
-					logger.exception(
-						"exit Redis bookkeeping sell failed for strategy=%r ticker=%r qty=%r",
-						strategy_name,
-						ticker,
-						redis_num_shares,
-					)
-				return None
+				return self.sell_long_order(
+					strategy_name,
+					ticker,
+					date,
+					prices,
+					alpaca_num_shares,
+					alpaca_api,
+					do_redis_bookkeeping=False,
+				)
 
 			logger.info(
-				"exit %r no Redis position to liquidate for %r; redis_side=%r redis_qty=%r",
+				"exit %r no Alpaca position to liquidate for %r; alpaca_qty=%r",
 				strategy_name,
 				ticker,
-				redis_position_side,
-				redis_num_shares,
+				alpaca_position_qty,
 			)
 			return None
-
-		if alpaca_position_qty < 0 and alpaca_num_shares > 0:
-			logger.info(
-				"exit %r Alpaca cover for %r using alpaca_num_shares=%r",
-				strategy_name,
-				ticker,
-				alpaca_num_shares,
-			)
-			return self.cover_short_order(
-				simulation_only,
-				strategy_name,
-				ticker,
-				date,
-				prices,
-				alpaca_num_shares,
-				alpaca_api,
-				do_redis_bookkeeping=True,
-			)
-
-		if alpaca_position_qty > 0 and alpaca_num_shares > 0:
-			logger.info(
-				"exit %r Alpaca sell for %r using alpaca_num_shares=%r",
-				strategy_name,
-				ticker,
-				alpaca_num_shares,
-			)
-			return self.sell_long_order(
-				simulation_only,
-				strategy_name,
-				ticker,
-				date,
-				prices,
-				alpaca_num_shares,
-				alpaca_api,
-				do_redis_bookkeeping=True,
-			)
-
-		logger.info(
-			"exit %r no Alpaca position to liquidate for %r; alpaca_qty=%r",
-			strategy_name,
-			ticker,
-			alpaca_position_qty,
-		)
-		return None
 
 
 	def place_order(
 		self,
-		simulation_only,
 		strategy_name,
 		ticker,
 		date,
@@ -1753,7 +1927,7 @@ class Strategies:
 		num_shares,
 		alpaca_api,
 		order_type,
-		do_redis_bookkeeping=True,
+		do_redis_bookkeeping=False,
 	):
 		order_type = str(order_type or "").strip().lower()
 		ticker = str(ticker or "").upper().strip()
@@ -1840,24 +2014,6 @@ class Strategies:
 		if num_shares <= 0:
 			logger.info("Non-positive num_shares=%r for ticker=%r order_type=%r", num_shares, ticker, order_type)
 			return None
-
-		redis_position = None
-		try:
-			redis_position = self.trade_records.get_position(strategy_name, ticker)
-			logger.info(
-				"Redis position before order: strategy=%r ticker=%r order_type=%r redis_position=%r",
-				strategy_name,
-				ticker,
-				order_type,
-				redis_position,
-			)
-		except Exception:
-			logger.exception(
-				"Failed retrieving Redis position before order: strategy=%r ticker=%r order_type=%r",
-				strategy_name,
-				ticker,
-				order_type,
-			)
 
 		alpaca_position = None
 		try:
@@ -2146,9 +2302,8 @@ class Strategies:
 		}		
 
 
-	def place_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def place_long_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(
-			simulation_only,
 			strategy_name,
 			ticker,
 			date,
@@ -2156,12 +2311,11 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"long",
-			True,
+			False,
 		)
 
-	def place_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def place_short_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(
-			simulation_only,
 			strategy_name,
 			ticker,
 			date,
@@ -2169,12 +2323,11 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"short",
-			True,
+			False,
 		)
 
-	def sell_long_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=True):
+	def sell_long_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
 		return self.place_order(
-			simulation_only,
 			strategy_name,
 			ticker,
 			date,
@@ -2185,9 +2338,8 @@ class Strategies:
 			do_redis_bookkeeping,
 		)
 
-	def cover_short_order(self, simulation_only, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=True):
+	def cover_short_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
 		return self.place_order(
-			simulation_only,
 			strategy_name,
 			ticker,
 			date,
