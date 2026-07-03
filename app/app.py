@@ -630,7 +630,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	"""	
 	#return trade_records_instance.get_daily_max_open_exposure_summary(
 		#days=days,
-		refresh_current=True,
+		#refresh_current=True,
 	#)	
 
 
