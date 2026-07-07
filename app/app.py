@@ -52,6 +52,19 @@ APCA_API_BASE_URL_STG1_4H = os.environ["APCA_API_BASE_URL_STG1_4H"]
 APCA_API_KEY_ID_STG1_4H = os.environ["APCA_API_KEY_ID_STG1_4H"]
 APCA_API_SECRET_KEY_STG1_4H = os.environ["APCA_API_SECRET_KEY_STG1_4H"]
 
+
+APCA_API_BASE_URL_STG2_15M = os.environ["APCA_API_BASE_URL_STG2_15M"]
+APCA_API_KEY_ID_STG2_15M = os.environ["APCA_API_KEY_ID_STG2_15M"]
+APCA_API_SECRET_KEY_STG2_15M = os.environ["APCA_API_SECRET_KEY_STG2_15M"]
+
+APCA_API_BASE_URL_STG2_1H = os.environ["APCA_API_BASE_URL_STG2_1H"]
+APCA_API_KEY_ID_STG2_1H = os.environ["APCA_API_KEY_ID_STG2_1H"]
+APCA_API_SECRET_KEY_STG2_1H = os.environ["APCA_API_SECRET_KEY_STG2_1H"]
+
+APCA_API_BASE_URL_STG2_4H = os.environ["APCA_API_BASE_URL_STG2_4H"]
+APCA_API_KEY_ID_STG2_4H = os.environ["APCA_API_KEY_ID_STG2_4H"]
+APCA_API_SECRET_KEY_STG2_4H = os.environ["APCA_API_SECRET_KEY_STG2_4H"]
+
 POSITION_SIZE_15M = float(os.environ["POSITION_SIZE_15M"])
 POSITION_SIZE_1H = float(os.environ["POSITION_SIZE_1H"])
 POSITION_SIZE_4H = float(os.environ["POSITION_SIZE_4H"])
@@ -78,6 +91,21 @@ ALPACA_APIS = {
 		key_id=APCA_API_KEY_ID_STG1_4H, 
 		secret_key=APCA_API_SECRET_KEY_STG1_4H
 	),
+	"strategy2_15m_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG2_15M, 
+		key_id=APCA_API_KEY_ID_STG2_15M, 
+		secret_key=APCA_API_SECRET_KEY_STG2_15M
+	),
+	"strategy2_1h_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG2_1H, 
+		key_id=APCA_API_KEY_ID_STG2_1H, 
+		secret_key=APCA_API_SECRET_KEY_STG2_1H
+	),
+	"strategy2_4h_anchor": tradeapi.REST(
+		base_url=APCA_API_BASE_URL_STG2_4H, 
+		key_id=APCA_API_KEY_ID_STG2_4H, 
+		secret_key=APCA_API_SECRET_KEY_STG2_4H
+	),	
 }
 
 MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
@@ -232,6 +260,21 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			#ALPACA_APIS["real_money"],
 		#)		
 
+		strategies_instance.exit_strategy1(
+			"strategy1_15m_anchor",
+			{"1m"},
+			"5m",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy1_15m_anchor"],
+			None, None, None, None,	None,			
+		)
+
 		strategies_instance.entry_strategy1(
 			"strategy1_15m_anchor",
 			"1m",
@@ -245,30 +288,22 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES1,
 			ALPACA_APIS["strategy1_15m_anchor"],
-			None,
-			None,
-			None,
-			None,
-			None,
+			None, None, None, None,	None,
 		)
 
 		strategies_instance.exit_strategy1(
-			"strategy1_15m_anchor",
-			{"1m"},
-			"5m",
+			"strategy1_1h_anchor",
+			{"1m", "5m"},
 			"15m",
+			"1h",
 			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
-			ALPACA_APIS["strategy1_15m_anchor"],
-			None,
-			None,
-			None,
-			None,
-			None,			
+			ALPACA_APIS["strategy1_1h_anchor"],
+			None, None, None, None,	None,			
 		)
 
 		strategies_instance.entry_strategy1(
@@ -284,30 +319,22 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES2,
 			ALPACA_APIS["strategy1_1h_anchor"],
-			None,
-			None,
-			None,
-			None,	
-			None,		
+			None, None, None, None,	None,		
 		)
 
 		strategies_instance.exit_strategy1(
-			"strategy1_1h_anchor",
-			{"1m", "5m"},
-			"15m",
+			"strategy1_4h_anchor",
+			{"1m", "5m", "15m"},
 			"1h",
+			"4h",
 			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
-			ALPACA_APIS["strategy1_1h_anchor"],
-			None,
-			None,
-			None,
-			None,
-			None,			
+			ALPACA_APIS["strategy1_4h_anchor"],
+			None, None, None, None,	None,			
 		)
 
 		strategies_instance.entry_strategy1(
@@ -323,31 +350,94 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			tf,
 			NUM_SHARES3,
 			ALPACA_APIS["strategy1_4h_anchor"],
-			None,
-			None,
-			None,
-			None,	
-			None,		
+			None, None, None, None,	None,		
 		)
 
-		strategies_instance.exit_strategy1(
-			"strategy1_4h_anchor",
-			{"1m", "5m", "15m"},
-			"1h",
-			"4h",
+		"""
+		strategies_instance.exit_strategy2(
+			"strategy2_15m_anchor",
+			"1m",
 			False,
 			now_et,
 			signal,
 			prices,
 			symbol,
 			tf,
-			ALPACA_APIS["strategy1_4h_anchor"],
-			None,
-			None,
-			None,
-			None,
-			None,			
+			ALPACA_APIS["strategy2_15m_anchor"],
+			None, None, None, None,	None,
 		)
+
+		strategies_instance.entry_strategy2(
+			"strategy2_15m_anchor",
+			"1m",
+			"5m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES1,
+			ALPACA_APIS["strategy2_15m_anchor"],
+			None, None, None, None,	None,
+		)
+
+		strategies_instance.exit_strategy2(
+			"strategy2_1h_anchor",
+			"5m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy2_1h_anchor"],
+			None, None, None, None,	None,
+		)
+
+		strategies_instance.entry_strategy2(
+			"strategy2_1h_anchor",
+			"5m",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES2,
+			ALPACA_APIS["strategy2_1h_anchor"],
+			None, None, None, None,	None,
+		)
+
+		strategies_instance.exit_strategy2(
+			"strategy2_4h_anchor",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy2_4h_anchor"],
+			None, None, None, None,	None,
+		)
+
+		strategies_instance.entry_strategy2(
+			"strategy2_4h_anchor",
+			"15m",
+			"1h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES3,
+			ALPACA_APIS["strategy2_4h_anchor"],
+			None, None, None, None,	None,
+		)
+		"""
 
 	except Exception:
 		logger.exception(

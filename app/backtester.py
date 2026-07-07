@@ -62,6 +62,28 @@ class BackTester:
 			"lower_timeframes": {"1m", "5m", "15m"},
 			"default_position_size": 20000.0,
 		},
+
+		"strategy2_15m_anchor": {
+			"entry_tf": "1m",
+			"intermediary_tf": "5m",
+			"anchor_tf": "15m",
+			"lower_timeframes": {"1m"},
+			"default_position_size": 2000.0,
+		},
+		"strategy2_1h_anchor": {
+			"entry_tf": "5m",
+			"intermediary_tf": "15m",
+			"anchor_tf": "1h",
+			"lower_timeframes": {"1m", "5m"},
+			"default_position_size": 6000.0,
+		},
+		"strategy2_4h_anchor": {
+			"entry_tf": "15m",
+			"intermediary_tf": "1h",
+			"anchor_tf": "4h",
+			"lower_timeframes": {"1m", "5m", "15m"},
+			"default_position_size": 20000.0,
+		},		
 	}
 
 	TIMEFRAME_ORDER = {
@@ -130,7 +152,13 @@ class BackTester:
 
 		for event in events:
 			self._register_event_context(state, event)
-			self._process_strategy1_event(strategy_name, state, config, event, position_size)
+			#self._process_strategy1_event(strategy_name, state, config, event, position_size)
+			if strategy_name.startswith("strategy1_"):
+				self._process_strategy1_event(strategy_name, state, config, event, position_size)
+			elif strategy_name.startswith("strategy2_"):
+				self._process_strategy2_event(strategy_name, state, config, event, position_size)
+			else:
+				raise ValueError(f"Unsupported strategy family: {strategy_name}")			
 			self._record_snapshots(state, event["dt"])
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
@@ -287,16 +315,32 @@ class BackTester:
 
 
 	def _process_strategy1_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
-		"""Apply Strategy 1 entry and exit rules to one chronological signal event."""
-		#self._try_strategy1_entry(state, config, event, position_size)
-		#self._try_strategy1_exit(state, config, event)
-		
+		"""Apply Strategy 1 entry and exit rules to one chronological signal event."""		
 		now_et = event["dt"] 
 		signal = event["side"] 
 		symbol = event["ticker"]
 		tf = event["timeframe"]
 		market_price = event["price"]
 		NUM_SHARES = position_size / market_price
+
+		self.strategies_instance.exit_strategy1(
+			strategy_name,
+			config["lower_timeframes"],
+			config["intermediary_tf"],
+			config["anchor_tf"],			
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self			
+		)
 
 		self.strategies_instance.entry_strategy1(
 			strategy_name,
@@ -318,11 +362,17 @@ class BackTester:
 			self
 		)
 
-		self.strategies_instance.exit_strategy1(
+	def _process_strategy2_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
+		now_et = event["dt"]
+		signal = event["signal"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		NUM_SHARES = position_size / market_price
+
+		self.strategies_instance.exit_strategy2(
 			strategy_name,
-			config["lower_timeframes"],
-			config["intermediary_tf"],
-			config["anchor_tf"],			
+			config["entry_tf"],
 			True,
 			now_et,
 			signal,
@@ -334,7 +384,26 @@ class BackTester:
 			config,
 			event,
 			market_price,
-			self			
+			self,
+		)
+
+		self.strategies_instance.entry_strategy2(
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			NUM_SHARES,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
 		)
 
 
@@ -488,6 +557,45 @@ class BackTester:
 		position.num_shares = 0.0
 		state.positions.pop(ticker, None)
 
+
+	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> None:
+		ticker = event["ticker"]
+		position = state.positions.get(ticker)
+
+		if not position or position.num_shares <= 0:
+			return
+
+		close_qty = min(float(qty), position.num_shares)
+		if close_qty <= 0:
+			return
+
+		price = event["price"]
+
+		if position.side == "long":
+			realized_delta = (price - position.avg_price_per_share) * close_qty
+			exit_side = "sell"
+		else:
+			realized_delta = (position.avg_price_per_share - price) * close_qty
+			exit_side = "cover"
+
+		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+
+		state.trade_events.append({
+			"time": event["time"],
+			"ticker": ticker,
+			"event_type": "partial_close" if close_qty < position.num_shares else "close",
+			"side": exit_side,
+			"price": price,
+			"num_shares": close_qty,
+			"realized_delta": realized_delta,
+		})
+
+		position.num_shares -= close_qty
+
+		if position.num_shares < 1:
+			state.positions.pop(ticker, None)
+
+
 	def _record_snapshots(self, state: SimState, current_dt: datetime) -> None:
 		"""Record per-ticker and aggregate running PnL plus daily max exposure at the current event time."""
 		overall_total = 0.0
@@ -527,3 +635,4 @@ class BackTester:
 		print("--------------- -----------------------------------")
 		for day, value in sorted(daily_max_exposure.items()):
 			print(f"{day:<15} $ {value:>33,.2f}")
+

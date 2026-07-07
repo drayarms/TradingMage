@@ -1462,6 +1462,23 @@ class Strategies:
 		return None			
 
 
+	def _tf_rank(self, timeframe: str) -> int:
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		order = {
+			"1m": 1,
+			"3m": 2,
+			"5m": 3,
+			"15m": 4,
+			"30m": 5,
+			"45m": 6,
+			"1h": 7,
+			"2h": 8,
+			"4h": 9,
+			"1d": 10,
+		}
+		return order.get(tf, -1)
+
+
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
 		"""
 		Strategy relies on latest signals of three different timeframes; an anchor timeframe (highest timeframe), an entry timeframe (lowerst timeframe)
@@ -1916,6 +1933,105 @@ class Strategies:
 				alpaca_position_qty,
 			)
 			return None
+
+
+	def entry_strategy2(self, strategy_name, entry_tf, intermediary_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		entry_tf = self.tvw_helpers.normalize_tf(entry_tf)
+
+		if tf != entry_tf:
+			return None
+
+		side = self.tvw_helpers.normalize_signal(signal)
+		if side not in {"buy", "sell"}:
+			return None
+
+		current_alert = backtester.get_nth_last_alert(state, ticker, tf, 1) if simulation else self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
+		if current_alert is None:
+			return None
+
+		_, fields = current_alert
+		if not self.is_confirmation_signal(fields):
+			return None
+
+		last_intermediary = (
+			backtester.get_latest_confirmation_directional_signal(state, ticker, intermediary_tf, max_scan=500)
+			if simulation
+			else self.get_latest_confirmation_directional_signal(ticker, intermediary_tf, max_scan=500)
+		)
+
+		if not last_intermediary or last_intermediary["side"] != side:
+			return None
+
+		position_side = "long" if side == "buy" else "short"
+
+		if simulation:
+			return backtester._open_or_add_position(state, event, position_side, NUM_SHARES)
+
+		if side == "buy":
+			return self.place_long_order(strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
+
+		return self.place_short_order(strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
+
+
+	def exit_strategy2(self, strategy_name, entry_tf, simulation, date, signal, prices, ticker, timeframe, alpaca_api, state, config, event, price, backtester):
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		entry_tf = self.tvw_helpers.normalize_tf(entry_tf)
+
+		if self._tf_rank(tf) < self._tf_rank(entry_tf):
+			return None
+
+		side = self.tvw_helpers.normalize_signal(signal)
+		is_exit_signal = str(signal or "").strip().lower() in {"bullish_exit", "bearish_exit"}
+		is_confirmation_opposite = False
+
+		if simulation:
+			position = state.positions.get(ticker)
+			if not position or position.num_shares <= 0:
+				return None
+
+			position_side = position.side
+			open_qty = position.num_shares
+		else:
+			try:
+				alpaca_position = alpaca_api.get_position(ticker)
+				alpaca_qty = float(getattr(alpaca_position, "qty", 0.0) or 0.0)
+			except Exception:
+				return None
+
+			if alpaca_qty == 0:
+				return None
+
+			position_side = "long" if alpaca_qty > 0 else "short"
+			open_qty = abs(alpaca_qty)
+
+		if side in {"buy", "sell"}:
+			current_alert = backtester.get_nth_last_alert(state, ticker, tf, 1) if simulation else self.tvw_helpers.get_nth_last_alert(ticker, tf, 1)
+			if current_alert is not None:
+				_, fields = current_alert
+				if self.is_confirmation_signal(fields):
+					is_confirmation_opposite = (
+						(position_side == "long" and side == "sell") or
+						(position_side == "short" and side == "buy")
+					)
+
+		should_exit = is_exit_signal or is_confirmation_opposite
+		if not should_exit:
+			return None
+
+		close_qty = open_qty if open_qty < 1 else open_qty / 2.0
+
+		if simulation:
+			return backtester._close_partial_position(state, event, close_qty)
+
+		if position_side == "long":
+			return self.sell_long_order(
+				strategy_name, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+			)
+
+		return self.cover_short_order(
+			strategy_name, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+		)
 
 
 	def place_order(
