@@ -231,7 +231,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 		NUM_SHARES2 = POSITION_SIZE_1H / market_price
 		NUM_SHARES3 = POSITION_SIZE_4H / market_price
 
-		#strategies_instance.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
+		##strategies_instance.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
 			#"real_money",
 			#"1m",
 			#"5m",
