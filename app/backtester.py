@@ -592,6 +592,7 @@ class BackTester:
 
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> None:
 
+		now_et = event["dt"]
 		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
 			"""Open a new position or add to an existing same-side position in memory."""
 			ticker = event["ticker"]
@@ -616,6 +617,7 @@ class BackTester:
 
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> None:
 
+		now_et = event["dt"]
 		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
 			"""Close the current in-memory position and accumulate realized PnL."""
 			ticker = event["ticker"]
@@ -637,6 +639,7 @@ class BackTester:
 
 	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> None:
 
+		now_et = event["dt"]
 		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
 			ticker = event["ticker"]
 			position = state.positions.get(ticker)
