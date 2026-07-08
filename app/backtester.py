@@ -152,15 +152,15 @@ class BackTester:
 
 		for event in events:
 			self._register_event_context(state, event)
-			self._process_experimental_strategy(strategy_name, state, config, event, position_size)
+			#self._process_experimental_strategy(strategy_name, state, config, event, position_size)
 			#self._process_strategy1_event(strategy_name, state, config, event, position_size)
-			"""if strategy_name.startswith("strategy1_"):
+			if strategy_name.startswith("strategy1_"):
 				self._process_strategy1_event(strategy_name, state, config, event, position_size)
 			elif strategy_name.startswith("strategy2_"):
 				self._process_strategy2_event(strategy_name, state, config, event, position_size)
 			else:
 				raise ValueError(f"Unsupported strategy family: {strategy_name}")			
-			self._record_snapshots(state, event["dt"])"""
+			self._record_snapshots(state, event["dt"])
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
 
@@ -388,7 +388,7 @@ class BackTester:
 			self,
 		)
 
-		self.strategies_instance.entry_strategy2(
+		"""self.strategies_instance.entry_strategy2(
 			strategy_name,
 			config["entry_tf"],
 			config["intermediary_tf"],
@@ -405,7 +405,27 @@ class BackTester:
 			event,
 			market_price,
 			self,
-		)
+		)"""
+
+		self.strategies_instance.entry_strategy1(
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			NUM_SHARES,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self
+		)		
 
 
 
