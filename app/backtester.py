@@ -591,82 +591,88 @@ class BackTester:
 
 
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> None:
-		"""Open a new position or add to an existing same-side position in memory."""
-		ticker = event["ticker"]
-		price = event["price"]
-		existing = state.positions.get(ticker)
-		if existing and existing.side != position_side and existing.num_shares > 0:
-			self._close_position(state, event)
-			existing = None
 
-		if existing and existing.num_shares > 0:
-			old_qty = existing.num_shares
-			new_qty = old_qty + qty
-			existing.avg_price_per_share = ((existing.avg_price_per_share * old_qty) + (price * qty)) / new_qty
-			existing.num_shares = new_qty
-			existing.entry_sequence_count += 1
-			event_type = "add"
-		else:
-			state.positions[ticker] = SimPosition(ticker=ticker, side=position_side, avg_price_per_share=price, num_shares=qty)
-			event_type = "open"
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+			"""Open a new position or add to an existing same-side position in memory."""
+			ticker = event["ticker"]
+			price = event["price"]
+			existing = state.positions.get(ticker)
+			if existing and existing.side != position_side and existing.num_shares > 0:
+				self._close_position(state, event)
+				existing = None
 
-		state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
+			if existing and existing.num_shares > 0:
+				old_qty = existing.num_shares
+				new_qty = old_qty + qty
+				existing.avg_price_per_share = ((existing.avg_price_per_share * old_qty) + (price * qty)) / new_qty
+				existing.num_shares = new_qty
+				existing.entry_sequence_count += 1
+				event_type = "add"
+			else:
+				state.positions[ticker] = SimPosition(ticker=ticker, side=position_side, avg_price_per_share=price, num_shares=qty)
+				event_type = "open"
+
+			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
 
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> None:
-		"""Close the current in-memory position and accumulate realized PnL."""
-		ticker = event["ticker"]
-		position = state.positions.get(ticker)
-		if not position or position.num_shares <= 0:
-			return
-		price = event["price"]
-		if position.side == "long":
-			realized_delta = (price - position.avg_price_per_share) * position.num_shares
-			exit_side = "sell"
-		else:
-			realized_delta = (position.avg_price_per_share - price) * position.num_shares
-			exit_side = "cover"
-		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
-		state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
-		position.num_shares = 0.0
-		state.positions.pop(ticker, None)
+
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+			"""Close the current in-memory position and accumulate realized PnL."""
+			ticker = event["ticker"]
+			position = state.positions.get(ticker)
+			if not position or position.num_shares <= 0:
+				return
+			price = event["price"]
+			if position.side == "long":
+				realized_delta = (price - position.avg_price_per_share) * position.num_shares
+				exit_side = "sell"
+			else:
+				realized_delta = (position.avg_price_per_share - price) * position.num_shares
+				exit_side = "cover"
+			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
+			position.num_shares = 0.0
+			state.positions.pop(ticker, None)
 
 
 	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> None:
-		ticker = event["ticker"]
-		position = state.positions.get(ticker)
 
-		if not position or position.num_shares <= 0:
-			return
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+			ticker = event["ticker"]
+			position = state.positions.get(ticker)
 
-		close_qty = min(float(qty), position.num_shares)
-		if close_qty <= 0:
-			return
+			if not position or position.num_shares <= 0:
+				return
 
-		price = event["price"]
+			close_qty = min(float(qty), position.num_shares)
+			if close_qty <= 0:
+				return
 
-		if position.side == "long":
-			realized_delta = (price - position.avg_price_per_share) * close_qty
-			exit_side = "sell"
-		else:
-			realized_delta = (position.avg_price_per_share - price) * close_qty
-			exit_side = "cover"
+			price = event["price"]
 
-		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+			if position.side == "long":
+				realized_delta = (price - position.avg_price_per_share) * close_qty
+				exit_side = "sell"
+			else:
+				realized_delta = (position.avg_price_per_share - price) * close_qty
+				exit_side = "cover"
 
-		state.trade_events.append({
-			"time": event["time"],
-			"ticker": ticker,
-			"event_type": "partial_close" if close_qty < position.num_shares else "close",
-			"side": exit_side,
-			"price": price,
-			"num_shares": close_qty,
-			"realized_delta": realized_delta,
-		})
+			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 
-		position.num_shares -= close_qty
+			state.trade_events.append({
+				"time": event["time"],
+				"ticker": ticker,
+				"event_type": "partial_close" if close_qty < position.num_shares else "close",
+				"side": exit_side,
+				"price": price,
+				"num_shares": close_qty,
+				"realized_delta": realized_delta,
+			})
 
-		if position.num_shares < 1:
-			state.positions.pop(ticker, None)
+			position.num_shares -= close_qty
+
+			if position.num_shares < 1:
+				state.positions.pop(ticker, None)
 
 
 	def _record_snapshots(self, state: SimState, current_dt: datetime) -> None:
