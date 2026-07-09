@@ -1616,7 +1616,7 @@ class Strategies:
 			if simulation:
 				return backtester._open_or_add_position(state, event, "long", num_shares)
 			else:
-				return self.place_long_order(strategy_name, ticker, date, prices, num_shares, alpaca_api)
+				return self.place_long_order(strategy_name, timeframe, ticker, date, prices, num_shares, alpaca_api)
 
 		if last_anchor_tf_signal == "sell" and last_entry_tf_signal == "sell":
 			if self.has_opposite_signal_since_last_valid_same_side_higher_tf(
@@ -1653,7 +1653,7 @@ class Strategies:
 			if simulation:
 				return backtester._open_or_add_position(state, event, "short", num_shares)
 			else:
-				return self.place_short_order(strategy_name, ticker, date, prices, num_shares, alpaca_api)
+				return self.place_short_order(strategy_name, timeframe, ticker, date, prices, num_shares, alpaca_api)
 
 		if not simulation:
 			logger.info(
@@ -1901,6 +1901,7 @@ class Strategies:
 				)
 				return self.cover_short_order(
 					strategy_name,
+					timeframe,
 					ticker,
 					date,
 					prices,
@@ -1918,6 +1919,7 @@ class Strategies:
 				)
 				return self.sell_long_order(
 					strategy_name,
+					timeframe,
 					ticker,
 					date,
 					prices,
@@ -1969,9 +1971,9 @@ class Strategies:
 			return backtester._open_or_add_position(state, event, position_side, NUM_SHARES)
 
 		if side == "buy":
-			return self.place_long_order(strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
+			return self.place_long_order(strategy_name, timeframe, ticker, date, prices, NUM_SHARES, alpaca_api)
 
-		return self.place_short_order(strategy_name, ticker, date, prices, NUM_SHARES, alpaca_api)
+		return self.place_short_order(strategy_name, timeframe, ticker, date, prices, NUM_SHARES, alpaca_api)
 
 
 	def exit_strategy2(self, strategy_name, entry_tf, simulation, date, signal, prices, ticker, timeframe, alpaca_api, state, config, event, price, backtester):
@@ -2026,17 +2028,18 @@ class Strategies:
 
 		if position_side == "long":
 			return self.sell_long_order(
-				strategy_name, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+				strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
 			)
 
 		return self.cover_short_order(
-			strategy_name, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+			strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
 		)
 
 
 	def place_order(
 		self,
 		strategy_name,
+		tf,
 		ticker,
 		date,
 		prices,
@@ -2282,9 +2285,28 @@ class Strategies:
 				logger.info("Submitted Alpaca order missing order id for %r", ticker)
 				return None
 
+
+			self.trade_records.log_trade_diagnostic(
+				source="live",
+				strategy_name=strategy_name,
+				ticker=ticker,
+				event_type="entry" if order_type in {"long", "short"} else "exit",
+				timeframe=tf,
+				side=order_type,
+				requested_qty=num_shares,
+				market_price=prices.get(ticker, {}).get("market"),
+				order_id=order_id,
+				decision_time=str(date),
+			)
 			return submitted_order
 
-
+		    """
+		    qty=filled_qty,
+		    fill_price=fill_price,
+		    market_price=prices.get(ticker, {}).get("market"),
+		    order_id=order_id,
+		    order_status=order_status,
+		    """
 		# Enforce Alpaca constraint FIRST
 		if order_type == "short":
 			execution_qty = math.floor(execution_qty)
@@ -2418,9 +2440,10 @@ class Strategies:
 		}		
 
 
-	def place_long_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def place_long_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(
 			strategy_name,
+			tf,
 			ticker,
 			date,
 			prices,
@@ -2430,9 +2453,10 @@ class Strategies:
 			False,
 		)
 
-	def place_short_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api):
+	def place_short_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api):
 		return self.place_order(
 			strategy_name,
+			tf,
 			ticker,
 			date,
 			prices,
@@ -2442,9 +2466,10 @@ class Strategies:
 			False,
 		)
 
-	def sell_long_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
+	def sell_long_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
 		return self.place_order(
 			strategy_name,
+			tf,
 			ticker,
 			date,
 			prices,
@@ -2454,9 +2479,10 @@ class Strategies:
 			do_redis_bookkeeping,
 		)
 
-	def cover_short_order(self, strategy_name, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
+	def cover_short_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
 		return self.place_order(
 			strategy_name,
+			tf,
 			ticker,
 			date,
 			prices,

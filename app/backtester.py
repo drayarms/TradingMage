@@ -3,7 +3,7 @@ import logging
 import math
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import matplotlib.pyplot as plt
@@ -99,7 +99,9 @@ class BackTester:
 		"1d": 10,
 	}
 
-	def __init__(self, trading_view_webhook_helpers, strategies_instance):
+	BACKTEST_DIAGNOSTIC_MAX_DAYS = 3
+
+	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance):
 		"""
 		Create a BackTester.
 
@@ -109,8 +111,10 @@ class BackTester:
 		"""
 		self.tvw_helpers = trading_view_webhook_helpers
 		self.strategies_instance = strategies_instance
+		self.trade_records_instance = trade_records_instance
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.smallest_share_size = 0.25
+		self.diagnostic_logging_enabled = False
 
 	def run(self, strategy_name: str, start: str, end: str, tickers: Optional[list[str]] = None, position_size: Optional[float] = None) -> dict[str, Any]:
 		"""
@@ -131,6 +135,10 @@ class BackTester:
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
 
+		self.diagnostic_logging_enabled = (
+			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
+		)		
+
 		if start_dt > end_dt:
 			raise ValueError("start must be <= end")
 
@@ -145,7 +153,7 @@ class BackTester:
 		state = SimState()
 		timeframes = self._strategy_timeframes(config)
 		symbols = self._normalize_tickers(tickers) or self._discover_tickers(timeframes)
-		events = self._load_signal_events(symbols, timeframes, start_dt, end_dt)
+		events = self._load_signal_events(strategy_name, symbols, timeframes, start_dt, end_dt)
 
 		#PRINT ALL EVENTS HERE TO ENSURE THEY ARE IN THE RIGHT CHRONOLOGICAL ORDER
 		print(f"All Events in chronological order\n{events}")
@@ -253,21 +261,21 @@ class BackTester:
 					symbols.add(parts[-1].upper().strip())
 		return sorted(symbols)
 
-	def _load_signal_events(self, symbols: list[str], timeframes: set[str], start_dt: datetime, end_dt: datetime) -> list[dict[str, Any]]:
+	def _load_signal_events(self, strategy_name: str, symbols: list[str], timeframes: set[str], start_dt: datetime, end_dt: datetime) -> list[dict[str, Any]]:
 		"""Load Redis stream alerts for all relevant ticker/timeframe pairs and sort them chronologically."""
 		events = []
 		for symbol in symbols:
 			for tf in timeframes:
 				stream_key = self.tvw_helpers.stream_key(tf, symbol)
 				for stream_id, fields in self.r.xrange(stream_key, min="-", max="+"):
-					event = self._build_event(stream_id, fields, symbol, tf)
+					event = self._build_event(strategy_name, stream_id, fields, symbol, tf)
 					if event is None:
 						continue
 					if start_dt <= event["dt"] <= end_dt:
 						events.append(event)
 		return sorted(events, key=lambda e: (e["dt"], self.TIMEFRAME_ORDER.get(e["timeframe"], 999), e["ticker"], e["stream_id"]))
 
-	def _build_event(self, stream_id: str, fields: dict[str, Any], fallback_symbol: str, fallback_tf: str) -> Optional[dict[str, Any]]:
+	def _build_event(self, strategy_name: str, stream_id: str, fields: dict[str, Any], fallback_symbol: str, fallback_tf: str) -> Optional[dict[str, Any]]:
 		"""Convert a raw Redis stream entry into a normalized signal event dictionary."""
 		time_str = fields.get("bar_close_time_eastern") or fields.get("received_at")
 		if not time_str:
@@ -289,6 +297,7 @@ class BackTester:
 			return None
 
 		return {
+			"strategy_name": strategy_name,
 			"stream_id": stream_id,
 			"ticker": ticker,
 			"timeframe": tf,
@@ -597,6 +606,21 @@ class BackTester:
 			"""Open a new position or add to an existing same-side position in memory."""
 			ticker = event["ticker"]
 			price = event["price"]
+
+			if self.diagnostic_logging_enabled:
+				self.trade_records_instance.log_trade_diagnostic(
+					source="backtest",
+					strategy_name=event.get("strategy_name"),
+					ticker=ticker,
+					event_type="entry",
+					timeframe=event["timeframe"],
+					side=position_side,
+					requested_qty=qty,
+					market_price=price,
+					order_id=None,
+					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				)
+
 			existing = state.positions.get(ticker)
 			if existing and existing.side != position_side and existing.num_shares > 0:
 				self._close_position(state, event)
@@ -625,6 +649,21 @@ class BackTester:
 			if not position or position.num_shares <= 0:
 				return
 			price = event["price"]
+
+			if self.diagnostic_logging_enabled:
+				self.trade_records_instance.log_trade_diagnostic(
+					source="backtest",
+					strategy_name=event.get("strategy_name"),
+					ticker=ticker,
+					event_type="exit",
+					timeframe=event["timeframe"],
+					side=position.side,
+					requested_qty=position.num_shares,
+					market_price=price,
+					order_id=None,
+					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				)
+
 			if position.side == "long":
 				realized_delta = (price - position.avg_price_per_share) * position.num_shares
 				exit_side = "sell"
@@ -652,6 +691,20 @@ class BackTester:
 				return
 
 			price = event["price"]
+
+			if self.diagnostic_logging_enabled:
+				self.trade_records_instance.log_trade_diagnostic(
+					source="backtest",
+					strategy_name=event.get("strategy_name"),
+					ticker=ticker,
+					event_type="exit",
+					timeframe=event["timeframe"],
+					side=position.side,
+					requested_qty=close_qty,
+					market_price=price,
+					order_id=None,
+					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				)			
 
 			if position.side == "long":
 				realized_delta = (price - position.avg_price_per_share) * close_qty

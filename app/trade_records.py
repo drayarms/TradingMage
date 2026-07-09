@@ -3,8 +3,21 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 from datetime import datetime, timezone, date, timedelta
 import statistics
+import csv
+
 
 logger = logging.getLogger("tv-webhook")
+
+DIAGNOSTIC_TICKERS = {
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
+    "META", "GOOGL", "JPM", "XOM", "SPY",
+}
+
+DIAGNOSTIC_LOG_PATH = os.getenv(
+    "TV_TRADE_DIAGNOSTIC_LOG",
+    "/app/logs/trade_diagnostics.csv",
+)
+
 
 class TradeRecords:
 	def __init__(self, trading_view_webhook_helpers):
@@ -59,6 +72,72 @@ class TradeRecords:
 			return (avg_price_per_share - market_price) * num_shares
 
 		raise ValueError(f"Invalid side: {side}")
+
+
+	def log_trade_diagnostic(
+		self,
+		*,
+		source,              # "live" or "backtest"
+		strategy_name,
+		ticker,
+		event_type,          # "entry", "exit", "partial_exit", "add", "reject", "cancel"
+		#signal=None,
+		timeframe=None,
+		side=None,           # "long", "short", "buy", "sell", "cover"
+		requested_qty=None,
+		#price=None,
+		#avg_price=None,
+		market_price=None,
+		order_id=None,
+		#realized_pnl=None,
+		#unrealized_pnl=None,
+		#position_qty_before=None,
+		#position_qty_after=None,
+		#bar_close_time=None,
+		decision_time=None,
+	):
+		ticker = str(ticker or "").upper().strip()
+
+		if ticker not in DIAGNOSTIC_TICKERS:
+			return
+
+		os.makedirs(os.path.dirname(DIAGNOSTIC_LOG_PATH), exist_ok=True)
+
+		file_exists = os.path.exists(DIAGNOSTIC_LOG_PATH)
+
+		row = {
+			"logged_at_utc": datetime.now(timezone.utc).isoformat(),
+			"source": source,
+			"strategy_name": strategy_name,
+			"ticker": ticker,
+			"event_type": event_type,
+			#"signal": signal,
+			"timeframe": timeframe,
+			"side": side,
+			#"qty": qty,
+			"requested_qty": requested_qty,
+			#"price": price,
+			#"avg_price": avg_price,
+			#"fill_price": fill_price,
+			"market_price": market_price,
+			"order_id": order_id,
+			#"order_status": order_status,
+			#"realized_pnl": realized_pnl,
+			#"unrealized_pnl": unrealized_pnl,
+			#"position_qty_before": position_qty_before,
+			#"position_qty_after": position_qty_after,
+			#"bar_close_time": bar_close_time,
+			"decision_time": decision_time,
+			#"reason": reason,
+		}
+
+		with open(DIAGNOSTIC_LOG_PATH, "a", newline="") as f:
+			writer = csv.DictWriter(f, fieldnames=row.keys())
+
+			if not file_exists:
+				writer.writeheader()
+
+			writer.writerow(row)
 
 
 	def _compute_realized_delta(self, side: str, avg_price_per_share: float, fill_price: float, close_qty: float) -> float:
