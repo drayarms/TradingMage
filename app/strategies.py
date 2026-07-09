@@ -2300,13 +2300,13 @@ class Strategies:
 			)
 			return submitted_order
 
-		    """
-		    qty=filled_qty,
-		    fill_price=fill_price,
-		    market_price=prices.get(ticker, {}).get("market"),
-		    order_id=order_id,
-		    order_status=order_status,
-		    """
+			"""
+			qty=filled_qty,
+			fill_price=fill_price,
+			market_price=prices.get(ticker, {}).get("market"),
+			order_id=order_id,
+			order_status=order_status,
+			"""
 		# Enforce Alpaca constraint FIRST
 		if order_type == "short":
 			execution_qty = math.floor(execution_qty)
