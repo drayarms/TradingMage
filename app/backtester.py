@@ -160,6 +160,7 @@ class BackTester:
 
 		for event in events:
 			
+			self._register_event_context(state, event)
 			#self._process_experimental_strategy(strategy_name, state, config, event, position_size)
 			#self._process_strategy1_event(strategy_name, state, config, event, position_size)
 			if strategy_name.startswith("strategy1_"):
@@ -169,8 +170,6 @@ class BackTester:
 			else:
 				raise ValueError(f"Unsupported strategy family: {strategy_name}")			
 			self._record_snapshots(state, event["dt"])
-
-			self._register_event_context(state, event)
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
 
