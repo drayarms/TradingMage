@@ -13,11 +13,6 @@ DIAGNOSTIC_TICKERS = {
     "META", "GOOGL", "JPM", "XOM", "SPY",
 }
 
-#DIAGNOSTIC_LOG_PATH = os.getenv(
-    #"TV_TRADE_DIAGNOSTIC_LOG",
-    #"/app/logs/trade_diagnostics.csv",
-#)
-
 LIVE_DIAGNOSTIC_LOG_PATH = os.getenv(
 	"TV_LIVE_DIAGNOSTIC_LOG",
 	"/app/logs/live_trade_diagnostics.csv",
