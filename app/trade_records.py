@@ -13,11 +13,20 @@ DIAGNOSTIC_TICKERS = {
     "META", "GOOGL", "JPM", "XOM", "SPY",
 }
 
-DIAGNOSTIC_LOG_PATH = os.getenv(
-    "TV_TRADE_DIAGNOSTIC_LOG",
-    "/app/logs/trade_diagnostics.csv",
+#DIAGNOSTIC_LOG_PATH = os.getenv(
+    #"TV_TRADE_DIAGNOSTIC_LOG",
+    #"/app/logs/trade_diagnostics.csv",
+#)
+
+LIVE_DIAGNOSTIC_LOG_PATH = os.getenv(
+	"TV_LIVE_DIAGNOSTIC_LOG",
+	"/app/logs/live_trade_diagnostics.csv",
 )
 
+BACKTEST_DIAGNOSTIC_LOG_PATH = os.getenv(
+	"TV_BACKTEST_DIAGNOSTIC_LOG",
+	"/app/logs/backtest_trade_diagnostics.csv",
+)
 
 class TradeRecords:
 	def __init__(self, trading_view_webhook_helpers):
@@ -101,9 +110,16 @@ class TradeRecords:
 		if ticker not in DIAGNOSTIC_TICKERS:
 			return
 
-		os.makedirs(os.path.dirname(DIAGNOSTIC_LOG_PATH), exist_ok=True)
+		if source == "live":
+			log_path = LIVE_DIAGNOSTIC_LOG_PATH
+		elif source == "backtest":
+			log_path = BACKTEST_DIAGNOSTIC_LOG_PATH
+		else:
+			raise ValueError(f"Unknown diagnostic source: {source}")			
 
-		file_exists = os.path.exists(DIAGNOSTIC_LOG_PATH)
+		os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+		file_exists = os.path.exists(log_path)
 
 		row = {
 			"logged_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -131,7 +147,7 @@ class TradeRecords:
 			#"reason": reason,
 		}
 
-		with open(DIAGNOSTIC_LOG_PATH, "a", newline="") as f:
+		with open(log_path, "a", newline="") as f:
 			writer = csv.DictWriter(f, fieldnames=row.keys())
 
 			if not file_exists:
