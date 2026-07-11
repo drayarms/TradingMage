@@ -1696,7 +1696,7 @@ class Strategies:
 		Returns:
 			sell_long_order() or cover_short_order() or None
 		"""	
-		if not simulation:			
+		if True:#not simulation:			
 			logger.info(
 				"exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
 				strategy_name,
@@ -1822,7 +1822,7 @@ class Strategies:
 			or exit_signal_matches_open_position
 		)
 
-		if not simulation:
+		if True:#not simulation:
 			logger.info(
 				"exit %r checks for %r => intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
 				strategy_name,
@@ -1861,13 +1861,13 @@ class Strategies:
 			)
 
 		if latest_intermediary_tf_signal is None:
-			if not simulation:
+			if True:#not simulation:
 				logger.info("No confirmation %r directional signal found for %r", intermediary_tf, ticker)
 			return None
 
 		signal_intermediary_tf = latest_intermediary_tf_signal["side"]
 
-		if not simulation:
+		if True:#not simulation:
 			logger.info(
 				"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r alpaca_qty=%r",
 				ticker,
@@ -1876,7 +1876,7 @@ class Strategies:
 				alpaca_num_shares,
 			)
 
-		if signal_intermediary_tf not in {"buy", "sell"}:
+		if True:#signal_intermediary_tf not in {"buy", "sell"}:
 			if not simulation:
 				logger.info(
 					"Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
