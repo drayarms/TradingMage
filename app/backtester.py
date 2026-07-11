@@ -492,7 +492,7 @@ class BackTester:
 			self,
 		)
 
-		"""self.strategies_instance.entry_strategy2(
+		self.strategies_instance.entry_strategy2(
 			strategy_name,
 			config["entry_tf"],
 			config["intermediary_tf"],
@@ -509,9 +509,9 @@ class BackTester:
 			event,
 			market_price,
 			self,
-		)"""
+		)
 
-		self.strategies_instance.entry_strategy1(
+		"""self.strategies_instance.entry_strategy1(
 			strategy_name,
 			config["entry_tf"],
 			config["intermediary_tf"],
@@ -529,7 +529,7 @@ class BackTester:
 			event,
 			market_price,
 			self
-		)		
+		)"""		
 
 
 
