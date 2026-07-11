@@ -115,32 +115,55 @@ class BackTester:
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.smallest_share_size = 0.25
 		self.diagnostic_logging_enabled = False
+		self.recording_enabled = True
 
-	def run(self, strategy_name: str, start: str, end: str, tickers: Optional[list[str]] = None, position_size: Optional[float] = None) -> dict[str, Any]:
+	def run(
+		self,
+		strategy_name: str,
+		start: str,
+		end: str,
+		tickers: Optional[list[str]] = None,
+		position_size: Optional[float] = None,
+		warmup_days: int = 2,
+	) -> dict[str, Any]:
 		"""
-		Run a full chronological simulation for a strategy over a date range.
+		Run a chronological simulation with an optional unreported warm-up period.
+
+		Warm-up events are fully processed so signal context and any positions that
+		remain open at ``start`` carry into the requested backtest window. Warm-up
+		trades, realized PnL, snapshots, exposure rows, and diagnostic trade records
+		are excluded from the returned result.
 
 		Parameters:
 			strategy_name: Strategy config name, such as "strategy1_15m_anchor".
-			start: Inclusive ISO start datetime. Naive datetimes are interpreted as Eastern Time.
-			end: Inclusive ISO end datetime. Naive datetimes are interpreted as Eastern Time.
-			tickers: Optional list of ticker symbols. If omitted, tickers are discovered from Redis streams.
+			start: Inclusive reporting start datetime. Naive datetimes are Eastern Time.
+			end: Inclusive reporting end datetime. Naive datetimes are Eastern Time.
+			tickers: Optional list of ticker symbols. If omitted, discover from Redis.
 			position_size: Optional dollar notional used to size the first entry signal.
+			warmup_days: Calendar days to simulate before ``start``. Defaults to 2.
 
 		Returns:
-			Dictionary containing trade events, per-ticker PnL history, aggregate PnL history,
-			and daily maximum gross open exposure. All simulation state is in memory only.
+			Dictionary containing only the requested reporting window, while preserving
+			open positions and signal context created during warm-up.
 		"""
 		config = self._get_strategy_config(strategy_name)
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
 
-		self.diagnostic_logging_enabled = (
-			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
-		)		
-
 		if start_dt > end_dt:
 			raise ValueError("start must be <= end")
+
+		try:
+			warmup_days = int(warmup_days)
+		except Exception as exc:
+			raise ValueError("warmup_days must be an integer") from exc
+
+		if warmup_days < 0:
+			raise ValueError("warmup_days must be >= 0")
+
+		self.diagnostic_logging_enabled = (
+			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
+		)
 
 		if position_size is None:
 			position_size = float(config["default_position_size"])
@@ -150,26 +173,38 @@ class BackTester:
 		if position_size <= 0:
 			raise ValueError("position_size must be > 0")
 
+		warmup_start_dt = start_dt - timedelta(days=warmup_days)
 		state = SimState()
 		timeframes = self._strategy_timeframes(config)
 		symbols = self._normalize_tickers(tickers) or self._discover_tickers(timeframes)
-		events = self._load_signal_events(strategy_name, symbols, timeframes, start_dt, end_dt)
+		all_events = self._load_signal_events(
+			strategy_name,
+			symbols,
+			timeframes,
+			warmup_start_dt,
+			end_dt,
+		)
 
-		#PRINT ALL EVENTS HERE TO ENSURE THEY ARE IN THE RIGHT CHRONOLOGICAL ORDER
-		print(f"All Events in chronological order\n{events}")
+		warmup_events = [event for event in all_events if event["received_dt"] < start_dt]
+		report_events = [event for event in all_events if event["received_dt"] >= start_dt]
 
-		for event in events:
-			
+		# Warm-up phase: update context and simulate positions, but do not register
+		# trades, trade diagnostics, PnL history, or exposure.
+		self.recording_enabled = False
+		for event in warmup_events:
 			self._register_event_context(state, event)
-			#self._process_experimental_strategy(strategy_name, state, config, event, position_size)
-			#self._process_strategy1_event(strategy_name, state, config, event, position_size)
-			if strategy_name.startswith("strategy1_"):
-				self._process_strategy1_event(strategy_name, state, config, event, position_size)
-			elif strategy_name.startswith("strategy2_"):
-				self._process_strategy2_event(strategy_name, state, config, event, position_size)
-			else:
-				raise ValueError(f"Unsupported strategy family: {strategy_name}")			
-			self._record_snapshots(state, event["dt"])
+			self._process_event(strategy_name, state, config, event, position_size)
+
+		# Preserve open positions and signal history, but start reported accounting
+		# from zero at the user's requested start time.
+		self._reset_reporting_state(state)
+
+		# Reporting phase.
+		self.recording_enabled = True
+		for event in report_events:
+			self._register_event_context(state, event)
+			self._process_event(strategy_name, state, config, event, position_size)
+			self._record_snapshots(state, event["received_dt"])
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
 
@@ -177,8 +212,11 @@ class BackTester:
 			"strategy_name": strategy_name,
 			"start": start_dt.isoformat(),
 			"end": end_dt.isoformat(),
+			"warmup_start": warmup_start_dt.isoformat(),
+			"warmup_days": warmup_days,
 			"tickers": symbols,
-			"signal_count": len(events),
+			"warmup_signal_count": len(warmup_events),
+			"signal_count": len(report_events),
 			"trade_count": len(state.trade_events),
 			"overall_pnl_history": state.overall_pnl_history,
 			"ticker_pnl_history": state.ticker_pnl_history,
@@ -186,6 +224,39 @@ class BackTester:
 			"daily_max_open_exposure_summary": self._daily_exposure_summary(state.daily_max_exposure),
 			"trade_events": state.trade_events,
 		}
+
+	def _process_event(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		"""Dispatch one event to the configured strategy family."""
+		if strategy_name.startswith("strategy1_"):
+			self._process_strategy1_event(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("strategy2_"):
+			self._process_strategy2_event(strategy_name, state, config, event, position_size)
+		else:
+			raise ValueError(f"Unsupported strategy family: {strategy_name}")
+
+	def _reset_reporting_state(self, state: SimState) -> None:
+		"""
+		Clear warm-up accounting while preserving signal context and open positions.
+
+		An open position created during warm-up remains open with its original average
+		entry price. Any PnL realized before the requested start is discarded so the
+		returned PnL begins at zero.
+		"""
+		state.realized_by_ticker.clear()
+		state.overall_pnl_history.clear()
+		state.ticker_pnl_history.clear()
+		state.daily_max_exposure.clear()
+		state.trade_events.clear()
+
+		for position in state.positions.values():
+			position.realized_pnl = 0.0
 
 	def plot_overall_pnl(self, result: dict[str, Any], title: Optional[str] = None) -> io.BytesIO:
 		"""
@@ -263,7 +334,7 @@ class BackTester:
 		return sorted(symbols)
 
 	def _load_signal_events(self, strategy_name: str, symbols: list[str], timeframes: set[str], start_dt: datetime, end_dt: datetime) -> list[dict[str, Any]]:
-		"""Load Redis stream alerts for all relevant ticker/timeframe pairs and sort them chronologically."""
+		"""Load Redis stream alerts and order them by when they were received."""
 		events = []
 		for symbol in symbols:
 			for tf in timeframes:
@@ -272,23 +343,43 @@ class BackTester:
 					event = self._build_event(strategy_name, stream_id, fields, symbol, tf)
 					if event is None:
 						continue
-					if start_dt <= event["dt"] <= end_dt:
+					if start_dt <= event["received_dt"] <= end_dt:
 						events.append(event)
-		return sorted(events, key=lambda e: (e["dt"], self.TIMEFRAME_ORDER.get(e["timeframe"], 999), e["ticker"], e["stream_id"]))
+
+		# received_dt reproduces live arrival order. Redis stream_id is used only
+		# as a deterministic tie-breaker when two events have the same timestamp.
+		return sorted(events, key=lambda e: (e["received_dt"], e["stream_id"]))
 
 	def _build_event(self, strategy_name: str, stream_id: str, fields: dict[str, Any], fallback_symbol: str, fallback_tf: str) -> Optional[dict[str, Any]]:
 		"""Convert a raw Redis stream entry into a normalized signal event dictionary."""
-		time_str = fields.get("bar_close_time_eastern") or fields.get("received_at")
-		if not time_str:
-			return None
-		try:
-			dt = datetime.fromisoformat(str(time_str).replace("Z", "+00:00"))
+		bar_close_str = fields.get("bar_close_time_eastern")
+		received_str = fields.get("received_at")
+
+		def parse_timestamp(value: Any) -> Optional[datetime]:
+			if not value:
+				return None
+			dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 			if dt.tzinfo is None:
 				dt = dt.replace(tzinfo=self.tvw_helpers.eastern_tz)
-			dt = dt.astimezone(self.tvw_helpers.eastern_tz)
+			return dt.astimezone(self.tvw_helpers.eastern_tz)
+
+		try:
+			bar_close_dt = parse_timestamp(bar_close_str)
+			received_dt = parse_timestamp(received_str)
 		except Exception:
-			logger.exception("Skipping backtest signal with invalid timestamp: %r", time_str)
+			logger.exception(
+				"Skipping backtest signal with invalid timestamp "
+				"(bar_close_time_eastern=%r, received_at=%r)",
+				bar_close_str,
+				received_str,
+			)
 			return None
+
+		if bar_close_dt is None and received_dt is None:
+			return None
+
+		strategy_dt = bar_close_dt or received_dt
+		ordering_dt = received_dt or bar_close_dt
 
 		ticker = str(fields.get("symbol") or fallback_symbol).upper().strip()
 		tf = self.tvw_helpers.normalize_tf(fields.get("timeframe") or fallback_tf)
@@ -302,8 +393,11 @@ class BackTester:
 			"stream_id": stream_id,
 			"ticker": ticker,
 			"timeframe": tf,
-			"dt": dt,
-			"time": dt.isoformat(),
+			"dt": strategy_dt,
+			"received_dt": ordering_dt,
+			"sort_dt": ordering_dt,
+			"time": strategy_dt.isoformat(),
+			"received_time": ordering_dt.isoformat(),
 			"signal": str(fields.get("signal") or "").strip().lower(),
 			"side": self.tvw_helpers.normalize_signal(fields.get("signal")),
 			"signal_role": str(fields.get("signal_role") or "").strip().lower(),
@@ -608,7 +702,7 @@ class BackTester:
 			ticker = event["ticker"]
 			price = event["price"]
 
-			if self.diagnostic_logging_enabled:
+			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
 					source="backtest",
 					strategy_name=event.get("strategy_name"),
@@ -638,7 +732,8 @@ class BackTester:
 				state.positions[ticker] = SimPosition(ticker=ticker, side=position_side, avg_price_per_share=price, num_shares=qty)
 				event_type = "open"
 
-			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
+			if self.recording_enabled:
+				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
 
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> None:
 
@@ -651,7 +746,7 @@ class BackTester:
 				return
 			price = event["price"]
 
-			if self.diagnostic_logging_enabled:
+			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
 					source="backtest",
 					strategy_name=event.get("strategy_name"),
@@ -672,7 +767,8 @@ class BackTester:
 				realized_delta = (position.avg_price_per_share - price) * position.num_shares
 				exit_side = "cover"
 			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
-			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
+			if self.recording_enabled:
+				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
 			position.num_shares = 0.0
 			state.positions.pop(ticker, None)
 
@@ -693,7 +789,7 @@ class BackTester:
 
 			price = event["price"]
 
-			if self.diagnostic_logging_enabled:
+			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
 					source="backtest",
 					strategy_name=event.get("strategy_name"),
@@ -716,15 +812,16 @@ class BackTester:
 
 			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 
-			state.trade_events.append({
-				"time": event["time"],
-				"ticker": ticker,
-				"event_type": "partial_close" if close_qty < position.num_shares else "close",
-				"side": exit_side,
-				"price": price,
-				"num_shares": close_qty,
-				"realized_delta": realized_delta,
-			})
+			if self.recording_enabled:
+				state.trade_events.append({
+					"time": event["time"],
+					"ticker": ticker,
+					"event_type": "partial_close" if close_qty < position.num_shares else "close",
+					"side": exit_side,
+					"price": price,
+					"num_shares": close_qty,
+					"realized_delta": realized_delta,
+				})
 
 			position.num_shares -= close_qty
 
@@ -771,4 +868,3 @@ class BackTester:
 		print("--------------- -----------------------------------")
 		for day, value in sorted(daily_max_exposure.items()):
 			print(f"{day:<15} $ {value:>33,.2f}")
-

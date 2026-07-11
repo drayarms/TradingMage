@@ -1669,64 +1669,30 @@ class Strategies:
 	
 	def exit_strategy1(self, strategy_name, lower_timeframes, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, alpaca_api, state, config, event, price, backtester):
 		"""
-		Exit if the current intermediary timeframe signal is opposite of the latest anchor timeframe signal,
-		if a lower timeframe signal occured that is same side as the last exit tf (which may have occurred overnight), and opposite side to the anchor tf,
-		if an anchor tf signal occured, opposite side of the entry tf.
-		Note that intermediaty timeframe and exit timeframe are the same thing.
+		Exit if the current intermediary timeframe signal is opposite of the latest
+		anchor timeframe signal, if a lower timeframe confirms the intermediary
+		timeframe against the anchor, if the anchor opposes the open position, or if
+		an intermediary exit signal matches the actual open position.
 
-		Parameters:
-			strategy_name (str): Strategy name.
-			lower_timeframes (Set): All timeframes for which we can get a potential signal, that are lower than intermediary timeframe.
-			intermediary_tf (str): Intermediary timeframe.
-			anchor_tf (str): Anchor timeframe (hihgest timeframe)
-			simulation (bool): True for simulation and False for live mode.
-			date (str): Eastern time.
-			signal (str): "buy", "sell", "buy+" or "sell+".
-			prices (dict): Market, ask, and bid prices for ticker symbol.
-			ticker (str): Ticker symbol.
-			timeframe (str): Timeframe of signal.
-			alpaca_api
-			The following params only apply to simulation mode. For live, they will have values of None.
-			state
-			config
-			event
-			price (float): Current market price of ticker
-			backtester (Backtester): Instance of backtester class			
+		The live Alpaca position and simulated in-memory position are normalized into
+		the same local fields so diagnostics are directly comparable:
+			- position_side: "long" or "short"
+			- position_qty: absolute share quantity
+			- position_avg_price: current average entry price
+		"""
+		mode = "sim" if simulation else "live"
 
-		Returns:
-			sell_long_order() or cover_short_order() or None
-		"""	
-		if True:#not simulation:			
-			logger.info(
-				"sim_plus: exit check: date=%r strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
-				date,
-				strategy_name,
-				intermediary_tf,
-				anchor_tf,
-				ticker,
-				timeframe,
-				signal,
-				self.tvw_helpers.normalize_signal(signal),
-			)
-
-		exit_timeframes = lower_timeframes | {intermediary_tf} # union
+		exit_timeframes = lower_timeframes | {intermediary_tf}
 		tf = self.tvw_helpers.normalize_tf(timeframe)
 		if tf not in exit_timeframes:
 			return None
 
 		alpaca_position = None
 		alpaca_position_qty = 0.0
-		position_qty_for_anchor_check = 0.0
 
-		if not simulation:
-			try:
-				alpaca_position = alpaca_api.get_position(ticker)
-				alpaca_position_qty = float(getattr(alpaca_position, "qty", 0.0) or 0.0)
-			except Exception:
-				return None
-
-			if abs(alpaca_position_qty) <= 0:
-				return None
+		position_side = "flat"
+		position_qty = 0.0
+		position_avg_price = None
 
 		if simulation:
 			sim_position = state.positions.get(ticker)
@@ -1735,28 +1701,104 @@ class Strategies:
 			if sim_position is None or sim_position.num_shares <= 0:
 				return None
 
-			position_qty_for_anchor_check = sim_position.num_shares
+			position_side = sim_position.side
+			position_qty = float(sim_position.num_shares)
+			position_avg_price = float(sim_position.avg_price_per_share)
+
 		else:
-			position_qty_for_anchor_check = alpaca_position_qty	
-			position_side = "long" if alpaca_position_qty > 0 else "short"		
+			try:
+				alpaca_position = alpaca_api.get_position(ticker)
+				alpaca_position_qty = float(
+					getattr(alpaca_position, "qty", 0.0) or 0.0
+				)
+			except Exception:
+				return None
 
+			if alpaca_position_qty == 0:
+				return None
 
-		# EXIT CONDITIONS
+			position_side = "long" if alpaca_position_qty > 0 else "short"
+			position_qty = abs(alpaca_position_qty)
 
-		is_intermediary_tf_opposite_of_last_anchor_tf = self.is_tf_relative_to_last_higher_tf(ticker, signal, timeframe, intermediary_tf, anchor_tf, "opposite", simulation, backtester, state)
+			raw_avg_price = getattr(alpaca_position, "avg_entry_price", None)
+			try:
+				position_avg_price = (
+					float(raw_avg_price)
+					if raw_avg_price is not None
+					else None
+				)
+			except (TypeError, ValueError):
+				position_avg_price = None
 
-		lower_tf_confirms_intermediary_opposite_of_anchor = self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(ticker, signal, timeframe, lower_timeframes, intermediary_tf, anchor_tf, simulation, backtester, state)
-
-		anchor_opposite_open_position = self.is_latest_anchor_opposite_of_open_position(
-			ticker,
-			anchor_tf,
-			position_qty_for_anchor_check,
-			simulation,
-			backtester,
-			state
+		# Preserve sign because is_latest_anchor_opposite_of_open_position()
+		# derives long/short from whether the quantity is positive or negative.
+		position_qty_for_anchor_check = (
+			position_qty
+			if position_side == "long"
+			else -position_qty
 		)
 
-		# Exit signal roles are unkown. So we use which type (confirmation buy or sell) they follow to determine if they qualify for exit
+		logger.info(
+			"%r: exit check: "
+			"date=%r strategy=%r intermediary_tf=%r anchor_tf=%r "
+			"ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r "
+			"position_side=%r position_qty=%r position_avg_price=%r",
+			mode,
+			date,
+			strategy_name,
+			intermediary_tf,
+			anchor_tf,
+			ticker,
+			timeframe,
+			signal,
+			self.tvw_helpers.normalize_signal(signal),
+			position_side,
+			position_qty,
+			position_avg_price,
+		)
+
+		# EXIT CONDITIONS
+		is_intermediary_tf_opposite_of_last_anchor_tf = (
+			self.is_tf_relative_to_last_higher_tf(
+				ticker,
+				signal,
+				timeframe,
+				intermediary_tf,
+				anchor_tf,
+				"opposite",
+				simulation,
+				backtester,
+				state,
+			)
+		)
+
+		lower_tf_confirms_intermediary_opposite_of_anchor = (
+			self.lower_tf_confirms_mid_tf_opposite_of_higher_tf(
+				ticker,
+				signal,
+				timeframe,
+				lower_timeframes,
+				intermediary_tf,
+				anchor_tf,
+				simulation,
+				backtester,
+				state,
+			)
+		)
+
+		anchor_opposite_open_position = (
+			self.is_latest_anchor_opposite_of_open_position(
+				ticker,
+				anchor_tf,
+				position_qty_for_anchor_check,
+				simulation,
+				backtester,
+				state,
+			)
+		)
+
+		# Exit signal roles are unknown. Determine whether an exit signal qualifies
+		# from the latest confirmation direction on the intermediary timeframe.
 		is_intermediary_tf_exit_signal = (
 			tf == self.tvw_helpers.normalize_tf(intermediary_tf)
 			and signal in {"bullish_exit", "bearish_exit"}
@@ -1782,39 +1824,22 @@ class Strategies:
 					max_scan=100,
 				)
 
-			if latest_directional_alert: # Bullish exit matches confirmation buy or bearish exit matches confirmation sell
+			if latest_directional_alert:
 				latest_intermediary_direction = latest_directional_alert["side"]
 
-				if simulation:
-					exit_signal_matches_open_position = (
-						(
-							sim_position.side == "long"
-							and latest_intermediary_direction == "buy"
-							and signal == "bullish_exit"
-						)
-						or
-						(
-							sim_position.side == "short"
-							and latest_intermediary_direction == "sell"
-							and signal == "bearish_exit"
-						)
+				exit_signal_matches_open_position = (
+					(
+						position_side == "long"
+						and latest_intermediary_direction == "buy"
+						and signal == "bullish_exit"
 					)
-				else:
-					exit_signal_matches_open_position = (
-						(
-							#alpaca_position_qty > 0
-							position_side == "long"
-							and latest_intermediary_direction == "buy"
-							and signal == "bullish_exit"
-						)
-						or
-						(
-							#alpaca_position_qty < 0
-							position_side == "short"
-							and latest_intermediary_direction == "sell"
-							and signal == "bearish_exit"
-						)
-					)		
+					or
+					(
+						position_side == "short"
+						and latest_intermediary_direction == "sell"
+						and signal == "bearish_exit"
+					)
+				)
 
 		should_exit = (
 			is_intermediary_tf_opposite_of_last_anchor_tf
@@ -1823,28 +1848,33 @@ class Strategies:
 			or exit_signal_matches_open_position
 		)
 
-		if True:#not simulation:
-			logger.info(
-				"date=%r exit %r checks for %r => sim_plus: intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
-				date,
-				strategy_name,
-				ticker,
-				is_intermediary_tf_opposite_of_last_anchor_tf,
-				lower_tf_confirms_intermediary_opposite_of_anchor,
-				anchor_opposite_open_position,
-				is_intermediary_tf_exit_signal,
-				latest_intermediary_direction,
-				exit_signal_matches_open_position,
-			)		
+		logger.info(
+			"%r: exit checks: "
+			"date=%r strategy=%r ticker=%r timeframe=%r "
+			"position_side=%r position_qty=%r position_avg_price=%r "
+			"intermediary_opp_anchor=%r lower_confirms=%r "
+			"anchor_opp_position=%r intermediary_exit_signal=%r "
+			"latest_intermediary_direction=%r "
+			"exit_matches_position=%r should_exit=%r",
+			mode,
+			date,
+			strategy_name,
+			ticker,
+			timeframe,
+			position_side,
+			position_qty,
+			position_avg_price,
+			is_intermediary_tf_opposite_of_last_anchor_tf,
+			lower_tf_confirms_intermediary_opposite_of_anchor,
+			anchor_opposite_open_position,
+			is_intermediary_tf_exit_signal,
+			latest_intermediary_direction,
+			exit_signal_matches_open_position,
+			should_exit,
+		)
 
 		if not should_exit:
 			return None
-
-		
-		alpaca_num_shares = 0
-		if not simulation:
-			alpaca_num_shares = abs(alpaca_position_qty)
-		#sim_num_shares = abs(state.positions.get(ticker).num_shares)		
 
 		if simulation:
 			latest_intermediary_tf_signal = backtester.get_latest_directional_signal(
@@ -1863,82 +1893,107 @@ class Strategies:
 			)
 
 		if latest_intermediary_tf_signal is None:
-			if True:#not simulation:
-				logger.info("sim_plus: date=%r No confirmation %r directional signal found for %r", date, intermediary_tf, ticker)
+			logger.info(
+				"%r: date=%r No confirmation %r directional signal found for %r "
+				"position_side=%r position_qty=%r",
+				mode,
+				date,
+				intermediary_tf,
+				ticker,
+				position_side,
+				position_qty,
+			)
 			return None
 
 		signal_intermediary_tf = latest_intermediary_tf_signal["side"]
 
-		if True:#not simulation:
+		logger.info(
+			"%r: date=%r exit_strategy1 signal context: "
+			"ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r "
+			"position_side=%r position_qty=%r position_avg_price=%r",
+			mode,
+			date,
+			ticker,
+			signal_intermediary_tf,
+			latest_intermediary_tf_signal.get("signal_role"),
+			position_side,
+			position_qty,
+			position_avg_price,
+		)
+
+		if signal_intermediary_tf not in {"buy", "sell"}:
 			logger.info(
-				"sim_plus: date=%r exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r alpaca_qty=%r",
+				"%r: date=%r Latest confirmation intermediary_tf signal "
+				"is invalid/unknown for %r: %r "
+				"position_side=%r position_qty=%r",
+				mode,
 				date,
 				ticker,
 				signal_intermediary_tf,
-				latest_intermediary_tf_signal.get("signal_role"),
-				alpaca_num_shares,
-			)
-
-		if signal_intermediary_tf not in {"buy", "sell"}:
-			if True: #not simulation:
-				logger.info(
-					"date=%r sim_plus: Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
-					date,
-					ticker,
-					signal_intermediary_tf,
-				)
-			return None		
-
-		# At this point, should_exit is already True.
-		# So liquidation should be based on the actual open position side,
-		# not on the latest intermediary signal side.
-
-		if simulation:
-			return backtester._close_position(state, event)
-		else:
-			if alpaca_position_qty < 0 and alpaca_num_shares > 0:
-				logger.info(
-					"exit %r Alpaca cover for %r using alpaca_num_shares=%r",
-					strategy_name,
-					ticker,
-					alpaca_num_shares,
-				)
-				return self.cover_short_order(
-					strategy_name,
-					timeframe,
-					ticker,
-					date,
-					prices,
-					alpaca_num_shares,
-					alpaca_api,
-					do_redis_bookkeeping=False,
-				)
-
-			if alpaca_position_qty > 0 and alpaca_num_shares > 0:
-				logger.info(
-					"exit %r Alpaca sell for %r using alpaca_num_shares=%r",
-					strategy_name,
-					ticker,
-					alpaca_num_shares,
-				)
-				return self.sell_long_order(
-					strategy_name,
-					timeframe,
-					ticker,
-					date,
-					prices,
-					alpaca_num_shares,
-					alpaca_api,
-					do_redis_bookkeeping=False,
-				)
-
-			logger.info(
-				"exit %r no Alpaca position to liquidate for %r; alpaca_qty=%r",
-				strategy_name,
-				ticker,
-				alpaca_position_qty,
+				position_side,
+				position_qty,
 			)
 			return None
+
+		# At this point, should_exit is already True. Liquidation is based on the
+		# actual open position side, not the latest intermediary signal side.
+		if simulation:
+			return backtester._close_position(state, event)
+
+		alpaca_num_shares = position_qty
+
+		if position_side == "short" and alpaca_num_shares > 0:
+			logger.info(
+				"exit %r Alpaca cover for %r using alpaca_num_shares=%r "
+				"position_side=%r position_avg_price=%r",
+				strategy_name,
+				ticker,
+				alpaca_num_shares,
+				position_side,
+				position_avg_price,
+			)
+			return self.cover_short_order(
+				strategy_name,
+				timeframe,
+				ticker,
+				date,
+				prices,
+				alpaca_num_shares,
+				alpaca_api,
+				do_redis_bookkeeping=False,
+			)
+
+		if position_side == "long" and alpaca_num_shares > 0:
+			logger.info(
+				"exit %r Alpaca sell for %r using alpaca_num_shares=%r "
+				"position_side=%r position_avg_price=%r",
+				strategy_name,
+				ticker,
+				alpaca_num_shares,
+				position_side,
+				position_avg_price,
+			)
+			return self.sell_long_order(
+				strategy_name,
+				timeframe,
+				ticker,
+				date,
+				prices,
+				alpaca_num_shares,
+				alpaca_api,
+				do_redis_bookkeeping=False,
+			)
+
+		logger.info(
+			"exit %r no Alpaca position to liquidate for %r; "
+			"position_side=%r position_qty=%r raw_alpaca_qty=%r",
+			strategy_name,
+			ticker,
+			position_side,
+			position_qty,
+			alpaca_position_qty,
+		)
+		return None
 
 
 	def entry_strategy2(self, strategy_name, entry_tf, intermediary_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
@@ -2495,3 +2550,4 @@ class Strategies:
 			"cover",
 			do_redis_bookkeeping,
 		)	
+
