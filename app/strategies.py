@@ -1698,7 +1698,7 @@ class Strategies:
 		"""	
 		if True:#not simulation:			
 			logger.info(
-				"exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
+				"sim: exit check: strategy=%r intermediary_tf=%r anchor_tf=%r ticker=%r timeframe=%r raw_signal=%r normalized_signal=%r",
 				strategy_name,
 				intermediary_tf,
 				anchor_tf,
@@ -1824,7 +1824,7 @@ class Strategies:
 
 		if True:#not simulation:
 			logger.info(
-				"exit %r checks for %r => intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
+				"exit %r checks for %r => sim: intermediary opp anchor=%r lower confirms=%r anchor opp position=%r intermediary exit signal=%r latest_intermediary_direction=%r exit matches position=%r",
 				strategy_name,
 				ticker,
 				is_intermediary_tf_opposite_of_last_anchor_tf,
@@ -1862,24 +1862,24 @@ class Strategies:
 
 		if latest_intermediary_tf_signal is None:
 			if True:#not simulation:
-				logger.info("No confirmation %r directional signal found for %r", intermediary_tf, ticker)
+				logger.info("sim: No confirmation %r directional signal found for %r", intermediary_tf, ticker)
 			return None
 
 		signal_intermediary_tf = latest_intermediary_tf_signal["side"]
 
 		if True:#not simulation:
 			logger.info(
-				"exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r alpaca_qty=%r",
+				"sim: exit_strategy1 signal context: ticker=%r intermediary_tf_signal=%r intermediary_signal_role=%r alpaca_qty=%r",
 				ticker,
 				signal_intermediary_tf,
 				latest_intermediary_tf_signal.get("signal_role"),
 				alpaca_num_shares,
 			)
 
-		if True:#signal_intermediary_tf not in {"buy", "sell"}:
-			if not simulation:
+		if signal_intermediary_tf not in {"buy", "sell"}:
+			if True: #not simulation:
 				logger.info(
-					"Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
+					"sim: Latest confirmation intermediary_tf signal is invalid/unknown for %r: %r",
 					ticker,
 					signal_intermediary_tf,
 				)
