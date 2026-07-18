@@ -6,8 +6,6 @@ import statistics
 import csv
 import pandas as pd
 import numpy as np
-from werkzeug.exceptions import HTTPException
-tz_convert
 
 logger = logging.getLogger("tv-webhook")
 
@@ -338,7 +336,7 @@ class TradeRecords:
 		return {"deleted_keys": deleted}
 
 
-	def _get_df(self, api, securities, time_frame, start_dt, end_dt):
+	def _get_df(self, api, securities, time_frame, start_dt, end_dt, max_attempts=3):
 		"""
 		Returns a pandas dataframe for securities specified within the time range specified by start date and end date, at intervals specified by the timeframe
 		Parameters:
@@ -349,23 +347,32 @@ class TradeRecords:
 			end_dt (pandas.Timestamp): Specifies the end of the time range for which the dataframe is requested. 
 		Returns:
 			barset.df (pandas.DataFrame): Dataframe for securities specified within the time range specified by start date and end date, at intervals specified by the timeframe
-		"""		
-		def get_barset(securities):
+		"""			
+		for attempt in range(1, max_attempts + 1):
+			try:
+				barset = api.get_bars(securities, time_frame, start_dt, end_dt, adjustment="raw")
 
-			barset_got = False
-			while(not barset_got):
-				try:
-					return api.get_bars(securities, time_frame, start_dt, end_dt, adjustment='raw')
+				return barset.df
 
-				#except HTTPError:
-				except HTTPException:
-					print("Waiting before retrying...")
-					time.sleep(3)#Suspends thread for specified num seconds					
-					barset_got = False
+			except Exception:
+				logger.exception(
+					"Unable to obtain Alpaca bars: "
+					"attempt=%r/%r securities=%r timeframe=%r "
+					"start=%r end=%r",
+					attempt,
+					max_attempts,
+					securities,
+					time_frame,
+					start_dt,
+					end_dt,
+				)
 
-		barset = get_barset(securities)
+				if attempt >= max_attempts:
+					raise
 
-		return barset.df
+				time.sleep(
+					3
+				)
 
 
 	def get_df(self, api, securities, time_frame, start_dt, end_dt):

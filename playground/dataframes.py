@@ -5,7 +5,7 @@ Date Created: Feb 13, 2026
 import pandas as pd
 import numpy as np
 import alpaca_trade_api as tradeapi
-from werkzeug.exceptions import HTTPException
+#from werkzeug.exceptions import HTTPException
 #import time
 #import math
 #import copy
@@ -51,7 +51,45 @@ class Dataframes:
 		self.day_time_frame = self.DAY_CANDLESTICK_PERIODS.get('time frame')		
 
 
-	def _get_df(self, api, securities, time_frame, start_dt, end_dt):
+	def _get_df(self, api, securities, time_frame, start_dt, end_dt, max_attempts=3):
+		"""
+		Returns a pandas dataframe for securities specified within the time range specified by start date and end date, at intervals specified by the timeframe
+		Parameters:
+			api: 
+			securities ([String]): A list of the securities in play sorted alphabetically by ticker symbol.
+			time_frame (TimeFrame): An object specifying the timeframe
+			start_dt (pandas.Timestamp): Specifies the begining of the time range for which the dataframe is requested. 
+			end_dt (pandas.Timestamp): Specifies the end of the time range for which the dataframe is requested. 
+		Returns:
+			barset.df (pandas.DataFrame): Dataframe for securities specified within the time range specified by start date and end date, at intervals specified by the timeframe
+		"""			
+		for attempt in range(1, max_attempts + 1):
+			try:
+				barset = api.get_bars(securities, time_frame, start_dt, end_dt, adjustment="raw")
+
+				return barset.df
+
+			except Exception:
+				logger.exception(
+					"Unable to obtain Alpaca bars: "
+					"attempt=%r/%r securities=%r timeframe=%r "
+					"start=%r end=%r",
+					attempt,
+					max_attempts,
+					securities,
+					time_frame,
+					start_dt,
+					end_dt,
+				)
+
+				if attempt >= max_attempts:
+					raise
+
+				time.sleep(
+					3
+				)
+
+	def _get_df1(self, api, securities, time_frame, start_dt, end_dt):
 		"""
 		Returns a pandas dataframe for securities specified within the time range specified by start date and end date, at intervals specified by the timeframe
 		Parameters:
