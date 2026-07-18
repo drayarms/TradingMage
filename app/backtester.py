@@ -119,6 +119,7 @@ class BackTester:
 	}
 
 	BACKTEST_DIAGNOSTIC_MAX_DAYS = 3
+	PNL_SNAPSHOT_INTERVAL_MINUTES = 5
 
 	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance):
 		"""
@@ -359,6 +360,9 @@ class BackTester:
 				warmup_events,
 				report_events,
 				position_size,
+				warmup_start_dt,
+				start_dt,
+				end_dt,				
 			)
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
@@ -412,6 +416,7 @@ class BackTester:
 		else:
 			raise ValueError(f"Unsupported strategy family: {strategy_name}")
 
+
 	def _run_signal_backtest(
 		self,
 		strategy_name: str,
@@ -420,22 +425,101 @@ class BackTester:
 		warmup_events: list[dict[str, Any]],
 		report_events: list[dict[str, Any]],
 		position_size: float,
+		warmup_start_dt: datetime,
+		start_dt: datetime,
+		end_dt: datetime,
 	) -> None:
-		"""Run the original signal-driven path used by exit strategies 1 and 2."""
+		"""
+		Run exit strategies 1 and 2 on a merged signal and sampled-price timeline.
+
+		Signals retain their exact received times. Market prices are sampled every
+		five minutes for smoother PnL and exposure graphs without processing every
+		one-minute bar as a reporting snapshot.
+		"""
+		warmup_timeline = self._build_backtest_timeline(
+			state=state,
+			signal_events=warmup_events,
+			start_dt=warmup_start_dt,
+			end_dt=start_dt - timedelta(microseconds=1),
+			market_bar_interval_minutes=self.PNL_SNAPSHOT_INTERVAL_MINUTES,
+		)
+
+		report_timeline = self._build_backtest_timeline(
+			state=state,
+			signal_events=report_events,
+			start_dt=start_dt,
+			end_dt=end_dt,
+			market_bar_interval_minutes=self.PNL_SNAPSHOT_INTERVAL_MINUTES,
+		)
+
 		self.recording_enabled = False
 
-		for event in warmup_events:
-			self._register_event_context(state, event)
-			self._process_event(strategy_name, state, config, event, position_size)
+		self._process_signal_timeline(
+			strategy_name=strategy_name,
+			state=state,
+			config=config,
+			timeline=warmup_timeline,
+			position_size=position_size,
+			record_snapshots=False,
+		)
 
 		self._reset_reporting_state(state)
 
 		self.recording_enabled = True
 
-		for event in report_events:
-			self._register_event_context(state, event)
-			self._process_event(strategy_name, state, config, event, position_size)
-			self._record_snapshots(state, event["received_dt"])
+		self._process_signal_timeline(
+			strategy_name=strategy_name,
+			state=state,
+			config=config,
+			timeline=report_timeline,
+			position_size=position_size,
+			record_snapshots=True,
+		)
+
+
+	def _process_signal_timeline(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		timeline: list[dict[str, Any]],
+		position_size: float,
+		record_snapshots: bool,
+	) -> None:
+		"""
+		Process signal-driven strategies using exact signal times and sampled
+		market-price updates.
+		"""
+		for timeline_event in timeline:
+			event_dt = timeline_event["dt"]
+			payload = timeline_event["payload"]
+
+			if timeline_event["kind"] == "market_bar":
+				state.last_price_by_ticker[payload["ticker"]] = float(
+					payload["close"]
+				)
+
+				if record_snapshots:
+					self._record_snapshots(
+						state,
+						event_dt,
+					)
+
+				continue
+
+			self._register_event_context(
+				state,
+				payload,
+			)
+
+			self._process_event(
+				strategy_name,
+				state,
+				config,
+				payload,
+				position_size,
+			)
+
 
 	def _run_price_tracked_backtest(
 		self,
@@ -455,6 +539,7 @@ class BackTester:
 			warmup_events,
 			warmup_start_dt,
 			start_dt - timedelta(microseconds=1),
+			market_bar_interval_minutes=1,
 		)
 
 		report_timeline = self._build_backtest_timeline(
@@ -462,6 +547,7 @@ class BackTester:
 			report_events,
 			start_dt,
 			end_dt,
+			market_bar_interval_minutes=1,
 		)
 
 		self.recording_enabled = False
@@ -486,17 +572,33 @@ class BackTester:
 			record_snapshots=True,
 		)
 
+
 	def _build_backtest_timeline(
 		self,
 		state: SimState,
 		signal_events: list[dict[str, Any]],
 		start_dt: datetime,
 		end_dt: datetime,
+		market_bar_interval_minutes: int = 1,
 	) -> list[dict[str, Any]]:
-		"""Merge signal arrivals with completed one-minute Alpaca bars."""
+		"""
+		Merge signal arrivals with completed Alpaca one-minute bars.
+
+		market_bar_interval_minutes controls which market bars are included in
+		the timeline. A value of 1 includes every completed one-minute bar. A
+		value of 5 includes one market-price update every five minutes.
+		"""
+		if market_bar_interval_minutes < 1:
+			raise ValueError(
+				"market_bar_interval_minutes must be >= 1"
+			)
+
 		timeline = []
 
-		for ticker, ticker_prices in state.market_data.get("close_1m", {}).items():
+		for ticker, ticker_prices in state.market_data.get(
+			"close_1m",
+			{},
+		).items():
 			for timestamp, close_price in ticker_prices.items():
 				source_bar_dt = pd.Timestamp(timestamp)
 
@@ -510,10 +612,19 @@ class BackTester:
 					)
 
 				available_dt = (
-					source_bar_dt + pd.Timedelta(minutes=1)
+					source_bar_dt
+					+ pd.Timedelta(minutes=1)
 				).to_pydatetime()
 
 				if not start_dt <= available_dt <= end_dt:
+					continue
+
+				if (
+					market_bar_interval_minutes > 1
+					and available_dt.minute
+					% market_bar_interval_minutes
+					!= 0
+				):
 					continue
 
 				timeline.append({
@@ -524,6 +635,11 @@ class BackTester:
 						"dt": available_dt,
 						"source_bar_time": source_bar_dt.to_pydatetime(),
 						"close": float(close_price),
+						"snapshot_due": (
+							available_dt.minute
+							% self.PNL_SNAPSHOT_INTERVAL_MINUTES
+							== 0
+						),
 					},
 				})
 
@@ -544,6 +660,7 @@ class BackTester:
 			),
 		)
 
+
 	def _process_price_tracked_timeline(
 		self,
 		strategy_name: str,
@@ -553,24 +670,39 @@ class BackTester:
 		position_size: float,
 		record_snapshots: bool,
 	) -> None:
-		"""Process exit strategy 3 without allowing signals to manage open positions."""
+		"""
+		Process exit strategy 3 using every completed one-minute bar, while
+		recording PnL snapshots only at the configured reporting interval.
+		"""
 		for timeline_event in timeline:
 			event_dt = timeline_event["dt"]
 			payload = timeline_event["payload"]
 
 			if timeline_event["kind"] == "market_bar":
-				self._process_trailing_stop_market_bar(state, payload)
-			else:
-				self._process_exit_strategy3_signal(
-					strategy_name,
+				self._process_trailing_stop_market_bar(
 					state,
-					config,
 					payload,
-					position_size,
 				)
 
-			if record_snapshots:
-				self._record_snapshots(state, event_dt)
+				if (
+					record_snapshots
+					and payload.get("snapshot_due", False)
+				):
+					self._record_snapshots(
+						state,
+						event_dt,
+					)
+
+				continue
+
+			self._process_exit_strategy3_signal(
+				strategy_name,
+				state,
+				config,
+				payload,
+				position_size,
+			)
+			
 
 	def _process_exit_strategy3_signal(
 		self,
