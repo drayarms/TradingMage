@@ -46,6 +46,11 @@ class SimState:
 	market_data: dict[str, Any] = field(default_factory=dict)
 
 
+class SimulatedOrderPriceUnavailable(ValueError):
+	"""Raised when a simulated order has no sufficiently recent execution price."""
+	pass
+
+
 class BackTester:
 	"""Run isolated in-memory backtests from TradingView signals already stored in Redis."""
 
@@ -368,12 +373,27 @@ class BackTester:
 			"tickers": symbols,
 			"warmup_signal_count": len(warmup_events),
 			"signal_count": len(report_events),
-			"trade_count": len(state.trade_events),
+			"trade_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("event_type") != "order_rejected"
+			),
+			"trade_attempt_count": len(state.trade_events),
 			"overall_pnl_history": state.overall_pnl_history,
 			"ticker_pnl_history": state.ticker_pnl_history,
 			"daily_max_open_exposure": self._daily_exposure_rows(state.daily_max_exposure),
 			"daily_max_open_exposure_summary": self._daily_exposure_summary(state.daily_max_exposure),
 			"trade_events": state.trade_events,
+			"rejected_order_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("event_type") == "order_rejected"
+			),	
+			"rejected_orders": [
+				trade_event
+				for trade_event in state.trade_events
+				if trade_event.get("event_type") == "order_rejected"
+			],					
 		}
 
 	def _process_event(
@@ -864,12 +884,13 @@ class BackTester:
 				event["ticker"]
 			] = market_price
 
-		except ValueError:
+		except SimulatedOrderPriceUnavailable as exc:
 			logger.warning(
 				"Unable to update one-minute market price: "
-				"ticker=%s received_dt=%s",
+				"ticker=%s received_dt=%s reason=%s",
 				event["ticker"],
 				event["received_dt"],
+				exc,
 			)
 
 
@@ -913,13 +934,13 @@ class BackTester:
 		event["exit_strategy"] = config["selected_exit_strategy"]
 		event["anchor_tf"] = config["anchor_tf"]
 
-		if config["exit_strategy"] == 1:
+		if config["selected_exit_strategy"] == 1:
 			self.strategies_instance.exit_strategy1(
 				strategy_name, config["lower_timeframes"], config["intermediary_tf"],
 				config["anchor_tf"], True, now_et, signal, None, symbol, tf, None,
 				state, config, event, market_price, self,
 			)
-		elif config["exit_strategy"] == 2:
+		elif config["selected_exit_strategy"] == 2:
 			self.strategies_instance.exit_strategy2(
 				strategy_name, config["entry_tf"], True, now_et, signal, None,
 				symbol, tf, None, state, config, event, market_price, self,
@@ -1134,91 +1155,110 @@ class BackTester:
 
 		return closest_atr, closest_source_dt.to_pydatetime()
 
-	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> None:
+	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> bool:
 
 		execution_dt = event["received_dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
-			"""Open a new position or add to an existing same-side position in memory."""
-			ticker = event["ticker"]
+		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
+			return False
 
+		"""Open a new position or add to an existing same-side position in memory."""
+		ticker = event["ticker"]
+		try:
 			quote = self._get_simulated_quote(
 				state,
 				event,
 			)
-
-			order_side = (
-				"buy"
-				if position_side == "long"
-				else "short"
+		except SimulatedOrderPriceUnavailable as exc:
+			logger.warning(
+				"Simulated entry rejected because no fresh execution price "
+				"is available: ticker=%s side=%s qty=%s "
+				"received_dt=%s reason=%s",
+				ticker,
+				position_side,
+				qty,
+				event["received_dt"],
+				exc,
 			)
 
-			price = self._get_execution_price(
-				quote,
-				order_side,
+			self._record_rejected_order(state=state, event=event, order_type="entry", side=position_side, qty=qty, reason=str(exc))
+			return False			
+
+		order_side = (
+			"buy"
+			if position_side == "long"
+			else "short"
+		)
+
+		price = self._get_execution_price(
+			quote,
+			order_side,
+		)
+
+
+		if self.diagnostic_logging_enabled and self.recording_enabled:
+			self.trade_records_instance.log_trade_diagnostic(
+				source="backtest",
+				strategy_name=event.get("strategy_name"),
+				ticker=ticker,
+				event_type="entry",
+				timeframe=event["timeframe"],
+				side=position_side,
+				requested_qty=qty,
+				market_price=price,
+				order_id=None,
+				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
 			)
 
+		existing = state.positions.get(ticker)
+		if existing and existing.side != position_side and existing.num_shares > 0:
+			position_closed = self._close_position(state, event)
+			if not position_closed:
+				return False
+			existing = None
 
-			if self.diagnostic_logging_enabled and self.recording_enabled:
-				self.trade_records_instance.log_trade_diagnostic(
-					source="backtest",
-					strategy_name=event.get("strategy_name"),
-					ticker=ticker,
-					event_type="entry",
-					timeframe=event["timeframe"],
-					side=position_side,
-					requested_qty=qty,
-					market_price=price,
-					order_id=None,
-					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+		if existing and existing.num_shares > 0:
+			old_qty = existing.num_shares
+			new_qty = old_qty + qty
+			existing.avg_price_per_share = ((existing.avg_price_per_share * old_qty) + (price * qty)) / new_qty
+			existing.num_shares = new_qty
+			existing.entry_sequence_count += 1
+			existing.high_water_price = max(existing.high_water_price or price, price)
+			existing.low_water_price = min(existing.low_water_price or price, price)
+			event_type = "add"
+		else:
+			position_kwargs = {}
+
+			if event.get("exit_strategy") == 3:
+				trailing_stop_amount, trailing_stop_source_time = (
+					self._get_anchor_atr_at_entry(state, event)
 				)
 
-			existing = state.positions.get(ticker)
-			if existing and existing.side != position_side and existing.num_shares > 0:
-				self._close_position(state, event)
-				existing = None
+				if position_side == "long":
+					trailing_stop_price = price - trailing_stop_amount
+				else:
+					trailing_stop_price = price + trailing_stop_amount
 
-			if existing and existing.num_shares > 0:
-				old_qty = existing.num_shares
-				new_qty = old_qty + qty
-				existing.avg_price_per_share = ((existing.avg_price_per_share * old_qty) + (price * qty)) / new_qty
-				existing.num_shares = new_qty
-				existing.entry_sequence_count += 1
-				existing.high_water_price = max(existing.high_water_price or price, price)
-				existing.low_water_price = min(existing.low_water_price or price, price)
-				event_type = "add"
-			else:
-				position_kwargs = {}
+				position_kwargs = {
+					"trailing_stop_amount": trailing_stop_amount,
+					"trailing_stop_price": trailing_stop_price,
+					"trailing_stop_source_time": trailing_stop_source_time,
+					"last_trailing_bar_time": event["received_dt"],
+				}
 
-				if event.get("exit_strategy") == 3:
-					trailing_stop_amount, trailing_stop_source_time = (
-						self._get_anchor_atr_at_entry(state, event)
-					)
+			state.positions[ticker] = SimPosition(
+				ticker=ticker,
+				side=position_side,
+				avg_price_per_share=price,
+				num_shares=qty,
+				high_water_price=price,
+				low_water_price=price,
+				**position_kwargs,
+			)
+			event_type = "open"
 
-					if position_side == "long":
-						trailing_stop_price = price - trailing_stop_amount
-					else:
-						trailing_stop_price = price + trailing_stop_amount
-
-					position_kwargs = {
-						"trailing_stop_amount": trailing_stop_amount,
-						"trailing_stop_price": trailing_stop_price,
-						"trailing_stop_source_time": trailing_stop_source_time,
-						"last_trailing_bar_time": event["received_dt"],
-					}
-
-				state.positions[ticker] = SimPosition(
-					ticker=ticker,
-					side=position_side,
-					avg_price_per_share=price,
-					num_shares=qty,
-					high_water_price=price,
-					low_water_price=price,
-					**position_kwargs,
-				)
-				event_type = "open"
-
-			if self.recording_enabled:
-				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
+		if self.recording_enabled:
+			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
+		return True
 
 
 	def _process_trailing_stop_market_bar(
@@ -1337,121 +1377,157 @@ class BackTester:
 
 		state.positions.pop(ticker, None)
 
-	def _close_position(self, state: SimState, event: dict[str, Any]) -> None:
+	def _close_position(self, state: SimState, event: dict[str, Any]) -> bool:
 
 		execution_dt = event["received_dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
-			"""Close the current in-memory position and accumulate realized PnL."""
-			ticker = event["ticker"]
-			position = state.positions.get(ticker)
-			if not position or position.num_shares <= 0:
-				return
+		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
+			return False
 
+		"""Close the current in-memory position and accumulate realized PnL."""
+		ticker = event["ticker"]
+		position = state.positions.get(ticker)
+
+		if not position or position.num_shares <= 0:
+			return False
+
+		try:
 			quote = self._get_simulated_quote(
 				state,
 				event,
 			)
-
-			if position.side == "long":
-				exit_side = "sell"
-			else:
-				exit_side = "cover"
-
-			price = self._get_execution_price(
-				quote,
-				exit_side,
+		except SimulatedOrderPriceUnavailable as exc:
+			logger.warning(
+				"Simulated exit rejected because no fresh execution price "
+				"is available: ticker=%s side=%s qty=%s "
+				"received_dt=%s reason=%s",
+				ticker,
+				position.side,
+				position.num_shares,
+				event["received_dt"],
+				exc,
 			)
 
-			if self.diagnostic_logging_enabled and self.recording_enabled:
-				self.trade_records_instance.log_trade_diagnostic(
-					source="backtest",
-					strategy_name=event.get("strategy_name"),
-					ticker=ticker,
-					event_type="exit",
-					timeframe=event["timeframe"],
-					side=position.side,
-					requested_qty=position.num_shares,
-					market_price=price,
-					order_id=None,
-					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
-				)
+			self._record_rejected_order(state=state, event=event, order_type="exit", side=position.side, qty=position.num_shares, reason=str(exc))
+			return False
 
-			if position.side == "long":
-				realized_delta = (price - position.avg_price_per_share) * position.num_shares
-			else:
-				realized_delta = (position.avg_price_per_share - price) * position.num_shares
-			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
-			if self.recording_enabled:
-				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
-			position.num_shares = 0.0
+		if position.side == "long":
+			exit_side = "sell"
+		else:
+			exit_side = "cover"
+
+		price = self._get_execution_price(
+			quote,
+			exit_side,
+		)
+
+		if self.diagnostic_logging_enabled and self.recording_enabled:
+			self.trade_records_instance.log_trade_diagnostic(
+				source="backtest",
+				strategy_name=event.get("strategy_name"),
+				ticker=ticker,
+				event_type="exit",
+				timeframe=event["timeframe"],
+				side=position.side,
+				requested_qty=position.num_shares,
+				market_price=price,
+				order_id=None,
+				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+			)
+
+		if position.side == "long":
+			realized_delta = (price - position.avg_price_per_share) * position.num_shares
+		else:
+			realized_delta = (position.avg_price_per_share - price) * position.num_shares
+		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+		if self.recording_enabled:
+			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
+		position.num_shares = 0.0
+		state.positions.pop(ticker, None)
+		return True
+
+	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> bool:
+
+		execution_dt = event["received_dt"]
+		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
+			return False
+
+		ticker = event["ticker"]
+		position = state.positions.get(ticker)
+
+		if not position or position.num_shares <= 0:
+			return False
+
+		close_qty = min(float(qty), position.num_shares)
+		if close_qty <= 0:
+			return False		
+
+		try:
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+		except SimulatedOrderPriceUnavailable as exc:
+			logger.warning(
+				"Simulated partial exit rejected because no fresh execution price "
+				"is available: ticker=%s side=%s qty=%s "
+				"received_dt=%s reason=%s",
+				ticker,
+				position.side,
+				close_qty,
+				event["received_dt"],
+				exc,
+			)
+
+			self._record_rejected_order(state=state, event=event, order_type="partial_exit", side=position.side, qty=close_qty, reason=str(exc))
+			return False
+
+		if position.side == "long":
+			exit_side = "sell"
+		else:
+			exit_side = "cover"
+
+		price = self._get_execution_price(
+			quote,
+			exit_side,
+		)
+
+		if self.diagnostic_logging_enabled and self.recording_enabled:
+			self.trade_records_instance.log_trade_diagnostic(
+				source="backtest",
+				strategy_name=event.get("strategy_name"),
+				ticker=ticker,
+				event_type="exit",
+				timeframe=event["timeframe"],
+				side=position.side,
+				requested_qty=close_qty,
+				market_price=price,
+				order_id=None,
+				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+			)			
+
+		if position.side == "long":
+			realized_delta = (price - position.avg_price_per_share) * close_qty
+		else:
+			realized_delta = (position.avg_price_per_share - price) * close_qty
+
+		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+
+		if self.recording_enabled:
+			state.trade_events.append({
+				"time": event["time"],
+				"ticker": ticker,
+				"event_type": "partial_close" if close_qty < position.num_shares else "close",
+				"side": exit_side,
+				"price": price,
+				"num_shares": close_qty,
+				"realized_delta": realized_delta,
+			})
+
+		position.num_shares -= close_qty
+
+		if position.num_shares <= self.smallest_share_size:
 			state.positions.pop(ticker, None)
-
-
-	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> None:
-
-		execution_dt = event["received_dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
-			ticker = event["ticker"]
-			position = state.positions.get(ticker)
-
-			if not position or position.num_shares <= 0:
-				return
-
-			close_qty = min(float(qty), position.num_shares)
-			if close_qty <= 0:
-				return
-
-			quote = self._get_simulated_quote(
-				state,
-				event,
-			)
-
-			if position.side == "long":
-				exit_side = "sell"
-			else:
-				exit_side = "cover"
-
-			price = self._get_execution_price(
-				quote,
-				exit_side,
-			)
-
-			if self.diagnostic_logging_enabled and self.recording_enabled:
-				self.trade_records_instance.log_trade_diagnostic(
-					source="backtest",
-					strategy_name=event.get("strategy_name"),
-					ticker=ticker,
-					event_type="exit",
-					timeframe=event["timeframe"],
-					side=position.side,
-					requested_qty=close_qty,
-					market_price=price,
-					order_id=None,
-					decision_time=event.get("dt").isoformat() if event.get("dt") else None,
-				)			
-
-			if position.side == "long":
-				realized_delta = (price - position.avg_price_per_share) * close_qty
-			else:
-				realized_delta = (position.avg_price_per_share - price) * close_qty
-
-			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
-
-			if self.recording_enabled:
-				state.trade_events.append({
-					"time": event["time"],
-					"ticker": ticker,
-					"event_type": "partial_close" if close_qty < position.num_shares else "close",
-					"side": exit_side,
-					"price": price,
-					"num_shares": close_qty,
-					"realized_delta": realized_delta,
-				})
-
-			position.num_shares -= close_qty
-
-			if position.num_shares < 1:
-				state.positions.pop(ticker, None)
+		return True
 
 
 	def _record_snapshots(self, state: SimState, current_dt: datetime) -> None:
@@ -1505,8 +1581,8 @@ class BackTester:
 		Return the close of the most recent real one-minute Alpaca bar that was
 		fully completed when the TradingView signal was received.
 
-		The exact expected bar is checked first. If it is unavailable, search
-		backward for the nearest prior real bar. Never use a future bar.
+		Raise SimulatedOrderPriceUnavailable when no sufficiently recent
+		execution price exists. Never use a future bar.
 		"""
 		ticker = str(event["ticker"]).upper().strip()
 		received_dt = pd.Timestamp(event["received_dt"])
@@ -1518,7 +1594,7 @@ class BackTester:
 		)
 
 		if not ticker_prices:
-			raise ValueError(
+			raise SimulatedOrderPriceUnavailable(
 				f"No one-minute market prices available for {ticker}"
 			)
 
@@ -1528,14 +1604,13 @@ class BackTester:
 		)
 
 		target_key = target_bar_dt.isoformat(sep=" ")
-
 		exact_price = ticker_prices.get(target_key)
 
 		if exact_price is not None:
 			exact_price = float(exact_price)
 
 			if exact_price <= 0:
-				raise ValueError(
+				raise SimulatedOrderPriceUnavailable(
 					f"Invalid one-minute price for "
 					f"{ticker} at {target_key}: {exact_price}"
 				)
@@ -1559,7 +1634,7 @@ class BackTester:
 				closest_price = price
 
 		if closest_bar_dt is None or closest_price is None:
-			raise ValueError(
+			raise SimulatedOrderPriceUnavailable(
 				f"No prior real one-minute bar available for "
 				f"{ticker} at or before {target_bar_dt}"
 			)
@@ -1567,7 +1642,7 @@ class BackTester:
 		bar_age = target_bar_dt - closest_bar_dt
 
 		if bar_age > pd.Timedelta(minutes=max_bar_age_minutes):
-			raise ValueError(
+			raise SimulatedOrderPriceUnavailable(
 				f"Closest one-minute bar for {ticker} is too old: "
 				f"received_dt={received_dt}, "
 				f"target_bar_dt={target_bar_dt}, "
@@ -1578,7 +1653,7 @@ class BackTester:
 		closest_price = float(closest_price)
 
 		if closest_price <= 0:
-			raise ValueError(
+			raise SimulatedOrderPriceUnavailable(
 				f"Invalid one-minute price for "
 				f"{ticker} at {closest_bar_dt}: {closest_price}"
 			)
@@ -1644,3 +1719,28 @@ class BackTester:
 		raise ValueError(
 			f"Unsupported simulated order side: {order_side}"
 		)	
+
+	def _record_rejected_order(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+		order_type: str,
+		side: str,
+		qty: float,
+		reason: str,
+	) -> None:
+		if not self.recording_enabled:
+			return
+
+		state.trade_events.append({
+			"time": event["received_dt"].isoformat(),
+			"ticker": event["ticker"],
+			"timeframe": event["timeframe"],
+			"signal": event["signal"],
+			"event_type": "order_rejected",
+			"requested_order_type": order_type,
+			"side": side,
+			"requested_qty": float(qty),
+			"reason": reason,
+			"stream_id": event.get("stream_id"),
+		})

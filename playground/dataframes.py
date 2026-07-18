@@ -587,11 +587,11 @@ class Dataframes:
 if __name__ == "__main__":
 
 	dataframes_instance = Dataframes(timezone('US/Eastern'))
-	start_dt = pd.Timestamp('2026-06-15 05:30',tz=dataframes_instance.TZ)
-	end_dt = pd.Timestamp('2026-07-15 07:30',tz=dataframes_instance.TZ)
-	securities = ["TSLA", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AMD", "AMAT", "INTC", "CRM", "ADBE", "SNOW", "JPM", "GS", "MS", "XOM", "CVX", "NFLX", "DIS"]
-	#timeframe = dataframes_instance._1min_time_frame
-	timeframe = dataframes_instance._1hr_time_frame
+	start_dt = pd.Timestamp('2026-07-15 09:30',tz=dataframes_instance.TZ)
+	end_dt = pd.Timestamp('2026-07-15 10:00',tz=dataframes_instance.TZ)
+	securities = ["CVX"]#["TSLA", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AMD", "AMAT", "INTC", "CRM", "ADBE", "SNOW", "JPM", "GS", "MS", "XOM", "CVX", "NFLX", "DIS"]
+	timeframe = dataframes_instance._1min_time_frame
+	#timeframe = dataframes_instance._1hr_time_frame
 		
 	df = dataframes_instance.get_df(api, securities, timeframe, start_dt, end_dt)
 
@@ -600,7 +600,7 @@ if __name__ == "__main__":
 	pd.set_option('display.width', None)
 	pd.set_option('display.max_colwidth', None)
 
-	#print(df)	
+	print(df)	
 
 	close_prices = dataframes_instance.dataframe_column_to_dict(
 		df,
@@ -629,5 +629,5 @@ if __name__ == "__main__":
 	)		
 
 	print(f"\n###################\nClose Prices:\n {close_prices}")
-	print(f"\n###################\nLow Prices:\n {low_prices}")
-	print(f"\n###################\nATR:\n {ATR}")
+	#print(f"\n###################\nLow Prices:\n {low_prices}")
+	#print(f"\n###################\nATR:\n {ATR}")
