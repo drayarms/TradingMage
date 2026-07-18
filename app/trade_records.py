@@ -6,6 +6,7 @@ import statistics
 import csv
 import pandas as pd
 import numpy as np
+from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
 
 logger = logging.getLogger("tv-webhook")
 
@@ -25,7 +26,7 @@ BACKTEST_DIAGNOSTIC_LOG_PATH = os.getenv(
 )
 
 class TradeRecords:
-	def __init__(self, trading_view_webhook_helpers, TimeFrame, TimeFrameUnit):
+	def __init__(self, trading_view_webhook_helpers):
 
 		self.tvw_helpers = trading_view_webhook_helpers
 		self.r = trading_view_webhook_helpers.require_redis()

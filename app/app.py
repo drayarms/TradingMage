@@ -115,7 +115,7 @@ MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
 app = FastAPI(title="TradingView Webhook")
 
 trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
-trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance, TimeFrame, TimeFrameUnit)
+trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
 backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance, strategies_instance, trade_records_instance)
 plot_instance = plot.Plot()
