@@ -8,6 +8,7 @@ import pandas as pd
 from typing import Any, Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 logger = logging.getLogger("tv-webhook")
 
@@ -318,11 +319,18 @@ class BackTester:
 			period=ATR_period
 		)
 
+		anchor_ohlc = self._dataframe_to_ohlc_rows(
+			anchor_df,
+			start_dt,
+			end_dt,
+		)
+
 		state = SimState()
 
 		state.market_data = {
 			"close_1m": _1min_close_prices,
 			"anchor_atr": anchor_ATR,
+			"anchor_ohlc": anchor_ohlc,
 		}
 
 		self.diagnostic_logging_enabled = (
@@ -370,6 +378,8 @@ class BackTester:
 		return {
 			"strategy_name": strategy_name,
 			"exit_strategy": config["selected_exit_strategy"],
+			"anchor_timeframe": config["anchor_tf"],
+			"anchor_bars": anchor_ohlc,			
 			"start": start_dt.isoformat(),
 			"end": end_dt.isoformat(),
 			"warmup_start": warmup_start_dt.isoformat(),
@@ -702,7 +712,7 @@ class BackTester:
 				payload,
 				position_size,
 			)
-			
+
 
 	def _process_exit_strategy3_signal(
 		self,
@@ -816,38 +826,156 @@ class BackTester:
 		for position in state.positions.values():
 			position.realized_pnl = 0.0
 
-	def plot_overall_pnl(self, result: dict[str, Any], title: Optional[str] = None) -> io.BytesIO:
-		"""
-		Render the aggregate running PnL history from a backtest result as a PNG image.
 
-		Parameters:
-			result: Dictionary returned by run().
-			title: Optional chart title.
-
-		Returns:
-			BytesIO buffer positioned at the beginning of the PNG image.
+	def plot_overall_pnl(
+		self,
+		result: dict[str, Any],
+		title: Optional[str] = None,
+	) -> io.BytesIO:
 		"""
-		history = result.get("overall_pnl_history") or []
+		Render overall PnL followed by anchor-timeframe candlesticks for every
+		ticker that received at least one simulated entry.
+		"""
+		history = result.get(
+			"overall_pnl_history"
+		) or []
+
 		if not history:
-			raise ValueError("No PnL history available to plot")
+			raise ValueError(
+				"No PnL history available to plot"
+			)
 
-		x_values = [datetime.fromisoformat(row["time"]) for row in history]
-		y_values = [float(row["overall_total_pnl"]) for row in history]
+		trade_events = result.get(
+			"trade_events"
+		) or []
 
-		fig, ax = plt.subplots(figsize=(12, 6))
-		ax.plot(x_values, y_values)
-		ax.set_title(title or f"Backtest Overall PnL - {result.get('strategy_name')}")
-		ax.set_xlabel("Time")
-		ax.set_ylabel("Overall PnL ($)")
-		ax.grid(True, alpha=0.3)
+		entry_events = [
+			event
+			for event in trade_events
+			if event.get("event_type") in {
+				"open",
+				"add",
+			}
+		]
+
+		traded_tickers = sorted({
+			event["ticker"]
+			for event in entry_events
+			if event.get("ticker")
+		})
+
+		anchor_bars = result.get(
+			"anchor_bars"
+		) or {}
+
+		anchor_timeframe = result.get(
+			"anchor_timeframe"
+		) or "anchor"
+
+		chart_count = 1 + len(
+			traded_tickers
+		)
+
+		figure_height = (
+			5
+			+ 4 * len(traded_tickers)
+		)
+
+		fig, axes = plt.subplots(
+			nrows=chart_count,
+			ncols=1,
+			figsize=(
+				14,
+				figure_height,
+			),
+			squeeze=False,
+		)
+
+		axes = axes.flatten()
+
+		pnl_ax = axes[0]
+
+		x_values = [
+			datetime.fromisoformat(
+				row["time"]
+			)
+			for row in history
+		]
+		y_values = [
+			float(
+				row["overall_total_pnl"]
+			)
+			for row in history
+		]
+
+		pnl_ax.plot(
+			x_values,
+			y_values,
+		)
+		pnl_ax.axhline(
+			0,
+			linewidth=0.8,
+			alpha=0.5,
+		)
+		pnl_ax.set_title(
+			title
+			or (
+				"Backtest Overall PnL - "
+				f"{result.get('strategy_name')}"
+			)
+		)
+		pnl_ax.set_xlabel(
+			"Time"
+		)
+		pnl_ax.set_ylabel(
+			"Overall PnL ($)"
+		)
+		pnl_ax.grid(
+			True,
+			alpha=0.3,
+		)
+
+		for chart_index, ticker in enumerate(
+			traded_tickers,
+			start=1,
+		):
+			ticker_entries = [
+				event
+				for event in entry_events
+				if event.get("ticker") == ticker
+			]
+
+			self._plot_ticker_candlesticks(
+				ax=axes[chart_index],
+				ticker=ticker,
+				bars=anchor_bars.get(
+					ticker,
+					[],
+				),
+				entries=ticker_entries,
+				anchor_timeframe=anchor_timeframe,
+			)
+
 		fig.autofmt_xdate()
+		fig.tight_layout()
 
 		buf = io.BytesIO()
-		fig.tight_layout()
-		fig.savefig(buf, format="png")
-		plt.close(fig)
+
+		fig.savefig(
+			buf,
+			format="png",
+			dpi=120,
+			bbox_inches="tight",
+		)
+
+		plt.close(
+			fig
+		)
+
 		buf.seek(0)
+
 		return buf
+
 
 	def _get_strategy_config(self, strategy_name: str) -> dict[str, Any]:
 		"""Return a normalized strategy configuration or raise ValueError if unknown."""
@@ -1389,7 +1517,16 @@ class BackTester:
 			event_type = "open"
 
 		if self.recording_enabled:
-			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
+			state.trade_events.append({
+				"time": event["received_dt"].isoformat(),
+				"signal_time": event["time"],
+				"ticker": ticker,
+				"event_type": event_type,
+				"side": position_side,
+				"price": price,
+				"num_shares": qty,
+				"realized_delta": 0.0,
+			})
 		return True
 
 
@@ -1505,9 +1642,200 @@ class BackTester:
 				"trailing_stop_price": position.trailing_stop_price,
 				"high_water_price": position.high_water_price,
 				"low_water_price": position.low_water_price,
-			})
+			})		
 
 		state.positions.pop(ticker, None)
+
+
+	def _plot_ticker_candlesticks(
+		self,
+		ax,
+		ticker: str,
+		bars: list[dict[str, Any]],
+		entries: list[dict[str, Any]],
+		anchor_timeframe: str,
+	) -> None:
+		"""Plot anchor-timeframe candlesticks and simulated entry markers."""
+		if not bars:
+			ax.set_title(
+				f"{ticker} — no {anchor_timeframe} candle data"
+			)
+			ax.set_axis_off()
+			return
+
+		bar_times = [
+			datetime.fromisoformat(bar["time"])
+			for bar in bars
+		]
+
+		x_positions = list(range(len(bars)))
+		candle_width = 0.65
+
+		for x_position, bar in zip(x_positions, bars):
+			open_price = float(bar["open"])
+			high_price = float(bar["high"])
+			low_price = float(bar["low"])
+			close_price = float(bar["close"])
+
+			is_bullish = close_price >= open_price
+			candle_color = "green" if is_bullish else "red"
+
+			ax.vlines(
+				x_position,
+				low_price,
+				high_price,
+				color=candle_color,
+				linewidth=1.0,
+			)
+
+			body_bottom = min(
+				open_price,
+				close_price,
+			)
+			body_height = abs(
+				close_price - open_price
+			)
+
+			if body_height == 0:
+				body_height = max(
+					high_price - low_price,
+					0.01,
+				) * 0.02
+
+			candle_body = Rectangle(
+				(
+					x_position - candle_width / 2,
+					body_bottom,
+				),
+				candle_width,
+				body_height,
+				facecolor=candle_color,
+				edgecolor=candle_color,
+				linewidth=1.0,
+				alpha=0.8,
+			)
+
+			ax.add_patch(candle_body)
+
+		long_label_added = False
+		short_label_added = False
+
+		for entry in entries:
+			entry_dt = datetime.fromisoformat(
+				entry["time"]
+			)
+			entry_price = float(
+				entry["price"]
+			)
+
+			nearest_bar_index = min(
+				range(len(bar_times)),
+				key=lambda index: abs(
+					bar_times[index] - entry_dt
+				),
+			)
+
+			if entry["side"] == "long":
+				label = (
+					"Long entry"
+					if not long_label_added
+					else None
+				)
+
+				ax.scatter(
+					nearest_bar_index,
+					entry_price,
+					marker="^",
+					s=90,
+					color="blue",
+					edgecolors="black",
+					linewidths=0.5,
+					zorder=5,
+					label=label,
+				)
+
+				long_label_added = True
+
+			else:
+				label = (
+					"Short entry"
+					if not short_label_added
+					else None
+				)
+
+				ax.scatter(
+					nearest_bar_index,
+					entry_price,
+					marker="v",
+					s=90,
+					color="orange",
+					edgecolors="black",
+					linewidths=0.5,
+					zorder=5,
+					label=label,
+				)
+
+				short_label_added = True
+
+			ax.annotate(
+				f"${entry_price:,.2f}",
+				(
+					nearest_bar_index,
+					entry_price,
+				),
+				xytext=(0, 10),
+				textcoords="offset points",
+				ha="center",
+				fontsize=8,
+			)
+
+		tick_interval = max(
+			1,
+			len(bars) // 10,
+		)
+
+		tick_positions = list(
+			range(
+				0,
+				len(bars),
+				tick_interval,
+			)
+		)
+
+		tick_labels = [
+			bar_times[index].strftime(
+				"%m-%d\n%H:%M"
+			)
+			for index in tick_positions
+		]
+
+		ax.set_xticks(
+			tick_positions
+		)
+		ax.set_xticklabels(
+			tick_labels
+		)
+
+		ax.set_xlim(
+			-1,
+			len(bars),
+		)
+		ax.set_title(
+			f"{ticker} — {anchor_timeframe} candles"
+		)
+		ax.set_ylabel(
+			"Price ($)"
+		)
+		ax.grid(
+			True,
+			alpha=0.25,
+		)
+
+		if entries:
+			ax.legend(
+				loc="best"
+			)
+
 
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> bool:
 
@@ -1703,6 +2031,105 @@ class BackTester:
 			print(f"{day:<15} $ {value:>33,.2f}")
 
 
+	def _dataframe_to_ohlc_rows(
+		self,
+		df: pd.DataFrame,
+		start_dt: datetime,
+		end_dt: datetime,
+	) -> dict[str, list[dict[str, Any]]]:
+		"""
+		Convert an Alpaca OHLC DataFrame into JSON-serializable rows grouped
+		by ticker.
+
+		Only bars whose source timestamps fall within the requested reporting
+		window are included.
+		"""
+		open_prices = self.trade_records_instance.dataframe_column_to_dict(
+			df,
+			"open",
+		)
+		high_prices = self.trade_records_instance.dataframe_column_to_dict(
+			df,
+			"high",
+		)
+		low_prices = self.trade_records_instance.dataframe_column_to_dict(
+			df,
+			"low",
+		)
+		close_prices = self.trade_records_instance.dataframe_column_to_dict(
+			df,
+			"close",
+		)
+
+		ohlc_by_ticker: dict[str, list[dict[str, Any]]] = {}
+
+		tickers = sorted(
+			set(open_prices)
+			| set(high_prices)
+			| set(low_prices)
+			| set(close_prices)
+		)
+
+		for ticker in tickers:
+			ticker_open = open_prices.get(ticker, {})
+			ticker_high = high_prices.get(ticker, {})
+			ticker_low = low_prices.get(ticker, {})
+			ticker_close = close_prices.get(ticker, {})
+
+			common_timestamps = sorted(
+				set(ticker_open)
+				& set(ticker_high)
+				& set(ticker_low)
+				& set(ticker_close),
+				key=pd.Timestamp,
+			)
+
+			rows = []
+
+			for timestamp in common_timestamps:
+				bar_dt = pd.Timestamp(timestamp)
+
+				if bar_dt.tzinfo is None:
+					bar_dt = bar_dt.tz_localize(
+						self.tvw_helpers.eastern_tz
+					)
+				else:
+					bar_dt = bar_dt.tz_convert(
+						self.tvw_helpers.eastern_tz
+					)
+
+				bar_datetime = bar_dt.to_pydatetime()
+
+				if not start_dt <= bar_datetime <= end_dt:
+					continue
+
+				open_price = float(ticker_open[timestamp])
+				high_price = float(ticker_high[timestamp])
+				low_price = float(ticker_low[timestamp])
+				close_price = float(ticker_close[timestamp])
+
+				if min(
+					open_price,
+					high_price,
+					low_price,
+					close_price,
+				) <= 0:
+					continue
+
+				rows.append({
+					"time": bar_datetime.isoformat(),
+					"open": open_price,
+					"high": high_price,
+					"low": low_price,
+					"close": close_price,
+				})
+
+			if rows:
+				ohlc_by_ticker[ticker] = rows
+
+		return ohlc_by_ticker
+
+
 	def _get_execution_market_price(
 		self,
 		state: SimState,
@@ -1876,3 +2303,4 @@ class BackTester:
 			"reason": reason,
 			"stream_id": event.get("stream_id"),
 		})
+_open_or_add_position()
