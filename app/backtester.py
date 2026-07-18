@@ -2303,4 +2303,3 @@ class BackTester:
 			"reason": reason,
 			"stream_id": event.get("stream_id"),
 		})
-_open_or_add_position()
