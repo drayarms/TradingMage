@@ -20,6 +20,8 @@ import trade_records
 import backtester
 import plot
 
+from tradeapi.rest import TimeFrame, TimeFrameUnit
+
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
 # Redis indexes use epoch timestamps derived from those timezone-aware values. Git change.
 
@@ -113,7 +115,7 @@ MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
 app = FastAPI(title="TradingView Webhook")
 
 trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
-trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
+trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance, TimeFrame, TimeFrameUnit)
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
 backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance, strategies_instance, trade_records_instance)
 plot_instance = plot.Plot()
@@ -711,216 +713,6 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	}
 	
 
-@app.get("/retrieve_nth_last_alert")
-def retrieve_nth_last_alert(
-	ticker: str = Query(..., min_length=1),
-	tf: str = Query(..., min_length=1),
-	n: int = Query(2, ge=1),
-):
-	"""
-	Retrieves the last nth alert received from TV for the ticker/timeframe pair specified (default, 2nd to the last entry).
-	ticker is required. Must be a string of at least 1 char.
-	tf is requrired. Must be a non-empty string.
-	n is optional because default is 2. Must be >= 1.
-	curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
-	via Nginx on port 80 get second to the last entry: curl "http://localhost/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=2"
-	Most recent: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=AAPL&tf=1m&n=1"
-	Normalization: curl "http://localhost:8000/retrieve_nth_last_alert?ticker=aapl&tf=1&n=2"
-	"""
-	entry = trading_view_webhook_helpers_instance.get_nth_last_alert(ticker, tf, n)
-
-	if entry is None:
-		raise HTTPException(status_code=404, detail="Not enough alerts found")
-
-	entry_id, fields = entry
-
-	return {
-		"ticker": ticker.upper().strip(),
-		"timeframe": trading_view_webhook_helpers_instance.normalize_tf(tf),
-		"n": n,
-		"entry": {
-			"id": entry_id,
-			"fields": {
-				**fields,
-				"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
-				"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
-				"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
-				"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
-				"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
-			},
-		},
-	}
-
-
-
-@app.get("/debug/state/{timeframe}/{symbol}")
-async def debug_state_symbol(
-	timeframe: str,
-	symbol: str,
-	fields: str = Query(
-		default="symbol,timeframe,signal,bar_close_time_eastern,received_at,open,high,low,close,volume,stream_key"
-	),
-):
-	"""
-	Debug endpoint that lets us query the current Redis “state” for a symbol/timeframe, and optionally choose which fields to return.
-	Good for debugging webhook ingestion, verifying Redis writes, checking latest signal, inspecting OHLC data.
-	Example calls:
-		From EC2:
-			curl "http://localhost:8000/debug/state/15m/AAPL" uses default fiels: symbol,timeframe,signal,bar_close_time,...
-			curl "http://localhost:8000/debug/state/15m/AAPL?fields=signal"  specifies custom fields
-		From laptop:
-			curl "http://<EC2_PUBLIC_IP>/debug/state/15m/AAPL?fields=signal"
-	"""
-	rr = trading_view_webhook_helpers_instance.require_redis()
-
-	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
-	sym = str(symbol or "").upper().strip()
-
-	if not tf or not sym:
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
-
-	field_list = [f.strip() for f in fields.split(",") if f.strip()]
-	if not field_list:
-		raise HTTPException(status_code=400, detail="No fields requested")
-
-	key = trading_view_webhook_helpers_instance.state_key(tf, sym)
-
-	if not rr.exists(key):
-		raise HTTPException(status_code=404, detail="No state found for symbol/timeframe")
-
-	try:
-		values = rr.hmget(key, field_list)
-	except Exception:
-		logger.exception("Redis read failed")
-		raise HTTPException(status_code=500, detail="Redis read failed")
-
-	data = {field: value for field, value in zip(field_list, values)}
-
-	for numeric_field in ("open", "high", "low", "close", "volume"):
-		if numeric_field in data:
-			data[numeric_field] = trading_view_webhook_helpers_instance.safe_float(data[numeric_field])
-
-	return {
-		"key": key,
-		"data": data,
-	}
-
-
-@app.get("/debug/stream/{timeframe}/{symbol}")
-async def debug_stream_symbol(
-	timeframe: str,
-	symbol: str,
-	count: int = Query(default=20, ge=1, le=500),
-):
-	"""
-	Returns the most recent events (history) -last N- from a Redis stream for a given timeframe/ticker pair.
-	Good for debuging webhook ingestion, inspecting signal history, verifying ordering of events, 
-	replaying recent trades mentally, validating Redis stream integrity.
-	Example calls:
-		From EC2:
-			curl "http://localhost/debug/stream/15m/AAPL"
-		From laptop:
-			curl "http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL"
-			curl "http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL?count=5"
-		From Browser:
-			http://<EC2_PUBLIC_IP>/debug/stream/15m/AAPL?count=10
-	"""
-	rr = trading_view_webhook_helpers_instance.require_redis()
-
-	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
-	sym = str(symbol or "").upper().strip()
-
-	if not tf or not sym:
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
-
-	key = trading_view_webhook_helpers_instance.stream_key(tf, sym)
-
-	if not rr.exists(key):
-		raise HTTPException(status_code=404, detail="Stream not found")
-
-	try:
-		entries = rr.xrevrange(key, max="+", min="-", count=count)
-	except Exception:
-		logger.exception("Redis stream read failed")
-		raise HTTPException(status_code=500, detail="Redis stream read failed")
-
-	return {
-		"stream": key,
-		"count": len(entries),
-		"entries": [
-			{
-				"id": entry_id,
-				"fields": {
-					**fields,
-					"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
-					"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
-					"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
-					"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
-					"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
-				},
-			}
-			for entry_id, fields in entries
-		],
-	}
-
-
-@app.get("/debug/stream-range/{timeframe}/{symbol}")
-async def debug_stream_range_symbol(
-	timeframe: str,
-	symbol: str,
-	count: int = Query(default=100, ge=1, le=1000),
-):
-	"""
-	Returns historical events from the Redis stream (oldest -> newest) for a given timeframe/ticker pair.
-	Useful instead of /debug/stream when we want earliest events, chronological order, to replay from the beginning
-	to inspect initial signals.
-	Example calls:
-		From EC2:
-			curl "http://localhost:8000/debug/stream-range/15m/AAPL"
-		From laptop:
-			curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL"
-			curl "http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=10"
-		From browser:
-			http://<EC2_PUBLIC_IP>/debug/stream-range/15m/AAPL?count=50
-	"""
-	rr = trading_view_webhook_helpers_instance.require_redis()
-
-	tf = trading_view_webhook_helpers_instance.normalize_tf(timeframe)
-	sym = str(symbol or "").upper().strip()
-
-	if not tf or not sym:
-		raise HTTPException(status_code=400, detail="Missing/invalid timeframe or symbol")
-
-	key = trading_view_webhook_helpers_instance.stream_key(tf, sym)
-
-	if not rr.exists(key):
-		raise HTTPException(status_code=404, detail="Stream not found")
-
-	try:
-		entries = rr.xrange(key, min="-", max="+", count=count)
-	except Exception:
-		logger.exception("Redis stream read failed")
-		raise HTTPException(status_code=500, detail="Redis stream read failed")
-
-	return {
-		"stream": key,
-		"count": len(entries),
-		"entries": [
-			{
-				"id": entry_id,
-				"fields": {
-					**fields,
-					"open": trading_view_webhook_helpers_instance.safe_float(fields.get("open")),
-					"high": trading_view_webhook_helpers_instance.safe_float(fields.get("high")),
-					"low": trading_view_webhook_helpers_instance.safe_float(fields.get("low")),
-					"close": trading_view_webhook_helpers_instance.safe_float(fields.get("close")),
-					"volume": trading_view_webhook_helpers_instance.safe_float(fields.get("volume")),
-				},
-			}
-			for entry_id, fields in entries
-		],
-	}
-
 
 @app.get("/backtest/run")
 def run_backtest(
@@ -929,6 +721,7 @@ def run_backtest(
 	end: str = Query(..., min_length=1),
 	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
 	position_size: Optional[float] = Query(default=None, gt=0),
+	ATR_period: int = Query(default=14, ge=1),
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -947,11 +740,13 @@ def run_backtest(
 	try:
 		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
 		return backtester_instance.run(
+			alpaca_api=MARKET_DATA_API,
 			strategy_name=strategy_name,
 			start=start,
 			end=end,
 			tickers=ticker_list,
 			position_size=position_size,
+			ATR_period=ATR_period,
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -965,8 +760,12 @@ def plot_backtest(
 	strategy_name: str = Query(..., min_length=1),
 	start: str = Query(..., min_length=1),
 	end: str = Query(..., min_length=1),
-	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
+	tickers: Optional[str] = Query(
+		default=None,
+		description="Optional comma-separated ticker list",
+	),
 	position_size: Optional[float] = Query(default=None, gt=0),
+	ATR_period: int = Query(default=14, ge=1),
 ):
 	"""
 	Run an isolated Redis-signal backtest and stream the overall PnL plot as PNG.
@@ -985,16 +784,25 @@ def plot_backtest(
 			open backtest.png		
 	"""
 	try:
-		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
+		ticker_list = (
+			[item.strip() for item in tickers.split(",")]
+			if tickers
+			else None
+		)
+
 		result = backtester_instance.run(
+			alpaca_api=MARKET_DATA_API,
 			strategy_name=strategy_name,
 			start=start,
 			end=end,
 			tickers=ticker_list,
 			position_size=position_size,
+			ATR_period=ATR_period,
 		)
+
 		image_buffer = backtester_instance.plot_overall_pnl(result)
 		return StreamingResponse(image_buffer, media_type="image/png")
+
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
 	except Exception:

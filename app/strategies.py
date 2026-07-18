@@ -1960,6 +1960,7 @@ class Strategies:
 				prices,
 				alpaca_num_shares,
 				alpaca_api,
+				None,
 				do_redis_bookkeeping=False,
 			)
 
@@ -1981,6 +1982,7 @@ class Strategies:
 				prices,
 				alpaca_num_shares,
 				alpaca_api,
+				None,
 				do_redis_bookkeeping=False,
 			)
 
@@ -2087,12 +2089,96 @@ class Strategies:
 
 		if position_side == "long":
 			return self.sell_long_order(
-				strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+				strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, None, do_redis_bookkeeping=False
 			)
 
 		return self.cover_short_order(
-			strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, do_redis_bookkeeping=False
+			strategy_name, timeframe, ticker, date, prices, close_qty, alpaca_api, None, do_redis_bookkeeping=False
 		)
+
+
+	def exit_strategy3(self, strategy_name, anchor_tf, simulation, date, prices, ticker, timeframe, alpaca_api, state, config, event, price, backtester):
+		"""
+		Manage an entry-time anchor-ATR trailing-stop exit.
+
+		Simulation:
+			The BackTester owns minute-by-minute price tracking, high/low-water
+			updates, and stop execution. This method does not inspect signals or
+			close simulated positions.
+
+		Live:
+			During regular trading hours, ensure an Alpaca trailing-stop order
+			exists for the current position. Outside regular trading hours, no
+			trailing-stop order is submitted because extended-hours trailing-stop
+			orders are not used. Signal-triggered exits fall back to the existing
+			limit-order execution path.
+		"""
+		if simulation:
+			return None
+
+		sym = str(ticker or "").upper().strip()
+
+		try:
+			alpaca_position = alpaca_api.get_position(
+				sym
+			)
+
+			raw_position_qty = float(
+				getattr(
+					alpaca_position,
+					"qty",
+					0.0,
+				)
+				or 0.0
+			)
+
+		except Exception:
+			return None
+
+		if raw_position_qty == 0:
+			return None
+
+		position_side = (
+			"long"
+			if raw_position_qty > 0
+			else "short"
+		)
+
+		position_qty = abs(
+			raw_position_qty
+		)
+
+		if not self.tvw_helpers._is_regular_hours_et(date):
+			return None
+
+		anchor_atr = self.trade_records._get_live_anchor_atr_placeholder(
+			strategy_name=strategy_name,
+			ticker=sym,
+			anchor_tf=anchor_tf,
+			price=price,
+		)
+
+		if anchor_atr is None or anchor_atr <= 0:
+			logger.info(
+				"Unable to create ATR trailing stop: "
+				"strategy=%r ticker=%r anchor_tf=%r "
+				"anchor_atr=%r",
+				strategy_name,
+				sym,
+				anchor_tf,
+				anchor_atr,
+			)
+			return None
+
+		if position_side == "long":
+			return self.sell_long_order(
+				strategy_name, timeframe, ticker, date, prices, position_qty, alpaca_api, anchor_atr, do_redis_bookkeeping=False
+			)
+
+		return self.cover_short_order(
+			strategy_name, timeframe, ticker, date, prices, position_qty, alpaca_api, anchor_atr, do_redis_bookkeeping=False
+		)
+
 
 
 	def place_order(
@@ -2105,6 +2191,7 @@ class Strategies:
 		num_shares,
 		alpaca_api,
 		order_type,
+		anchor_atr,
 		do_redis_bookkeeping=False,
 	):
 		order_type = str(order_type or "").strip().lower()
@@ -2216,7 +2303,17 @@ class Strategies:
 		execution_qty = num_shares
 
 		def submit_to_alpaca_only():
-			order_type_name = "market" if is_regular_hours else "limit"
+			#order_type_name = "market" if is_regular_hours else "limit"
+			if (
+				is_regular_hours
+				and anchor_atr is not None
+				and order_type in {"sell", "cover"}
+			):
+				order_type_name = "trailing-stop"
+			elif is_regular_hours:
+				order_type_name = "market"
+			else:
+				order_type_name = "limit"			
 			submitted_order = None
 
 			try:
@@ -2243,6 +2340,28 @@ class Strategies:
 
 					if existing_status not in active_statuses:
 						continue
+
+
+
+					is_trailing_request = (
+						anchor_atr is not None
+						and order_type in {"sell", "cover"}
+					)
+
+					if (
+						is_trailing_request
+						and existing_type == "trailing_stop"
+					):
+						logger.info(
+							"Existing trailing-stop order already protects position; "
+							"skipping duplicate: ticker=%r side=%r order_id=%r",
+							ticker,
+							broker_side,
+							existing_order_id,
+						)
+						return None
+
+
 
 					if existing_type == "market":
 						logger.info(
@@ -2295,13 +2414,30 @@ class Strategies:
 			for attempt in range(1, 4):
 				try:
 					if is_regular_hours:
-						submitted_order = alpaca_api.submit_order(
-							symbol=ticker,
-							qty=execution_qty,
-							side=broker_side,
-							type="market",
-							time_in_force="day",
-						)
+						if anchor_atr is None:
+							submitted_order = alpaca_api.submit_order(
+								symbol=ticker,
+								qty=execution_qty,
+								side=broker_side,
+								type="market",
+								time_in_force="day",
+							)
+						else:
+							trail_price = float(
+								Decimal(str(anchor_atr)).quantize(
+									Decimal("0.01"),
+									rounding=ROUND_HALF_UP,
+								)
+							)							
+							submitted_order = alpaca_api.submit_order(
+								symbol=ticker,
+								qty=execution_qty,
+								side=broker_side,
+								type="trailing_stop",
+								time_in_force="day",
+								trail_price=trail_price,
+								extended_hours=False
+							)							
 					else:
 						submitted_order = alpaca_api.submit_order(
 							symbol=ticker,
@@ -2466,6 +2602,44 @@ class Strategies:
 			logger.info("Submitted Alpaca order missing order id for %r", ticker)
 			return None
 
+		is_trailing_order = (
+			is_regular_hours
+			and anchor_atr is not None
+			and order_type in {"sell", "cover"}
+		)
+
+		if is_trailing_order:
+			if pending_exit_key:
+				try:
+					self.r.delete(
+						pending_exit_key
+					)
+				except Exception:
+					logger.exception(
+						"Failed clearing pending exit guard after "
+						"trailing-stop submission: key=%r",
+						pending_exit_key,
+					)
+
+			logger.info(
+				"Trailing-stop order submitted and left broker-managed: "
+				"strategy=%r ticker=%r order_type=%r qty=%r "
+				"order_id=%r trail_price=%r",
+				strategy_name,
+				ticker,
+				order_type,
+				execution_qty,
+				order_id,
+				anchor_atr,
+			)
+
+			return {
+				"submitted": True,
+				"order_id": order_id,
+				"background_monitoring": False,
+				"broker_managed_trailing_stop": True,
+			}		
+
 		self.order_monitor_executor.submit(
 			self._monitor_alpaca_order_fill,
 			strategy_name,
@@ -2509,6 +2683,7 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"long",
+			None,
 			False,
 		)
 
@@ -2522,10 +2697,11 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"short",
+			None,
 			False,
 		)
 
-	def sell_long_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
+	def sell_long_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, anchor_atr, do_redis_bookkeeping=False):
 		return self.place_order(
 			strategy_name,
 			tf,
@@ -2535,10 +2711,11 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"sell",
+			anchor_atr,
 			do_redis_bookkeeping,
 		)
 
-	def cover_short_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, do_redis_bookkeeping=False):
+	def cover_short_order(self, strategy_name, tf, ticker, date, prices, num_shares, alpaca_api, anchor_atr, do_redis_bookkeeping=False):
 		return self.place_order(
 			strategy_name,
 			tf,
@@ -2548,6 +2725,6 @@ class Strategies:
 			num_shares,
 			alpaca_api,
 			"cover",
+			anchor_atr,
 			do_redis_bookkeeping,
 		)	
-

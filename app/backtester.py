@@ -4,6 +4,7 @@ import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+import pandas as pd
 from typing import Any, Optional
 
 import matplotlib.pyplot as plt
@@ -20,6 +21,12 @@ class SimPosition:
 	num_shares: float
 	realized_pnl: float = 0.0
 	entry_sequence_count: int = 1
+	high_water_price: Optional[float] = None
+	low_water_price: Optional[float] = None
+	trailing_stop_amount: Optional[float] = None
+	trailing_stop_price: Optional[float] = None
+	trailing_stop_source_time: Optional[datetime] = None
+	last_trailing_bar_time: Optional[datetime] = None
 
 
 @dataclass
@@ -28,6 +35,7 @@ class SimState:
 	positions: dict[str, SimPosition] = field(default_factory=dict)
 	realized_by_ticker: dict[str, float] = field(default_factory=dict)
 	last_price_by_ticker: dict[str, float] = field(default_factory=dict)
+	last_exit_time_by_ticker: dict[str, datetime] = field(default_factory=dict)
 	latest_directional: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 	latest_by_tf: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 	all_events_by_ticker_tf: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
@@ -35,6 +43,7 @@ class SimState:
 	ticker_pnl_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 	daily_max_exposure: dict[str, float] = field(default_factory=dict)
 	trade_events: list[dict[str, Any]] = field(default_factory=list)
+	market_data: dict[str, Any] = field(default_factory=dict)
 
 
 class BackTester:
@@ -47,6 +56,7 @@ class BackTester:
 			"anchor_tf": "15m",
 			"lower_timeframes": {"1m"},
 			"default_position_size": 2000.0,
+			"exit_strategy": 1,
 		},
 		"strategy1_1h_anchor": {
 			"entry_tf": "5m",
@@ -54,6 +64,7 @@ class BackTester:
 			"anchor_tf": "1h",
 			"lower_timeframes": {"1m", "5m"},
 			"default_position_size": 6000.0,
+			"exit_strategy": 1,
 		},
 		"strategy1_4h_anchor": {
 			"entry_tf": "15m",
@@ -61,6 +72,7 @@ class BackTester:
 			"anchor_tf": "4h",
 			"lower_timeframes": {"1m", "5m", "15m"},
 			"default_position_size": 20000.0,
+			"exit_strategy": 1,
 		},
 
 		"strategy2_15m_anchor": {
@@ -69,6 +81,7 @@ class BackTester:
 			"anchor_tf": "15m",
 			"lower_timeframes": {"1m"},
 			"default_position_size": 2000.0,
+			"exit_strategy": 2,
 		},
 		"strategy2_1h_anchor": {
 			"entry_tf": "5m",
@@ -76,6 +89,7 @@ class BackTester:
 			"anchor_tf": "1h",
 			"lower_timeframes": {"1m", "5m"},
 			"default_position_size": 6000.0,
+			"exit_strategy": 2,
 		},
 		"strategy2_4h_anchor": {
 			"entry_tf": "15m",
@@ -83,9 +97,9 @@ class BackTester:
 			"anchor_tf": "4h",
 			"lower_timeframes": {"1m", "5m", "15m"},
 			"default_position_size": 20000.0,
+			"exit_strategy": 2,
 		},		
 	}
-
 	TIMEFRAME_ORDER = {
 		"1m": 1,
 		"3m": 2,
@@ -119,12 +133,15 @@ class BackTester:
 
 	def run(
 		self,
+		alpaca_api,
 		strategy_name: str,
 		start: str,
 		end: str,
 		tickers: Optional[list[str]] = None,
 		position_size: Optional[float] = None,
+		ATR_period: int = 14,
 		warmup_days: int = 2,
+		exit_strategy: Optional[int] = None,
 	) -> dict[str, Any]:
 		"""
 		Run a chronological simulation with an optional unreported warm-up period.
@@ -141,12 +158,41 @@ class BackTester:
 			tickers: Optional list of ticker symbols. If omitted, discover from Redis.
 			position_size: Optional dollar notional used to size the first entry signal.
 			warmup_days: Calendar days to simulate before ``start``. Defaults to 2.
+			exit_strategy: Optional override for the strategy config. Must be 1, 2, or 3.
 
 		Returns:
 			Dictionary containing only the requested reporting window, while preserving
 			open positions and signal context created during warm-up.
 		"""
+		try:
+			ATR_period = int(ATR_period)
+		except (TypeError, ValueError) as exc:
+			raise ValueError("ATR_period must be an integer") from exc
+
+		if ATR_period < 1:
+			raise ValueError("ATR_period must be >= 1")
+		
 		config = self._get_strategy_config(strategy_name)
+
+		default_exit_strategy = config["exit_strategy"]
+
+		if exit_strategy is not None:
+			try:
+				selected_exit_strategy = int(exit_strategy)
+			except (TypeError, ValueError) as exc:
+				raise ValueError(
+					"exit_strategy must be 1, 2, or 3"
+				) from exc
+
+			if selected_exit_strategy not in {1, 2, 3}:
+				raise ValueError(
+					"exit_strategy must be 1, 2, or 3"
+				)
+		else:
+			selected_exit_strategy = default_exit_strategy
+
+		config["selected_exit_strategy"] = selected_exit_strategy
+
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
 
@@ -161,6 +207,118 @@ class BackTester:
 		if warmup_days < 0:
 			raise ValueError("warmup_days must be >= 0")
 
+
+		warmup_start_dt = start_dt - timedelta(days=warmup_days)
+
+		timeframes = self._strategy_timeframes(config)
+		discovered_symbols = (
+			self._normalize_tickers(tickers)
+			or self._discover_tickers(timeframes)
+		)
+
+		if not discovered_symbols:
+			raise ValueError(
+				f"No Redis signal streams found for strategy {strategy_name}"
+			)
+
+		all_events = self._load_signal_events(
+			strategy_name,
+			discovered_symbols,
+			timeframes,
+			warmup_start_dt,
+			end_dt,
+		)
+
+		# Include only symbols actually represented by signals in this run's
+		# warm-up/reporting range.
+		symbols = sorted({
+			event["ticker"]
+			for event in all_events
+			if event.get("ticker")
+		})
+
+		if not symbols:
+			raise ValueError(
+				"No Redis signals were found in the requested period, "
+				"including the warm-up period"
+			)
+
+		_1min_timeframe = self.trade_records_instance._1min_time_frame
+		
+		anchor_timeframes = {
+			"15m": self.trade_records_instance._15min_time_frame,
+			"1h": self.trade_records_instance._1hr_time_frame,
+			"4h": self.trade_records_instance._4hr_time_frame,
+		}
+
+		anchor_tf = config["anchor_tf"]
+		anchor_timeframe = anchor_timeframes[anchor_tf]
+		
+		one_minute_market_data_start = pd.Timestamp(
+			warmup_start_dt - timedelta(minutes=10)
+		)
+		#Add extra bars to lookback period to account for holidays and weekends for large timeframes
+		anchor_bars_per_trading_day = {
+			"15m": 26,
+			"1h": 7,
+			"4h": 2,
+		}
+
+		required_anchor_bars = ATR_period + 10
+		required_trading_days = math.ceil(
+			required_anchor_bars / anchor_bars_per_trading_day[anchor_tf]
+		)
+
+		calendar_lookback_days = math.ceil(required_trading_days * 7 / 5) + 2
+
+		anchor_market_data_start = pd.Timestamp(
+			warmup_start_dt - timedelta(days=calendar_lookback_days)
+		)
+
+		market_data_end = pd.Timestamp(end_dt)
+
+		_1m_df = self.trade_records_instance.get_df(
+			alpaca_api, 
+			symbols, 
+			_1min_timeframe, 
+			one_minute_market_data_start,
+			market_data_end,
+		)
+		anchor_df = self.trade_records_instance.get_df(
+			alpaca_api, 
+			symbols, 
+			anchor_timeframe, 
+			anchor_market_data_start,
+			market_data_end,
+		)
+
+		if _1m_df.empty:
+			raise ValueError("Alpaca returned no 1-minute price data")
+
+		if anchor_df.empty:
+			raise ValueError(
+				f"Alpaca returned no {config['anchor_tf']} price data"
+			)
+
+		_1min_close_prices = (
+			self.trade_records_instance.dataframe_column_to_dict(
+				_1m_df,
+				"close"
+			)
+		)
+
+		anchor_ATR = self.trade_records_instance.dataframe_to_atr_dict(
+			anchor_df,
+			period=ATR_period
+		)
+
+		state = SimState()
+
+		state.market_data = {
+			"close_1m": _1min_close_prices,
+			"anchor_atr": anchor_ATR,
+		}
+
 		self.diagnostic_logging_enabled = (
 			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
 		)
@@ -173,43 +331,36 @@ class BackTester:
 		if position_size <= 0:
 			raise ValueError("position_size must be > 0")
 
-		warmup_start_dt = start_dt - timedelta(days=warmup_days)
-		state = SimState()
-		timeframes = self._strategy_timeframes(config)
-		symbols = self._normalize_tickers(tickers) or self._discover_tickers(timeframes)
-		all_events = self._load_signal_events(
-			strategy_name,
-			symbols,
-			timeframes,
-			warmup_start_dt,
-			end_dt,
-		)
-
 		warmup_events = [event for event in all_events if event["received_dt"] < start_dt]
 		report_events = [event for event in all_events if event["received_dt"] >= start_dt]
 
-		# Warm-up phase: update context and simulate positions, but do not register
-		# trades, trade diagnostics, PnL history, or exposure.
-		self.recording_enabled = False
-		for event in warmup_events:
-			self._register_event_context(state, event)
-			self._process_event(strategy_name, state, config, event, position_size)
-
-		# Preserve open positions and signal history, but start reported accounting
-		# from zero at the user's requested start time.
-		self._reset_reporting_state(state)
-
-		# Reporting phase.
-		self.recording_enabled = True
-		for event in report_events:
-			self._register_event_context(state, event)
-			self._process_event(strategy_name, state, config, event, position_size)
-			self._record_snapshots(state, event["received_dt"])
+		if config["selected_exit_strategy"] == 3:
+			self._run_price_tracked_backtest(
+				strategy_name,
+				state,
+				config,
+				warmup_events,
+				report_events,
+				position_size,
+				warmup_start_dt,
+				start_dt,
+				end_dt,
+			)
+		else:
+			self._run_signal_backtest(
+				strategy_name,
+				state,
+				config,
+				warmup_events,
+				report_events,
+				position_size,
+			)
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
 
 		return {
 			"strategy_name": strategy_name,
+			"exit_strategy": config["selected_exit_strategy"],
 			"start": start_dt.isoformat(),
 			"end": end_dt.isoformat(),
 			"warmup_start": warmup_start_dt.isoformat(),
@@ -240,6 +391,261 @@ class BackTester:
 			self._process_strategy2_event(strategy_name, state, config, event, position_size)
 		else:
 			raise ValueError(f"Unsupported strategy family: {strategy_name}")
+
+	def _run_signal_backtest(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		warmup_events: list[dict[str, Any]],
+		report_events: list[dict[str, Any]],
+		position_size: float,
+	) -> None:
+		"""Run the original signal-driven path used by exit strategies 1 and 2."""
+		self.recording_enabled = False
+
+		for event in warmup_events:
+			self._register_event_context(state, event)
+			self._process_event(strategy_name, state, config, event, position_size)
+
+		self._reset_reporting_state(state)
+
+		self.recording_enabled = True
+
+		for event in report_events:
+			self._register_event_context(state, event)
+			self._process_event(strategy_name, state, config, event, position_size)
+			self._record_snapshots(state, event["received_dt"])
+
+	def _run_price_tracked_backtest(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		warmup_events: list[dict[str, Any]],
+		report_events: list[dict[str, Any]],
+		position_size: float,
+		warmup_start_dt: datetime,
+		start_dt: datetime,
+		end_dt: datetime,
+	) -> None:
+		"""Run exit strategy 3 on a merged signal and one-minute-price timeline."""
+		warmup_timeline = self._build_backtest_timeline(
+			state,
+			warmup_events,
+			warmup_start_dt,
+			start_dt - timedelta(microseconds=1),
+		)
+
+		report_timeline = self._build_backtest_timeline(
+			state,
+			report_events,
+			start_dt,
+			end_dt,
+		)
+
+		self.recording_enabled = False
+		self._process_price_tracked_timeline(
+			strategy_name,
+			state,
+			config,
+			warmup_timeline,
+			position_size,
+			record_snapshots=False,
+		)
+
+		self._reset_reporting_state(state)
+
+		self.recording_enabled = True
+		self._process_price_tracked_timeline(
+			strategy_name,
+			state,
+			config,
+			report_timeline,
+			position_size,
+			record_snapshots=True,
+		)
+
+	def _build_backtest_timeline(
+		self,
+		state: SimState,
+		signal_events: list[dict[str, Any]],
+		start_dt: datetime,
+		end_dt: datetime,
+	) -> list[dict[str, Any]]:
+		"""Merge signal arrivals with completed one-minute Alpaca bars."""
+		timeline = []
+
+		for ticker, ticker_prices in state.market_data.get("close_1m", {}).items():
+			for timestamp, close_price in ticker_prices.items():
+				source_bar_dt = pd.Timestamp(timestamp)
+
+				if source_bar_dt.tzinfo is None:
+					source_bar_dt = source_bar_dt.tz_localize(
+						self.tvw_helpers.eastern_tz
+					)
+				else:
+					source_bar_dt = source_bar_dt.tz_convert(
+						self.tvw_helpers.eastern_tz
+					)
+
+				available_dt = (
+					source_bar_dt + pd.Timedelta(minutes=1)
+				).to_pydatetime()
+
+				if not start_dt <= available_dt <= end_dt:
+					continue
+
+				timeline.append({
+					"kind": "market_bar",
+					"dt": available_dt,
+					"payload": {
+						"ticker": ticker,
+						"dt": available_dt,
+						"source_bar_time": source_bar_dt.to_pydatetime(),
+						"close": float(close_price),
+					},
+				})
+
+		for event in signal_events:
+			timeline.append({
+				"kind": "signal",
+				"dt": event["received_dt"],
+				"payload": event,
+			})
+
+		return sorted(
+			timeline,
+			key=lambda row: (
+				row["dt"],
+				0 if row["kind"] == "market_bar" else 1,
+				row["payload"].get("ticker", ""),
+				row["payload"].get("stream_id", ""),
+			),
+		)
+
+	def _process_price_tracked_timeline(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		timeline: list[dict[str, Any]],
+		position_size: float,
+		record_snapshots: bool,
+	) -> None:
+		"""Process exit strategy 3 without allowing signals to manage open positions."""
+		for timeline_event in timeline:
+			event_dt = timeline_event["dt"]
+			payload = timeline_event["payload"]
+
+			if timeline_event["kind"] == "market_bar":
+				self._process_trailing_stop_market_bar(state, payload)
+			else:
+				self._process_exit_strategy3_signal(
+					strategy_name,
+					state,
+					config,
+					payload,
+					position_size,
+				)
+
+			if record_snapshots:
+				self._record_snapshots(state, event_dt)
+
+	def _process_exit_strategy3_signal(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		"""Record every signal, but evaluate entries only while the ticker is flat."""
+		self._register_event_context(state, event)
+
+		ticker = event["ticker"]
+		position = state.positions.get(ticker)
+
+		if position is not None and position.num_shares > 0:
+			return
+
+		last_exit_time = state.last_exit_time_by_ticker.get(ticker)
+
+		if last_exit_time is not None and event["received_dt"] <= last_exit_time:
+			return
+
+		self._process_entry_only(
+			strategy_name,
+			state,
+			config,
+			event,
+			position_size,
+		)
+
+	def _process_entry_only(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		"""Evaluate the configured strategy family's entry rules without signal exits."""
+		event["exit_strategy"] = 3
+		event["anchor_tf"] = config["anchor_tf"]
+
+		if strategy_name.startswith("strategy1_"):
+			self._process_strategy1_entry_only(
+				strategy_name, state, config, event, position_size
+			)
+		elif strategy_name.startswith("strategy2_"):
+			self._process_strategy2_entry_only(
+				strategy_name, state, config, event, position_size
+			)
+		else:
+			raise ValueError(f"Unsupported strategy family: {strategy_name}")
+
+	def _process_strategy1_entry_only(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		now_et = event["dt"]
+		signal = event["side"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		num_shares = position_size / market_price
+
+		self.strategies_instance.entry_strategy1(
+			strategy_name, config["entry_tf"], config["intermediary_tf"],
+			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
+			num_shares, None, state, config, event, market_price, self,
+		)
+
+	def _process_strategy2_entry_only(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		now_et = event["dt"]
+		signal = event["signal"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		num_shares = position_size / market_price
+
+		self.strategies_instance.entry_strategy2(
+			strategy_name, config["entry_tf"], config["intermediary_tf"],
+			True, now_et, signal, None, symbol, tf, num_shares, None, state,
+			config, event, market_price, self,
+		)
 
 	def _reset_reporting_state(self, state: SimState) -> None:
 		"""
@@ -301,6 +707,19 @@ class BackTester:
 		config["intermediary_tf"] = self.tvw_helpers.normalize_tf(config["intermediary_tf"])
 		config["anchor_tf"] = self.tvw_helpers.normalize_tf(config["anchor_tf"])
 		config["lower_timeframes"] = {self.tvw_helpers.normalize_tf(tf) for tf in config["lower_timeframes"]}
+
+		try:
+			config["exit_strategy"] = int(config["exit_strategy"])
+		except (KeyError, TypeError, ValueError) as exc:
+			raise ValueError(
+				f"Invalid exit_strategy for {name}; expected 1, 2, or 3"
+			) from exc
+
+		if config["exit_strategy"] not in {1, 2, 3}:
+			raise ValueError(
+				f"Invalid exit_strategy for {name}; expected 1, 2, or 3"
+			)
+
 		return config
 
 	def _strategy_timeframes(self, config: dict[str, Any]) -> set[str]:
@@ -409,179 +828,108 @@ class BackTester:
 			"raw_fields": fields,
 		}
 
-	def _register_event_context(self, state: SimState, event: dict[str, Any]) -> None:
-		"""Update in-memory signal context before evaluating the current event."""
-		key = (event["ticker"], event["timeframe"])
+
+	def _register_event_context(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+	) -> None:
+		"""Update simulated signal and market-price context."""
+		key = (
+			event["ticker"],
+			event["timeframe"],
+		)
+
 		state.latest_by_tf[key] = event
-		state.last_price_by_ticker[event["ticker"]] = event["price"]
-		state.all_events_by_ticker_tf.setdefault(key, []).append(event)
-		if event["signal_role"] == "confirmation" and event["side"] in {"buy", "sell"}:
+		state.all_events_by_ticker_tf.setdefault(
+			key,
+			[],
+		).append(event)
+
+		if (
+			event["signal_role"] == "confirmation"
+			and event["side"] in {"buy", "sell"}
+		):
 			state.latest_directional[key] = event
+
+		try:
+			market_price, _ = (
+				self._get_execution_market_price(
+					state,
+					event,
+				)
+			)
+
+			state.last_price_by_ticker[
+				event["ticker"]
+			] = market_price
+
+		except ValueError:
+			logger.warning(
+				"Unable to update one-minute market price: "
+				"ticker=%s received_dt=%s",
+				event["ticker"],
+				event["received_dt"],
+			)
 
 
 	def _process_strategy1_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
-		"""Apply Strategy 1 entry and exit rules to one chronological signal event."""		
-		now_et = event["dt"] 
-		signal = event["side"] 
+		"""Apply Strategy 1 using the configured signal-driven exit strategy."""
+		now_et = event["dt"]
+		signal = event["side"]
 		symbol = event["ticker"]
 		tf = event["timeframe"]
 		market_price = event["price"]
-		NUM_SHARES = position_size / market_price
+		num_shares = position_size / market_price
+		event["exit_strategy"] = config["selected_exit_strategy"]
+		event["anchor_tf"] = config["anchor_tf"]
 
-		self.strategies_instance.exit_strategy1(
-			strategy_name,
-			config["lower_timeframes"],
-			config["intermediary_tf"],
-			config["anchor_tf"],			
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self			
-		)
+		if config["selected_exit_strategy"] == 1:
+			self.strategies_instance.exit_strategy1(
+				strategy_name, config["lower_timeframes"], config["intermediary_tf"],
+				config["anchor_tf"], True, now_et, signal, None, symbol, tf, None,
+				state, config, event, market_price, self,
+			)
+		elif config["selected_exit_strategy"] == 2:
+			self.strategies_instance.exit_strategy2(
+				strategy_name, config["entry_tf"], True, now_et, signal, None,
+				symbol, tf, None, state, config, event, market_price, self,
+			)
 
 		self.strategies_instance.entry_strategy1(
-			strategy_name,
-			config["entry_tf"],
-			config["intermediary_tf"],
-			config["anchor_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			NUM_SHARES,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self
+			strategy_name, config["entry_tf"], config["intermediary_tf"],
+			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
+			num_shares, None, state, config, event, market_price, self,
 		)
 
 	def _process_strategy2_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
+		"""Apply Strategy 2 using the configured signal-driven exit strategy."""
 		now_et = event["dt"]
 		signal = event["signal"]
 		symbol = event["ticker"]
 		tf = event["timeframe"]
 		market_price = event["price"]
-		NUM_SHARES = position_size / market_price
+		num_shares = position_size / market_price
+		event["exit_strategy"] = config["selected_exit_strategy"]
+		event["anchor_tf"] = config["anchor_tf"]
 
-		self.strategies_instance.exit_strategy2(
-			strategy_name,
-			config["entry_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self,
-		)
+		if config["exit_strategy"] == 1:
+			self.strategies_instance.exit_strategy1(
+				strategy_name, config["lower_timeframes"], config["intermediary_tf"],
+				config["anchor_tf"], True, now_et, signal, None, symbol, tf, None,
+				state, config, event, market_price, self,
+			)
+		elif config["exit_strategy"] == 2:
+			self.strategies_instance.exit_strategy2(
+				strategy_name, config["entry_tf"], True, now_et, signal, None,
+				symbol, tf, None, state, config, event, market_price, self,
+			)
 
 		self.strategies_instance.entry_strategy2(
-			strategy_name,
-			config["entry_tf"],
-			config["intermediary_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			NUM_SHARES,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self,
+			strategy_name, config["entry_tf"], config["intermediary_tf"],
+			True, now_et, signal, None, symbol, tf, num_shares, None, state,
+			config, event, market_price, self,
 		)
-
-		"""self.strategies_instance.entry_strategy1(
-			strategy_name,
-			config["entry_tf"],
-			config["intermediary_tf"],
-			config["anchor_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			NUM_SHARES,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self
-		)"""		
-
-
-
-
-
-
-
-
-	def _process_experimental_strategy(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
-		now_et = event["dt"]
-		signal = event["signal"]
-		symbol = event["ticker"]
-		tf = event["timeframe"]
-		market_price = event["price"]
-		NUM_SHARES = position_size / market_price
-
-		self.strategies_instance.exit_strategy2(
-			strategy_name,
-			config["entry_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self,
-		)
-
-		self.strategies_instance.entry_strategy1(
-			strategy_name,
-			config["entry_tf"],
-			config["intermediary_tf"],
-			True,
-			now_et,
-			signal,
-			None,
-			symbol,
-			tf,
-			NUM_SHARES,
-			None,
-			state,
-			config,
-			event,
-			market_price,
-			self,
-		)
-
 
 
 	def get_nth_last_alert(self, state: SimState, ticker: str, timeframe: str, n: int = 1):
@@ -694,13 +1042,121 @@ class BackTester:
 		return None
 
 
+	def _timeframe_timedelta(self, timeframe: str) -> pd.Timedelta:
+		"""Convert a normalized timeframe to its bar duration."""
+		tf = self.tvw_helpers.normalize_tf(timeframe)
+		durations = {
+			"1m": pd.Timedelta(minutes=1),
+			"3m": pd.Timedelta(minutes=3),
+			"5m": pd.Timedelta(minutes=5),
+			"15m": pd.Timedelta(minutes=15),
+			"30m": pd.Timedelta(minutes=30),
+			"45m": pd.Timedelta(minutes=45),
+			"1h": pd.Timedelta(hours=1),
+			"2h": pd.Timedelta(hours=2),
+			"4h": pd.Timedelta(hours=4),
+			"1d": pd.Timedelta(days=1),
+		}
+
+		if tf not in durations:
+			raise ValueError(f"Unsupported timeframe duration: {timeframe}")
+
+		return durations[tf]
+
+	def _get_anchor_atr_at_entry(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+	) -> tuple[float, datetime]:
+		"""Return the latest fully completed anchor ATR available at entry time."""
+		ticker = str(event["ticker"]).upper().strip()
+		entry_dt = pd.Timestamp(event["received_dt"])
+		anchor_tf = self.tvw_helpers.normalize_tf(
+			event.get("anchor_tf")
+			or event.get("config_anchor_tf")
+		)
+
+		if not anchor_tf:
+			raise ValueError(f"Missing anchor timeframe for {ticker} entry")
+
+		ticker_atr = state.market_data.get("anchor_atr", {}).get(ticker, {})
+
+		if not ticker_atr:
+			raise ValueError(f"No anchor ATR data available for {ticker}")
+
+		anchor_duration = self._timeframe_timedelta(anchor_tf)
+		closest_source_dt = None
+		closest_available_dt = None
+		closest_atr = None
+
+		if entry_dt.tzinfo is None:
+			entry_dt = entry_dt.tz_localize(
+				self.tvw_helpers.eastern_tz
+			)
+		else:
+			entry_dt = entry_dt.tz_convert(
+				self.tvw_helpers.eastern_tz
+			)
+
+		for timestamp, atr_value in ticker_atr.items():
+			source_dt = pd.Timestamp(timestamp)
+
+			if source_dt.tzinfo is None:
+				source_dt = source_dt.tz_localize(
+					self.tvw_helpers.eastern_tz
+				)
+			else:
+				source_dt = source_dt.tz_convert(
+					self.tvw_helpers.eastern_tz
+				)
+
+			available_dt = source_dt + anchor_duration
+
+			if available_dt > entry_dt:
+				continue
+
+			if closest_available_dt is None or available_dt > closest_available_dt:
+				closest_source_dt = source_dt
+				closest_available_dt = available_dt
+				closest_atr = atr_value
+
+		if closest_source_dt is None or closest_atr is None:
+			raise ValueError(
+				f"No completed {anchor_tf} ATR available for {ticker} at {entry_dt}"
+			)
+
+		closest_atr = float(closest_atr)
+
+		if closest_atr <= 0:
+			raise ValueError(
+				f"Invalid anchor ATR for {ticker} at {closest_source_dt}: {closest_atr}"
+			)
+
+		return closest_atr, closest_source_dt.to_pydatetime()
+
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> None:
 
-		now_et = event["dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+		execution_dt = event["received_dt"]
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			"""Open a new position or add to an existing same-side position in memory."""
 			ticker = event["ticker"]
-			price = event["price"]
+
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+
+			order_side = (
+				"buy"
+				if position_side == "long"
+				else "short"
+			)
+
+			price = self._get_execution_price(
+				quote,
+				order_side,
+			)
+
 
 			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
@@ -727,24 +1183,184 @@ class BackTester:
 				existing.avg_price_per_share = ((existing.avg_price_per_share * old_qty) + (price * qty)) / new_qty
 				existing.num_shares = new_qty
 				existing.entry_sequence_count += 1
+				existing.high_water_price = max(existing.high_water_price or price, price)
+				existing.low_water_price = min(existing.low_water_price or price, price)
 				event_type = "add"
 			else:
-				state.positions[ticker] = SimPosition(ticker=ticker, side=position_side, avg_price_per_share=price, num_shares=qty)
+				position_kwargs = {}
+
+				if event.get("exit_strategy") == 3:
+					trailing_stop_amount, trailing_stop_source_time = (
+						self._get_anchor_atr_at_entry(state, event)
+					)
+
+					if position_side == "long":
+						trailing_stop_price = price - trailing_stop_amount
+					else:
+						trailing_stop_price = price + trailing_stop_amount
+
+					position_kwargs = {
+						"trailing_stop_amount": trailing_stop_amount,
+						"trailing_stop_price": trailing_stop_price,
+						"trailing_stop_source_time": trailing_stop_source_time,
+						"last_trailing_bar_time": event["received_dt"],
+					}
+
+				state.positions[ticker] = SimPosition(
+					ticker=ticker,
+					side=position_side,
+					avg_price_per_share=price,
+					num_shares=qty,
+					high_water_price=price,
+					low_water_price=price,
+					**position_kwargs,
+				)
 				event_type = "open"
 
 			if self.recording_enabled:
 				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": event_type, "side": position_side, "price": price, "num_shares": qty, "realized_delta": 0.0})
 
+
+	def _process_trailing_stop_market_bar(
+		self,
+		state: SimState,
+		market_event: dict[str, Any],
+	) -> bool:
+		"""Advance one exit-strategy-3 position using a completed one-minute close."""
+		ticker = market_event["ticker"]
+		bar_dt = market_event["dt"]
+		market_price = float(market_event["close"])
+		position = state.positions.get(ticker)
+
+		state.last_price_by_ticker[ticker] = market_price
+
+		if position is None or position.num_shares <= 0:
+			return False
+
+		if position.trailing_stop_amount is None or position.trailing_stop_amount <= 0:
+			return False
+
+		if (
+			position.last_trailing_bar_time is not None
+			and bar_dt <= position.last_trailing_bar_time
+		):
+			return False
+
+		position.last_trailing_bar_time = bar_dt
+
+		if not self.tvw_helpers._is_regular_hours_et(bar_dt):
+			return False
+
+		trailing_amount = float(position.trailing_stop_amount)
+
+		if position.side == "long":
+			position.high_water_price = max(
+				position.high_water_price or market_price,
+				market_price,
+			)
+			position.trailing_stop_price = (
+				position.high_water_price - trailing_amount
+			)
+
+			if market_price <= position.trailing_stop_price:
+				self._close_position_at_market_bar(
+					state, ticker, bar_dt, market_price, "trailing_stop"
+				)
+				return True
+
+		elif position.side == "short":
+			position.low_water_price = min(
+				position.low_water_price or market_price,
+				market_price,
+			)
+			position.trailing_stop_price = (
+				position.low_water_price + trailing_amount
+			)
+
+			if market_price >= position.trailing_stop_price:
+				self._close_position_at_market_bar(
+					state, ticker, bar_dt, market_price, "trailing_stop"
+				)
+				return True
+
+		return False
+
+	def _close_position_at_market_bar(
+		self,
+		state: SimState,
+		ticker: str,
+		bar_dt: datetime,
+		market_price: float,
+		exit_reason: str,
+	) -> None:
+		"""Close a simulated position when a one-minute trailing stop is crossed."""
+		position = state.positions.get(ticker)
+
+		if position is None or position.num_shares <= 0:
+			return
+
+		if position.side == "long":
+			exit_side = "sell"
+			fill_price = max(0.01, float(market_price) - 0.01)
+			realized_delta = (
+				fill_price - position.avg_price_per_share
+			) * position.num_shares
+		else:
+			exit_side = "cover"
+			fill_price = float(market_price) + 0.01
+			realized_delta = (
+				position.avg_price_per_share - fill_price
+			) * position.num_shares
+
+		state.realized_by_ticker[ticker] = (
+			state.realized_by_ticker.get(ticker, 0.0) + realized_delta
+		)
+		state.last_price_by_ticker[ticker] = market_price
+		state.last_exit_time_by_ticker[ticker] = bar_dt
+
+		if self.recording_enabled:
+			state.trade_events.append({
+				"time": bar_dt.isoformat(),
+				"ticker": ticker,
+				"event_type": "close",
+				"exit_reason": exit_reason,
+				"side": exit_side,
+				"price": fill_price,
+				"market_price": market_price,
+				"num_shares": position.num_shares,
+				"realized_delta": realized_delta,
+				"trailing_stop_amount": position.trailing_stop_amount,
+				"trailing_stop_price": position.trailing_stop_price,
+				"high_water_price": position.high_water_price,
+				"low_water_price": position.low_water_price,
+			})
+
+		state.positions.pop(ticker, None)
+
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> None:
 
-		now_et = event["dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+		execution_dt = event["received_dt"]
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			"""Close the current in-memory position and accumulate realized PnL."""
 			ticker = event["ticker"]
 			position = state.positions.get(ticker)
 			if not position or position.num_shares <= 0:
 				return
-			price = event["price"]
+
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+
+			if position.side == "long":
+				exit_side = "sell"
+			else:
+				exit_side = "cover"
+
+			price = self._get_execution_price(
+				quote,
+				exit_side,
+			)
 
 			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
@@ -762,10 +1378,8 @@ class BackTester:
 
 			if position.side == "long":
 				realized_delta = (price - position.avg_price_per_share) * position.num_shares
-				exit_side = "sell"
 			else:
 				realized_delta = (position.avg_price_per_share - price) * position.num_shares
-				exit_side = "cover"
 			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 			if self.recording_enabled:
 				state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
@@ -775,8 +1389,8 @@ class BackTester:
 
 	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> None:
 
-		now_et = event["dt"]
-		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(now_et):
+		execution_dt = event["received_dt"]
+		if self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			ticker = event["ticker"]
 			position = state.positions.get(ticker)
 
@@ -787,7 +1401,20 @@ class BackTester:
 			if close_qty <= 0:
 				return
 
-			price = event["price"]
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+
+			if position.side == "long":
+				exit_side = "sell"
+			else:
+				exit_side = "cover"
+
+			price = self._get_execution_price(
+				quote,
+				exit_side,
+			)
 
 			if self.diagnostic_logging_enabled and self.recording_enabled:
 				self.trade_records_instance.log_trade_diagnostic(
@@ -805,10 +1432,8 @@ class BackTester:
 
 			if position.side == "long":
 				realized_delta = (price - position.avg_price_per_share) * close_qty
-				exit_side = "sell"
 			else:
 				realized_delta = (position.avg_price_per_share - price) * close_qty
-				exit_side = "cover"
 
 			state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 
@@ -868,3 +1493,154 @@ class BackTester:
 		print("--------------- -----------------------------------")
 		for day, value in sorted(daily_max_exposure.items()):
 			print(f"{day:<15} $ {value:>33,.2f}")
+
+
+	def _get_execution_market_price(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+		max_bar_age_minutes: int = 5,
+	) -> tuple[float, datetime]:
+		"""
+		Return the close of the most recent real one-minute Alpaca bar that was
+		fully completed when the TradingView signal was received.
+
+		The exact expected bar is checked first. If it is unavailable, search
+		backward for the nearest prior real bar. Never use a future bar.
+		"""
+		ticker = str(event["ticker"]).upper().strip()
+		received_dt = pd.Timestamp(event["received_dt"])
+
+		ticker_prices = (
+			state.market_data
+			.get("close_1m", {})
+			.get(ticker, {})
+		)
+
+		if not ticker_prices:
+			raise ValueError(
+				f"No one-minute market prices available for {ticker}"
+			)
+
+		target_bar_dt = (
+			received_dt.floor("min")
+			- pd.Timedelta(minutes=1)
+		)
+
+		target_key = target_bar_dt.isoformat(sep=" ")
+
+		exact_price = ticker_prices.get(target_key)
+
+		if exact_price is not None:
+			exact_price = float(exact_price)
+
+			if exact_price <= 0:
+				raise ValueError(
+					f"Invalid one-minute price for "
+					f"{ticker} at {target_key}: {exact_price}"
+				)
+
+			return exact_price, target_bar_dt.to_pydatetime()
+
+		closest_bar_dt = None
+		closest_price = None
+
+		for timestamp, price in ticker_prices.items():
+			bar_dt = pd.Timestamp(timestamp)
+
+			if bar_dt > target_bar_dt:
+				continue
+
+			if (
+				closest_bar_dt is None
+				or bar_dt > closest_bar_dt
+			):
+				closest_bar_dt = bar_dt
+				closest_price = price
+
+		if closest_bar_dt is None or closest_price is None:
+			raise ValueError(
+				f"No prior real one-minute bar available for "
+				f"{ticker} at or before {target_bar_dt}"
+			)
+
+		bar_age = target_bar_dt - closest_bar_dt
+
+		if bar_age > pd.Timedelta(minutes=max_bar_age_minutes):
+			raise ValueError(
+				f"Closest one-minute bar for {ticker} is too old: "
+				f"received_dt={received_dt}, "
+				f"target_bar_dt={target_bar_dt}, "
+				f"closest_bar_dt={closest_bar_dt}, "
+				f"bar_age={bar_age}"
+			)
+
+		closest_price = float(closest_price)
+
+		if closest_price <= 0:
+			raise ValueError(
+				f"Invalid one-minute price for "
+				f"{ticker} at {closest_bar_dt}: {closest_price}"
+			)
+
+		return closest_price, closest_bar_dt.to_pydatetime()	
+
+
+	def _get_simulated_quote(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+	) -> dict[str, Any]:
+		"""
+		Construct a simulated bid and ask from the latest completed real
+		one-minute Alpaca bar available when the signal was received.
+		"""
+		market_price, source_bar_dt = (
+			self._get_execution_market_price(
+				state,
+				event,
+			)
+		)
+
+		execution_dt = event["received_dt"]
+
+		if self.tvw_helpers._is_regular_hours_et(
+			execution_dt
+		):
+			price_offset = 0.01
+		else:
+			price_offset = 0.05
+
+		return {
+			"market": market_price,
+			"bid": max(
+				0.01,
+				market_price - price_offset,
+			),
+			"ask": market_price + price_offset,
+			"source_bar_time": source_bar_dt,
+		}	
+
+
+	def _get_execution_price(
+		self,
+		quote: dict[str, float],
+		order_side: str,
+	) -> float:
+		"""
+		Return the simulated executable quote side.
+
+		Buying or covering executes at the ask.
+		Selling or shorting executes at the bid.
+		"""
+		side = str(order_side or "").strip().lower()
+
+		if side in {"buy", "cover"}:
+			return float(quote["ask"])
+
+		if side in {"sell", "short"}:
+			return float(quote["bid"])
+
+		raise ValueError(
+			f"Unsupported simulated order side: {order_side}"
+		)	
