@@ -726,11 +726,15 @@ def run_backtest(
 	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
 	position_size: Optional[float] = Query(default=None, gt=0),
 	ATR_period: int = Query(default=14, ge=1),
+	ATR_multiplier: float = Query(
+		default=1.0,
+		gt=0,
+	),	
 	exit_strategy: Optional[int] = Query(
 		default=None,
 		ge=1,
 		le=3,
-	),	
+	),			
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -756,6 +760,7 @@ def run_backtest(
 			tickers=ticker_list,
 			position_size=position_size,
 			ATR_period=ATR_period,
+			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
 		)
 	except ValueError as exc:
@@ -776,11 +781,15 @@ def plot_backtest(
 	),
 	position_size: Optional[float] = Query(default=None, gt=0),
 	ATR_period: int = Query(default=14, ge=1),
+	ATR_multiplier: float = Query(
+		default=1.0,
+		gt=0,
+	),	
 	exit_strategy: Optional[int] = Query(
 		default=None,
 		ge=1,
 		le=3,
-	),	
+	),		
 ):
 	"""
 	Run an isolated Redis-signal backtest and stream separate chart PNGs as a ZIP archive.
@@ -819,6 +828,7 @@ def plot_backtest(
 			tickers=ticker_list,
 			position_size=position_size,
 			ATR_period=ATR_period,
+			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
 		)
 

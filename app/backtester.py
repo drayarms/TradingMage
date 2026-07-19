@@ -148,6 +148,7 @@ class BackTester:
 		tickers: Optional[list[str]] = None,
 		position_size: Optional[float] = None,
 		ATR_period: int = 14,
+		ATR_multiplier: float = 1.0,
 		warmup_days: int = 2,
 		exit_strategy: Optional[int] = None,
 	) -> dict[str, Any]:
@@ -173,13 +174,26 @@ class BackTester:
 			open positions and signal context created during warm-up.
 		"""
 		try:
+			ATR_multiplier = float(
+				ATR_multiplier
+			)
+		except (TypeError, ValueError) as exc:
+			raise ValueError(
+				"ATR_multiplier must be a number"
+			) from exc
+
+		if ATR_multiplier <= 0:
+			raise ValueError(
+				"ATR_multiplier must be > 0"
+			)		
+		try:
 			ATR_period = int(ATR_period)
 		except (TypeError, ValueError) as exc:
 			raise ValueError("ATR_period must be an integer") from exc
 
 		if ATR_period < 1:
 			raise ValueError("ATR_period must be >= 1")
-		
+	
 		config = self._get_strategy_config(strategy_name)
 
 		default_exit_strategy = config["exit_strategy"]
@@ -200,6 +214,7 @@ class BackTester:
 			selected_exit_strategy = default_exit_strategy
 
 		config["selected_exit_strategy"] = selected_exit_strategy
+		config["ATR_multiplier"] = ATR_multiplier
 
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
@@ -379,6 +394,8 @@ class BackTester:
 		return {
 			"strategy_name": strategy_name,
 			"exit_strategy": config["selected_exit_strategy"],
+			"ATR_period": ATR_period,
+			"ATR_multiplier": ATR_multiplier,
 			"anchor_timeframe": config["anchor_tf"],
 			"anchor_bars": anchor_ohlc,			
 			"start": start_dt.isoformat(),
@@ -756,6 +773,7 @@ class BackTester:
 		"""Evaluate the configured strategy family's entry rules without signal exits."""
 		event["exit_strategy"] = 3
 		event["anchor_tf"] = config["anchor_tf"]
+		event["ATR_multiplier"] = config["ATR_multiplier"]		
 
 		if strategy_name.startswith("strategy1_"):
 			self._process_strategy1_entry_only(
@@ -1490,10 +1508,27 @@ class BackTester:
 			position_kwargs = {}
 
 			if event.get("exit_strategy") == 3:
-				trailing_stop_amount, trailing_stop_source_time = (
-					self._get_anchor_atr_at_entry(state, event)
+				#trailing_stop_amount, trailing_stop_source_time = (
+					#self._get_anchor_atr_at_entry(state, event)
+				#)
+				anchor_atr, trailing_stop_source_time = (
+					self._get_anchor_atr_at_entry(
+						state,
+						event,
+					)
 				)
 
+				ATR_multiplier = float(
+					event.get(
+						"ATR_multiplier",
+						1.0,
+					)
+				)
+
+				trailing_stop_amount = (
+					anchor_atr
+					* ATR_multiplier
+				)
 				if position_side == "long":
 					trailing_stop_price = price - trailing_stop_amount
 				else:
@@ -1887,6 +1922,9 @@ class BackTester:
 			or (
 				"Backtest Overall PnL - "
 				f"{result.get('strategy_name')}"
+				f"Exit {result.get('exit_strategy')} - "
+				f"ATR {result.get('ATR_period')} × "
+				f"{result.get('ATR_multiplier')}"				
 			)
 		)
 
