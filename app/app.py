@@ -726,6 +726,11 @@ def run_backtest(
 	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
 	position_size: Optional[float] = Query(default=None, gt=0),
 	ATR_period: int = Query(default=14, ge=1),
+	exit_strategy: Optional[int] = Query(
+		default=None,
+		ge=1,
+		le=3,
+	),	
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -751,6 +756,7 @@ def run_backtest(
 			tickers=ticker_list,
 			position_size=position_size,
 			ATR_period=ATR_period,
+			exit_strategy=exit_strategy,
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -770,6 +776,11 @@ def plot_backtest(
 	),
 	position_size: Optional[float] = Query(default=None, gt=0),
 	ATR_period: int = Query(default=14, ge=1),
+	exit_strategy: Optional[int] = Query(
+		default=None,
+		ge=1,
+		le=3,
+	),	
 ):
 	"""
 	Run an isolated Redis-signal backtest and stream separate chart PNGs as a ZIP archive.
@@ -781,14 +792,17 @@ def plot_backtest(
 	Example:
 		In laptop
 
-			ssh -i ~/.ssh/my-aws-ec2-key.pem ubuntu@54.176.151.9 \
+			cd ~/Documents/GitHub/TradingMage
+			source .venv/bin/activate		
+
+			ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
 			'curl -sS --fail "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
 			> backtest_charts.zip
 
 			rm -rf backtest_charts
 			mkdir backtest_charts
 			unzip -q backtest_charts.zip -d backtest_charts
-			python show_backtest_charts.py	
+			python3 show_backtest_charts.py	
 	"""
 	try:
 		ticker_list = (
@@ -805,6 +819,7 @@ def plot_backtest(
 			tickers=ticker_list,
 			position_size=position_size,
 			ATR_period=ATR_period,
+			exit_strategy=exit_strategy,
 		)
 
 		#image_buffer = backtester_instance.plot_overall_pnl(result)
