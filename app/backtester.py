@@ -3,7 +3,7 @@ import logging
 import math
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, time, timezone, timedelta
 import pandas as pd
 from typing import Any, Optional
 
@@ -2642,6 +2642,7 @@ class BackTester:
 			"stream_id": event.get("stream_id"),
 		})
 
+
 	def _get_market_close_liquidation_times(
 		self,
 		alpaca_api,
@@ -2675,42 +2676,45 @@ class BackTester:
 			if close_value is None:
 				continue
 
-			close_text = str(
-				close_value
-			).strip()
+			if isinstance(
+				close_value,
+				time,
+			):
+				close_time = close_value
 
-			try:
-				close_time = datetime.strptime(
-					close_text,
-					"%H:%M",
-				).time()
-			except ValueError:
-				close_timestamp = pd.Timestamp(
-					close_value
-				)
-
-				if close_timestamp.tzinfo is None:
-					close_timestamp = (
-						close_timestamp.tz_localize(
-							self.tvw_helpers.eastern_tz
-						)
-					)
-				else:
-					close_timestamp = (
-						close_timestamp.tz_convert(
-							self.tvw_helpers.eastern_tz
-						)
-					)
-
-				close_dt = (
-					close_timestamp.to_pydatetime()
-				)
 			else:
-				close_dt = datetime.combine(
-					trading_date,
-					close_time,
-					tzinfo=self.tvw_helpers.eastern_tz,
-				)
+				close_text = str(
+					close_value
+				).strip()
+
+				close_time = None
+
+				for fmt in (
+					"%H:%M:%S",
+					"%H:%M",
+				):
+					try:
+						close_time = datetime.strptime(
+							close_text,
+							fmt,
+						).time()
+
+						break
+
+					except ValueError:
+						continue
+
+				if close_time is None:
+					raise ValueError(
+						"Unsupported market close value: "
+						f"{close_value!r}"
+					)
+
+			close_dt = datetime.combine(
+				trading_date,
+				close_time,
+				tzinfo=self.tvw_helpers.eastern_tz,
+			)
 
 			liquidation_dt = (
 				close_dt
@@ -2791,4 +2795,3 @@ class BackTester:
 			state,
 			liquidation_dt,
 		)
-
