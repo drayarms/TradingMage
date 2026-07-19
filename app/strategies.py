@@ -1614,7 +1614,7 @@ class Strategies:
 				return None		
 							
 			if simulation:
-				return backtester._open_or_add_position(state, event, "long", num_shares)
+				return backtester._open_or_add_position(state, event, "short", num_shares) #ACTUALLY LONG
 			else:
 				return self.place_long_order(strategy_name, timeframe, ticker, date, prices, num_shares, alpaca_api)
 
@@ -1651,7 +1651,7 @@ class Strategies:
 				return None	
 
 			if simulation:
-				return backtester._open_or_add_position(state, event, "short", num_shares)
+				return backtester._open_or_add_position(state, event, "long", num_shares) #ACTUALLY SHORT
 			else:
 				return self.place_short_order(strategy_name, timeframe, ticker, date, prices, num_shares, alpaca_api)
 
@@ -2027,6 +2027,8 @@ class Strategies:
 			return None
 
 		position_side = "long" if side == "buy" else "short"
+		if simulation:#	CONTRARIAN EXPERIMENT. DELETE LATER
+			position_side = "long" if side == "sell" else "short"
 
 		if simulation:
 			return backtester._open_or_add_position(state, event, position_side, NUM_SHARES)
