@@ -734,6 +734,13 @@ def run_backtest(
 		default=None,
 		ge=1,
 		le=3,
+	),	
+	liquidate_before_market_close: bool = Query(
+		default=False,
+		description=(
+			"Liquidate all open positions one minute "
+			"before the official market close"
+		),
 	),			
 ):
 	"""
@@ -762,6 +769,7 @@ def run_backtest(
 			ATR_period=ATR_period,
 			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
+			liquidate_before_market_close=liquidate_before_market_close,
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -789,6 +797,13 @@ def plot_backtest(
 		default=None,
 		ge=1,
 		le=3,
+	),	
+	liquidate_before_market_close: bool = Query(
+		default=False,
+		description=(
+			"Liquidate all open positions one minute "
+			"before the official market close"
+		),
 	),		
 ):
 	"""
@@ -830,6 +845,7 @@ def plot_backtest(
 			ATR_period=ATR_period,
 			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
+			liquidate_before_market_close=liquidate_before_market_close,
 		)
 
 		#image_buffer = backtester_instance.plot_overall_pnl(result)

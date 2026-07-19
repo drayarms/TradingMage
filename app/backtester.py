@@ -53,6 +53,24 @@ class SimulatedOrderPriceUnavailable(ValueError):
 	pass
 
 
+@dataclass
+class SimState:
+	"""Container for all mutable in-memory state created during one backtest run."""
+	positions: dict[str, SimPosition] = field(default_factory=dict)
+	realized_by_ticker: dict[str, float] = field(default_factory=dict)
+	last_price_by_ticker: dict[str, float] = field(default_factory=dict)
+	last_exit_time_by_ticker: dict[str, datetime] = field(default_factory=dict)
+	latest_directional: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+	latest_by_tf: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+	all_events_by_ticker_tf: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+	overall_pnl_history: list[dict[str, Any]] = field(default_factory=list)
+	ticker_pnl_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+	daily_max_exposure: dict[str, float] = field(default_factory=dict)
+	trade_events: list[dict[str, Any]] = field(default_factory=list)
+	market_data: dict[str, Any] = field(default_factory=dict)
+	market_close_liquidation_dates: set[str] = field(default_factory=set)
+
+
 class BackTester:
 	"""Run isolated in-memory backtests from TradingView signals already stored in Redis."""
 
@@ -151,6 +169,7 @@ class BackTester:
 		ATR_multiplier: float = 1.0,
 		warmup_days: int = 2,
 		exit_strategy: Optional[int] = None,
+		liquidate_before_market_close: bool = False,
 	) -> dict[str, Any]:
 		"""
 		Run a chronological simulation with an optional unreported warm-up period.
@@ -173,6 +192,13 @@ class BackTester:
 			Dictionary containing only the requested reporting window, while preserving
 			open positions and signal context created during warm-up.
 		"""
+		if not isinstance(
+			liquidate_before_market_close,
+			bool,
+		):
+			raise ValueError(
+				"liquidate_before_market_close must be a boolean"
+			)		
 		try:
 			ATR_multiplier = float(
 				ATR_multiplier
@@ -215,6 +241,7 @@ class BackTester:
 
 		config["selected_exit_strategy"] = selected_exit_strategy
 		config["ATR_multiplier"] = ATR_multiplier
+		config["liquidate_before_market_close"] = (liquidate_before_market_close)
 
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
@@ -343,10 +370,22 @@ class BackTester:
 
 		state = SimState()
 
+		market_close_liquidation_times = []
+
+		if liquidate_before_market_close:
+			market_close_liquidation_times = (
+				self._get_market_close_liquidation_times(
+					alpaca_api=alpaca_api,
+					start_dt=warmup_start_dt,
+					end_dt=end_dt,
+				)
+			)
+
 		state.market_data = {
 			"close_1m": _1min_close_prices,
 			"anchor_atr": anchor_ATR,
 			"anchor_ohlc": anchor_ohlc,
+			"market_close_liquidation_times": market_close_liquidation_times,
 		}
 
 		self.diagnostic_logging_enabled = (
@@ -396,6 +435,7 @@ class BackTester:
 			"exit_strategy": config["selected_exit_strategy"],
 			"ATR_period": ATR_period,
 			"ATR_multiplier": ATR_multiplier,
+			"liquidate_before_market_close": liquidate_before_market_close,
 			"anchor_timeframe": config["anchor_tf"],
 			"anchor_bars": anchor_ohlc,			
 			"start": start_dt.isoformat(),
@@ -534,6 +574,11 @@ class BackTester:
 					)
 
 				continue
+
+			if timeline_event["kind"] == "market_close_liquidation":
+				self._liquidate_all_positions_before_market_close(state=state, liquidation_dt=event_dt)
+
+				continue				
 
 			self._register_event_context(
 				state,
@@ -678,11 +723,35 @@ class BackTester:
 				"payload": event,
 			})
 
+		for liquidation_dt in state.market_data.get(
+			"market_close_liquidation_times",
+			[],
+		):
+			if not start_dt <= liquidation_dt <= end_dt:
+				continue
+
+			timeline.append({
+				"kind": "market_close_liquidation",
+				"dt": liquidation_dt,
+				"payload": {
+					"dt": liquidation_dt,
+					"trading_date":
+						liquidation_dt.date().isoformat(),
+				},
+			})			
+
 		return sorted(
 			timeline,
 			key=lambda row: (
 				row["dt"],
-				0 if row["kind"] == "market_bar" else 1,
+				{
+					"market_bar": 0,
+					"market_close_liquidation": 1,
+					"signal": 2,
+				}.get(
+					row["kind"],
+					3,
+				),
 				row["payload"].get("ticker", ""),
 				row["payload"].get("stream_id", ""),
 			),
@@ -722,6 +791,14 @@ class BackTester:
 					)
 
 				continue
+
+			if timeline_event["kind"] == "market_close_liquidation":
+				self._liquidate_all_positions_before_market_close(
+					state=state,
+					liquidation_dt=event_dt,
+				)
+
+				continue				
 
 			self._process_exit_strategy3_signal(
 				strategy_name,
@@ -1437,6 +1514,29 @@ class BackTester:
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> bool:
 
 		execution_dt = event["received_dt"]
+
+		execution_date = (
+			execution_dt.date().isoformat()
+		)
+
+		if (
+			execution_date
+			in state.market_close_liquidation_dates
+		):
+			if (
+				self.diagnostic_logging_enabled
+				and self.recording_enabled
+			):
+				logger.info(
+					"Simulated entry skipped after "
+					"market-close liquidation: "
+					"ticker=%s received_dt=%s",
+					event["ticker"],
+					execution_dt,
+				)
+
+			return False
+
 		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			return False
 
@@ -2559,3 +2659,154 @@ class BackTester:
 			"reason": reason,
 			"stream_id": event.get("stream_id"),
 		})
+
+def _get_market_close_liquidation_times(
+	self,
+	alpaca_api,
+	start_dt: datetime,
+	end_dt: datetime,
+) -> list[datetime]:
+	"""
+	Return one timestamp per trading day, exactly one minute before that
+	day's official market close.
+
+	This handles regular 4:00 PM closes and official early-close days.
+	"""
+	calendar_days = alpaca_api.get_calendar(
+		start=start_dt.date().isoformat(),
+		end=end_dt.date().isoformat(),
+	)
+
+	liquidation_times = []
+
+	for calendar_day in calendar_days:
+		trading_date = pd.Timestamp(
+			calendar_day.date
+		).date()
+
+		close_value = getattr(
+			calendar_day,
+			"close",
+			None,
+		)
+
+		if close_value is None:
+			continue
+
+		close_text = str(
+			close_value
+		).strip()
+
+		try:
+			close_time = datetime.strptime(
+				close_text,
+				"%H:%M",
+			).time()
+		except ValueError:
+			close_timestamp = pd.Timestamp(
+				close_value
+			)
+
+			if close_timestamp.tzinfo is None:
+				close_timestamp = (
+					close_timestamp.tz_localize(
+						self.tvw_helpers.eastern_tz
+					)
+				)
+			else:
+				close_timestamp = (
+					close_timestamp.tz_convert(
+						self.tvw_helpers.eastern_tz
+					)
+				)
+
+			close_dt = (
+				close_timestamp.to_pydatetime()
+			)
+		else:
+			close_dt = datetime.combine(
+				trading_date,
+				close_time,
+				tzinfo=self.tvw_helpers.eastern_tz,
+			)
+
+		liquidation_dt = (
+			close_dt
+			- timedelta(minutes=1)
+		)
+
+		if start_dt <= liquidation_dt <= end_dt:
+			liquidation_times.append(
+				liquidation_dt
+			)
+
+	return sorted(
+		liquidation_times
+	)
+
+
+def _liquidate_all_positions_before_market_close(
+	self,
+	state: SimState,
+	liquidation_dt: datetime,
+) -> None:
+	"""Close every open position using the latest available one-minute price."""
+	trading_date = (
+		liquidation_dt.date().isoformat()
+	)
+
+	state.market_close_liquidation_dates.add(
+		trading_date
+	)
+
+	open_tickers = list(
+		state.positions.keys()
+	)
+
+	for ticker in open_tickers:
+		position = state.positions.get(
+			ticker
+		)
+
+		if (
+			position is None
+			or position.num_shares <= 0
+		):
+			continue
+
+		market_price = (
+			state.last_price_by_ticker.get(
+				ticker
+			)
+		)
+
+		if (
+			market_price is None
+			or market_price <= 0
+		):
+			logger.warning(
+				"Unable to liquidate position before "
+				"market close because no price is available: "
+				"ticker=%s liquidation_dt=%s",
+				ticker,
+				liquidation_dt,
+			)
+			continue
+
+		self._close_position_at_market_bar(
+			state=state,
+			ticker=ticker,
+			bar_dt=liquidation_dt,
+			market_price=float(
+				market_price
+			),
+			exit_reason=(
+				"market_close_liquidation"
+			),
+		)
+
+	self._record_snapshots(
+		state,
+		liquidation_dt,
+	)
+
