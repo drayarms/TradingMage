@@ -46,30 +46,12 @@ class SimState:
 	daily_max_exposure: dict[str, float] = field(default_factory=dict)
 	trade_events: list[dict[str, Any]] = field(default_factory=list)
 	market_data: dict[str, Any] = field(default_factory=dict)
+	market_close_liquidation_dates: set[str] = field(default_factory=set)
 
 
 class SimulatedOrderPriceUnavailable(ValueError):
 	"""Raised when a simulated order has no sufficiently recent execution price."""
 	pass
-
-
-@dataclass
-class SimState:
-	"""Container for all mutable in-memory state created during one backtest run."""
-	positions: dict[str, SimPosition] = field(default_factory=dict)
-	realized_by_ticker: dict[str, float] = field(default_factory=dict)
-	last_price_by_ticker: dict[str, float] = field(default_factory=dict)
-	last_exit_time_by_ticker: dict[str, datetime] = field(default_factory=dict)
-	latest_directional: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
-	latest_by_tf: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
-	all_events_by_ticker_tf: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
-	overall_pnl_history: list[dict[str, Any]] = field(default_factory=list)
-	ticker_pnl_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-	daily_max_exposure: dict[str, float] = field(default_factory=dict)
-	trade_events: list[dict[str, Any]] = field(default_factory=list)
-	market_data: dict[str, Any] = field(default_factory=dict)
-	market_close_liquidation_dates: set[str] = field(default_factory=set)
-
 
 class BackTester:
 	"""Run isolated in-memory backtests from TradingView signals already stored in Redis."""
@@ -2660,153 +2642,153 @@ class BackTester:
 			"stream_id": event.get("stream_id"),
 		})
 
-def _get_market_close_liquidation_times(
-	self,
-	alpaca_api,
-	start_dt: datetime,
-	end_dt: datetime,
-) -> list[datetime]:
-	"""
-	Return one timestamp per trading day, exactly one minute before that
-	day's official market close.
+	def _get_market_close_liquidation_times(
+		self,
+		alpaca_api,
+		start_dt: datetime,
+		end_dt: datetime,
+	) -> list[datetime]:
+		"""
+		Return one timestamp per trading day, exactly one minute before that
+		day's official market close.
 
-	This handles regular 4:00 PM closes and official early-close days.
-	"""
-	calendar_days = alpaca_api.get_calendar(
-		start=start_dt.date().isoformat(),
-		end=end_dt.date().isoformat(),
-	)
-
-	liquidation_times = []
-
-	for calendar_day in calendar_days:
-		trading_date = pd.Timestamp(
-			calendar_day.date
-		).date()
-
-		close_value = getattr(
-			calendar_day,
-			"close",
-			None,
+		This handles regular 4:00 PM closes and official early-close days.
+		"""
+		calendar_days = alpaca_api.get_calendar(
+			start=start_dt.date().isoformat(),
+			end=end_dt.date().isoformat(),
 		)
 
-		if close_value is None:
-			continue
+		liquidation_times = []
 
-		close_text = str(
-			close_value
-		).strip()
+		for calendar_day in calendar_days:
+			trading_date = pd.Timestamp(
+				calendar_day.date
+			).date()
 
-		try:
-			close_time = datetime.strptime(
-				close_text,
-				"%H:%M",
-			).time()
-		except ValueError:
-			close_timestamp = pd.Timestamp(
-				close_value
+			close_value = getattr(
+				calendar_day,
+				"close",
+				None,
 			)
 
-			if close_timestamp.tzinfo is None:
-				close_timestamp = (
-					close_timestamp.tz_localize(
-						self.tvw_helpers.eastern_tz
+			if close_value is None:
+				continue
+
+			close_text = str(
+				close_value
+			).strip()
+
+			try:
+				close_time = datetime.strptime(
+					close_text,
+					"%H:%M",
+				).time()
+			except ValueError:
+				close_timestamp = pd.Timestamp(
+					close_value
+				)
+
+				if close_timestamp.tzinfo is None:
+					close_timestamp = (
+						close_timestamp.tz_localize(
+							self.tvw_helpers.eastern_tz
+						)
 					)
+				else:
+					close_timestamp = (
+						close_timestamp.tz_convert(
+							self.tvw_helpers.eastern_tz
+						)
+					)
+
+				close_dt = (
+					close_timestamp.to_pydatetime()
 				)
 			else:
-				close_timestamp = (
-					close_timestamp.tz_convert(
-						self.tvw_helpers.eastern_tz
-					)
+				close_dt = datetime.combine(
+					trading_date,
+					close_time,
+					tzinfo=self.tvw_helpers.eastern_tz,
 				)
 
-			close_dt = (
-				close_timestamp.to_pydatetime()
-			)
-		else:
-			close_dt = datetime.combine(
-				trading_date,
-				close_time,
-				tzinfo=self.tvw_helpers.eastern_tz,
+			liquidation_dt = (
+				close_dt
+				- timedelta(minutes=1)
 			)
 
-		liquidation_dt = (
-			close_dt
-			- timedelta(minutes=1)
+			if start_dt <= liquidation_dt <= end_dt:
+				liquidation_times.append(
+					liquidation_dt
+				)
+
+		return sorted(
+			liquidation_times
 		)
 
-		if start_dt <= liquidation_dt <= end_dt:
-			liquidation_times.append(
-				liquidation_dt
-			)
 
-	return sorted(
-		liquidation_times
-	)
-
-
-def _liquidate_all_positions_before_market_close(
-	self,
-	state: SimState,
-	liquidation_dt: datetime,
-) -> None:
-	"""Close every open position using the latest available one-minute price."""
-	trading_date = (
-		liquidation_dt.date().isoformat()
-	)
-
-	state.market_close_liquidation_dates.add(
-		trading_date
-	)
-
-	open_tickers = list(
-		state.positions.keys()
-	)
-
-	for ticker in open_tickers:
-		position = state.positions.get(
-			ticker
+	def _liquidate_all_positions_before_market_close(
+		self,
+		state: SimState,
+		liquidation_dt: datetime,
+	) -> None:
+		"""Close every open position using the latest available one-minute price."""
+		trading_date = (
+			liquidation_dt.date().isoformat()
 		)
 
-		if (
-			position is None
-			or position.num_shares <= 0
-		):
-			continue
+		state.market_close_liquidation_dates.add(
+			trading_date
+		)
 
-		market_price = (
-			state.last_price_by_ticker.get(
+		open_tickers = list(
+			state.positions.keys()
+		)
+
+		for ticker in open_tickers:
+			position = state.positions.get(
 				ticker
 			)
-		)
 
-		if (
-			market_price is None
-			or market_price <= 0
-		):
-			logger.warning(
-				"Unable to liquidate position before "
-				"market close because no price is available: "
-				"ticker=%s liquidation_dt=%s",
-				ticker,
-				liquidation_dt,
+			if (
+				position is None
+				or position.num_shares <= 0
+			):
+				continue
+
+			market_price = (
+				state.last_price_by_ticker.get(
+					ticker
+				)
 			)
-			continue
 
-		self._close_position_at_market_bar(
-			state=state,
-			ticker=ticker,
-			bar_dt=liquidation_dt,
-			market_price=float(
-				market_price
-			),
-			exit_reason=(
-				"market_close_liquidation"
-			),
+			if (
+				market_price is None
+				or market_price <= 0
+			):
+				logger.warning(
+					"Unable to liquidate position before "
+					"market close because no price is available: "
+					"ticker=%s liquidation_dt=%s",
+					ticker,
+					liquidation_dt,
+				)
+				continue
+
+			self._close_position_at_market_bar(
+				state=state,
+				ticker=ticker,
+				bar_dt=liquidation_dt,
+				market_price=float(
+					market_price
+				),
+				exit_reason=(
+					"market_close_liquidation"
+				),
+			)
+
+		self._record_snapshots(
+			state,
+			liquidation_dt,
 		)
-
-	self._record_snapshots(
-		state,
-		liquidation_dt,
-	)
 
