@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+import zipfile
 
 logger = logging.getLogger("tv-webhook")
 
@@ -827,15 +828,15 @@ class BackTester:
 			position.realized_pnl = 0.0
 
 
-	def plot_overall_pnl(
+	"""def plot_overall_pnl(
 		self,
 		result: dict[str, Any],
 		title: Optional[str] = None,
 	) -> io.BytesIO:
-		"""
+		
 		Render overall PnL followed by anchor-timeframe candlesticks for every
 		ticker that received at least one simulated entry.
-		"""
+		
 		history = result.get(
 			"overall_pnl_history"
 		) or []
@@ -974,7 +975,7 @@ class BackTester:
 
 		buf.seek(0)
 
-		return buf
+		return buf"""
 
 
 	def _get_strategy_config(self, strategy_name: str) -> dict[str, Any]:
@@ -1837,6 +1838,223 @@ class BackTester:
 			)
 
 
+	def _build_overall_pnl_image(
+		self,
+		result: dict[str, Any],
+		title: Optional[str] = None,
+	) -> io.BytesIO:
+		"""Render the overall PnL chart as one PNG image."""
+		history = result.get(
+			"overall_pnl_history"
+		) or []
+
+		if not history:
+			raise ValueError(
+				"No PnL history available to plot"
+			)
+
+		x_values = [
+			datetime.fromisoformat(
+				row["time"]
+			)
+			for row in history
+		]
+
+		y_values = [
+			float(
+				row["overall_total_pnl"]
+			)
+			for row in history
+		]
+
+		fig, ax = plt.subplots(
+			figsize=(14, 7)
+		)
+
+		ax.plot(
+			x_values,
+			y_values,
+		)
+
+		ax.axhline(
+			0,
+			linewidth=0.8,
+			alpha=0.5,
+		)
+
+		ax.set_title(
+			title
+			or (
+				"Backtest Overall PnL - "
+				f"{result.get('strategy_name')}"
+			)
+		)
+
+		ax.set_xlabel(
+			"Time"
+		)
+
+		ax.set_ylabel(
+			"Overall PnL ($)"
+		)
+
+		ax.grid(
+			True,
+			alpha=0.3,
+		)
+
+		fig.autofmt_xdate()
+		fig.tight_layout()
+
+		image_buffer = io.BytesIO()
+
+		fig.savefig(
+			image_buffer,
+			format="png",
+			dpi=120,
+			bbox_inches="tight",
+		)
+
+		plt.close(
+			fig
+		)
+
+		image_buffer.seek(0)
+
+		return image_buffer			
+
+		
+	def _build_ticker_candlestick_image(
+		self,
+		ticker: str,
+		bars: list[dict[str, Any]],
+		entries: list[dict[str, Any]],
+		anchor_timeframe: str,
+	) -> io.BytesIO:
+		"""Render one ticker's candlestick chart as one PNG image."""
+		fig, ax = plt.subplots(
+			figsize=(14, 7)
+		)
+
+		self._plot_ticker_candlesticks(
+			ax=ax,
+			ticker=ticker,
+			bars=bars,
+			entries=entries,
+			anchor_timeframe=anchor_timeframe,
+		)
+
+		fig.tight_layout()
+
+		image_buffer = io.BytesIO()
+
+		fig.savefig(
+			image_buffer,
+			format="png",
+			dpi=120,
+			bbox_inches="tight",
+		)
+
+		plt.close(
+			fig
+		)
+
+		image_buffer.seek(0)
+
+		return image_buffer
+
+
+	def build_backtest_chart_zip(
+		self,
+		result: dict[str, Any],
+		title: Optional[str] = None,
+	) -> io.BytesIO:
+		"""
+		Build a ZIP containing the overall PnL chart followed by one separate
+		candlestick PNG for each ticker that received an entry.
+		"""
+		trade_events = result.get(
+			"trade_events"
+		) or []
+
+		entry_events = [
+			event
+			for event in trade_events
+			if event.get("event_type") in {
+				"open",
+				"add",
+			}
+		]
+
+		traded_tickers = sorted({
+			event["ticker"]
+			for event in entry_events
+			if event.get("ticker")
+		})
+
+		anchor_bars = result.get(
+			"anchor_bars"
+		) or {}
+
+		anchor_timeframe = result.get(
+			"anchor_timeframe"
+		) or "anchor"
+
+		zip_buffer = io.BytesIO()
+
+		with zipfile.ZipFile(
+			zip_buffer,
+			mode="w",
+			compression=zipfile.ZIP_DEFLATED,
+		) as zip_file:
+			pnl_image = self._build_overall_pnl_image(
+				result=result,
+				title=title,
+			)
+
+			zip_file.writestr(
+				"00_overall_pnl.png",
+				pnl_image.getvalue(),
+			)
+
+			for chart_number, ticker in enumerate(
+				traded_tickers,
+				start=1,
+			):
+				ticker_entries = [
+					event
+					for event in entry_events
+					if event.get("ticker") == ticker
+				]
+
+				ticker_image = (
+					self._build_ticker_candlestick_image(
+						ticker=ticker,
+						bars=anchor_bars.get(
+							ticker,
+							[],
+						),
+						entries=ticker_entries,
+						anchor_timeframe=anchor_timeframe,
+					)
+				)
+
+				filename = (
+					f"{chart_number:02d}_"
+					f"{ticker}_"
+					f"{anchor_timeframe}_candles.png"
+				)
+
+				zip_file.writestr(
+					filename,
+					ticker_image.getvalue(),
+				)
+
+		zip_buffer.seek(0)
+
+		return zip_buffer
+
+											
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> bool:
 
 		execution_dt = event["received_dt"]
@@ -2303,3 +2521,4 @@ class BackTester:
 			"reason": reason,
 			"stream_id": event.get("stream_id"),
 		})
+plot_overall_pnl()

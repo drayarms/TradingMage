@@ -10,7 +10,12 @@ from typing import Optional
 from pydantic import BaseModel
 
 from fastapi import FastAPI, Request, HTTPException, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
+#from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
+from fastapi.responses import (
+	JSONResponse,
+	StreamingResponse,
+	PlainTextResponse,
+)
 
 import alpaca_trade_api as tradeapi
 
@@ -767,7 +772,7 @@ def plot_backtest(
 	ATR_period: int = Query(default=14, ge=1),
 ):
 	"""
-	Run an isolated Redis-signal backtest and stream the overall PnL plot as PNG.
+	Run an isolated Redis-signal backtest and stream separate chart PNGs as a ZIP archive.
 
 	The simulation is recomputed in memory for this request. It reads Redis signal
 	streams only and does not write simulated positions, trade events, PnL, or exposure
@@ -777,10 +782,13 @@ def plot_backtest(
 		In laptop
 
 			ssh -i ~/.ssh/my-aws-ec2-key.pem ubuntu@54.176.151.9 \
-			'curl -s "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
-			> backtest.png
+			'curl -sS --fail "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
+			> backtest_charts.zip
 
-			open backtest.png		
+			rm -rf backtest_charts
+			mkdir backtest_charts
+			unzip -q backtest_charts.zip -d backtest_charts
+			python show_backtest_charts.py	
 	"""
 	try:
 		ticker_list = (
@@ -799,8 +807,22 @@ def plot_backtest(
 			ATR_period=ATR_period,
 		)
 
-		image_buffer = backtester_instance.plot_overall_pnl(result)
-		return StreamingResponse(image_buffer, media_type="image/png")
+		#image_buffer = backtester_instance.plot_overall_pnl(result)
+		#return StreamingResponse(image_buffer, media_type="image/png")
+
+		zip_buffer = backtester_instance.build_backtest_chart_zip(
+			result
+		)
+
+		return StreamingResponse(
+			zip_buffer,
+			media_type="application/zip",
+			headers={
+				"Content-Disposition": (
+					'attachment; filename="backtest_charts.zip"'
+				),
+			},
+		)
 
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
