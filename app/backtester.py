@@ -2521,4 +2521,3 @@ class BackTester:
 			"reason": reason,
 			"stream_id": event.get("stream_id"),
 		})
-plot_overall_pnl()
