@@ -48,6 +48,7 @@ class SimState:
 	trade_events: list[dict[str, Any]] = field(default_factory=list)
 	market_data: dict[str, Any] = field(default_factory=dict)
 	market_close_liquidation_dates: set[str] = field(default_factory=set)
+	reporting_baselines: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class SimulatedOrderPriceUnavailable(ValueError):
@@ -472,7 +473,8 @@ class BackTester:
 				trade_event
 				for trade_event in state.trade_events
 				if trade_event.get("event_type") == "order_rejected"
-			],					
+			],	
+			"reporting_baselines": state.reporting_baselines,				
 		}
 
 	def _get_warmup_start_dt(
@@ -2899,19 +2901,104 @@ class BackTester:
 		start_dt: datetime,
 	) -> None:
 		"""
-		Set the reporting-window cost basis for positions inherited from warm-up.
+		Set the reporting-window baseline for positions inherited from warm-up.
 
-		The baseline is the latest simulated market price available immediately
-		before the requested reporting window begins.
-		"""	
+		Use the latest one-minute market bar available at or before the reporting
+		window begins rather than relying on potentially stale timeline state.
+		"""
+		target_dt = pd.Timestamp(
+			start_dt
+		).floor(
+			"min"
+		) - pd.Timedelta(
+			minutes=1
+		)
+
 		for ticker, position in state.positions.items():
-			baseline_price = state.last_price_by_ticker.get(
-				ticker
+			ticker_prices = (
+				state.market_data
+				.get(
+					"close_1m",
+					{},
+				)
+				.get(
+					ticker,
+					{},
+				)
 			)
 
-			if baseline_price is None:
+			if not ticker_prices:
+				logger.warning(
+					"Unable to establish reporting baseline: "
+					"ticker=%s start_dt=%s reason=no one-minute prices",
+					ticker,
+					start_dt,
+				)
 				continue
 
-			position.reporting_baseline_price = float(
-				baseline_price
+			baseline_dt = None
+			baseline_price = None
+
+			for timestamp, price in ticker_prices.items():
+				bar_dt = pd.Timestamp(
+					timestamp
+				)
+
+				if bar_dt.tzinfo is None:
+					bar_dt = bar_dt.tz_localize(
+						self.tvw_helpers.eastern_tz
+					)
+				else:
+					bar_dt = bar_dt.tz_convert(
+						self.tvw_helpers.eastern_tz
+					)
+
+				if bar_dt > target_dt:
+					continue
+
+				if (
+					baseline_dt is None
+					or bar_dt > baseline_dt
+				):
+					baseline_dt = bar_dt
+					baseline_price = float(
+						price
+					)
+
+			if (
+				baseline_dt is None
+				or baseline_price is None
+				or baseline_price <= 0
+			):
+				logger.warning(
+					"Unable to establish reporting baseline: "
+					"ticker=%s start_dt=%s target_dt=%s",
+					ticker,
+					start_dt,
+					target_dt,
+				)
+				continue
+
+			position.reporting_baseline_price = baseline_price
+
+			state.reporting_baselines[ticker] = {
+				"ticker": ticker,
+				"side": position.side,
+				"num_shares": position.num_shares,
+				"original_avg_price": position.avg_price_per_share,
+				"baseline_price": baseline_price,
+				"baseline_time": baseline_dt.isoformat(),
+			}			
+
+			logger.info(
+				"Reporting baseline established: "
+					"ticker=%s side=%s qty=%s original_avg=%s "
+					"baseline_price=%s baseline_dt=%s start_dt=%s",
+				ticker,
+				position.side,
+				position.num_shares,
+				position.avg_price_per_share,
+				position.reporting_baseline_price,
+				baseline_dt,
+				start_dt,
 			)
