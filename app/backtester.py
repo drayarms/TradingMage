@@ -22,6 +22,7 @@ class SimPosition:
 	avg_price_per_share: float
 	num_shares: float
 	realized_pnl: float = 0.0
+	reporting_baseline_price: Optional[float] = None
 	entry_sequence_count: int = 1
 	high_water_price: Optional[float] = None
 	low_water_price: Optional[float] = None
@@ -567,7 +568,9 @@ class BackTester:
 			record_snapshots=False,
 		)
 
-		self._reset_reporting_state(state)
+		self._set_reporting_baselines(state,start_dt)
+
+		self._reset_reporting_state(state)		
 
 		self.recording_enabled = True
 
@@ -668,6 +671,8 @@ class BackTester:
 			position_size,
 			record_snapshots=False,
 		)
+
+		self._set_reporting_baselines(state, start_dt)
 
 		self._reset_reporting_state(state)
 
@@ -1780,17 +1785,28 @@ class BackTester:
 		if position is None or position.num_shares <= 0:
 			return
 
+		pnl_cost_basis = (
+			position.reporting_baseline_price
+			if position.reporting_baseline_price is not None
+			else position.avg_price_per_share
+		)
+
 		if position.side == "long":
 			exit_side = "sell"
-			fill_price = max(0.01, float(market_price) - 0.01)
+			fill_price = max(
+				0.01,
+				float(market_price) - 0.01,
+			)
 			realized_delta = (
-				fill_price - position.avg_price_per_share
+				fill_price - pnl_cost_basis
 			) * position.num_shares
 		else:
 			exit_side = "cover"
-			fill_price = float(market_price) + 0.01
+			fill_price = float(
+				market_price
+			) + 0.01
 			realized_delta = (
-				position.avg_price_per_share - fill_price
+				pnl_cost_basis - fill_price
 			) * position.num_shares
 
 		state.realized_by_ticker[ticker] = (
@@ -2286,10 +2302,21 @@ class BackTester:
 				decision_time=(event["received_dt"].isoformat() if event.get("received_dt") else None),
 			)
 
+		pnl_cost_basis = (
+			position.reporting_baseline_price
+			if position.reporting_baseline_price is not None
+			else position.avg_price_per_share
+		)
+
 		if position.side == "long":
-			realized_delta = (price - position.avg_price_per_share) * position.num_shares
+			realized_delta = (
+				price - pnl_cost_basis
+			) * position.num_shares
 		else:
-			realized_delta = (position.avg_price_per_share - price) * position.num_shares
+			realized_delta = (
+				pnl_cost_basis - price
+			) * position.num_shares
+
 		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 		if self.recording_enabled:
 			state.trade_events.append({"time": event["time"], "ticker": ticker, "event_type": "close", "side": exit_side, "price": price, "num_shares": position.num_shares, "realized_delta": realized_delta})
@@ -2357,10 +2384,16 @@ class BackTester:
 				decision_time=(event["received_dt"].isoformat() if event.get("received_dt") else None),
 			)			
 
+		pnl_cost_basis = (
+			position.reporting_baseline_price
+			if position.reporting_baseline_price is not None
+			else position.avg_price_per_share
+		)
+
 		if position.side == "long":
-			realized_delta = (price - position.avg_price_per_share) * close_qty
+			realized_delta = (price - pnl_cost_basis) * close_qty
 		else:
-			realized_delta = (position.avg_price_per_share - price) * close_qty
+			realized_delta = (pnl_cost_basis - price) * close_qty
 
 		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 
@@ -2392,12 +2425,21 @@ class BackTester:
 			realized = state.realized_by_ticker.get(ticker, 0.0)
 			unrealized = 0.0
 			position = state.positions.get(ticker)
+
 			if position and price is not None:
 				gross_exposure += abs(position.num_shares * price)
+
+				baseline_price = (
+					position.reporting_baseline_price
+					if position.reporting_baseline_price is not None
+					else position.avg_price_per_share
+				)
+
 				if position.side == "long":
-					unrealized = (price - position.avg_price_per_share) * position.num_shares
+					unrealized = (price - baseline_price) * position.num_shares
 				else:
-					unrealized = (position.avg_price_per_share - price) * position.num_shares
+					unrealized = (baseline_price - price) * position.num_shares
+
 			total = realized + unrealized
 			overall_total += total
 			state.ticker_pnl_history.setdefault(ticker, []).append({"time": current_dt.isoformat(), "ticker": ticker, "realized_pnl": realized, "unrealized_pnl": unrealized, "total_pnl": total})
@@ -2849,4 +2891,27 @@ class BackTester:
 			state,
 			liquidation_dt,
 		)
-decision_time
+
+
+	def _set_reporting_baselines(
+		self,
+		state: SimState,
+		start_dt: datetime,
+	) -> None:
+		"""
+		Set the reporting-window cost basis for positions inherited from warm-up.
+
+		The baseline is the latest simulated market price available immediately
+		before the requested reporting window begins.
+		"""	
+		for ticker, position in state.positions.items():
+			baseline_price = state.last_price_by_ticker.get(
+				ticker
+			)
+
+			if baseline_price is None:
+				continue
+
+			position.reporting_baseline_price = float(
+				baseline_price
+			)
