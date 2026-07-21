@@ -1621,7 +1621,7 @@ class BackTester:
 				requested_qty=qty,
 				market_price=price,
 				order_id=None,
-				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				decision_time=(event["received_dt"].isoformat() if event.get("received_dt") else None),
 			)
 
 		existing = state.positions.get(ticker)
@@ -2283,7 +2283,7 @@ class BackTester:
 				requested_qty=position.num_shares,
 				market_price=price,
 				order_id=None,
-				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				decision_time=(event["received_dt"].isoformat() if event.get("received_dt") else None),
 			)
 
 		if position.side == "long":
@@ -2354,7 +2354,7 @@ class BackTester:
 				requested_qty=close_qty,
 				market_price=price,
 				order_id=None,
-				decision_time=event.get("dt").isoformat() if event.get("dt") else None,
+				decision_time=(event["received_dt"].isoformat() if event.get("received_dt") else None),
 			)			
 
 		if position.side == "long":
@@ -2849,3 +2849,4 @@ class BackTester:
 			state,
 			liquidation_dt,
 		)
+decision_time
