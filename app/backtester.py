@@ -64,6 +64,7 @@ class BackTester:
 			"lower_timeframes": {"1m"},
 			"default_position_size": 2000.0,
 			"exit_strategy": 1,
+			"warmup_sessions": 2,
 		},
 		"strategy1_1h_anchor": {
 			"entry_tf": "5m",
@@ -72,6 +73,7 @@ class BackTester:
 			"lower_timeframes": {"1m", "5m"},
 			"default_position_size": 6000.0,
 			"exit_strategy": 1,
+			"warmup_sessions": 5,
 		},
 		"strategy1_4h_anchor": {
 			"entry_tf": "15m",
@@ -80,6 +82,7 @@ class BackTester:
 			"lower_timeframes": {"1m", "5m", "15m"},
 			"default_position_size": 20000.0,
 			"exit_strategy": 1,
+			"warmup_sessions": 10,
 		},
 
 		"strategy2_15m_anchor": {
@@ -89,6 +92,7 @@ class BackTester:
 			"lower_timeframes": {"1m"},
 			"default_position_size": 2000.0,
 			"exit_strategy": 2,
+			"warmup_sessions": 2,
 		},
 		"strategy2_1h_anchor": {
 			"entry_tf": "5m",
@@ -97,6 +101,7 @@ class BackTester:
 			"lower_timeframes": {"1m", "5m"},
 			"default_position_size": 6000.0,
 			"exit_strategy": 2,
+			"warmup_sessions": 5,
 		},
 		"strategy2_4h_anchor": {
 			"entry_tf": "15m",
@@ -105,6 +110,7 @@ class BackTester:
 			"lower_timeframes": {"1m", "5m", "15m"},
 			"default_position_size": 20000.0,
 			"exit_strategy": 2,
+			"warmup_sessions": 10,
 		},		
 	}
 	TIMEFRAME_ORDER = {
@@ -149,7 +155,8 @@ class BackTester:
 		position_size: Optional[float] = None,
 		ATR_period: int = 14,
 		ATR_multiplier: float = 1.0,
-		warmup_days: int = 2,
+		#warmup_days: int = 2,
+		warmup_sessions: Optional[int] = None,
 		exit_strategy: Optional[int] = None,
 		liquidate_before_market_close: bool = False,
 	) -> dict[str, Any]:
@@ -167,7 +174,8 @@ class BackTester:
 			end: Inclusive reporting end datetime. Naive datetimes are Eastern Time.
 			tickers: Optional list of ticker symbols. If omitted, discover from Redis.
 			position_size: Optional dollar notional used to size the first entry signal.
-			warmup_days: Calendar days to simulate before ``start``. Defaults to 2.
+			warmup_sessions: Number of prior market sessions to simulate before start. 
+							 If omitted, the strategy-specific configured value is used.
 			exit_strategy: Optional override for the strategy config. Must be 1, 2, or 3.
 
 		Returns:
@@ -231,18 +239,33 @@ class BackTester:
 		if start_dt > end_dt:
 			raise ValueError("start must be <= end")
 
-		try:
-			warmup_days = int(warmup_days)
-		except Exception as exc:
-			raise ValueError("warmup_days must be an integer") from exc
+		if warmup_sessions is None:
+			warmup_sessions = int(
+				config["warmup_sessions"]
+			)
+		else:
+			try:
+				warmup_sessions = int(
+					warmup_sessions
+				)
+			except (TypeError, ValueError) as exc:
+				raise ValueError(
+					"warmup_sessions must be an integer"
+				) from exc
 
-		if warmup_days < 0:
-			raise ValueError("warmup_days must be >= 0")
+		if warmup_sessions < 0:
+			raise ValueError(
+				"warmup_sessions must be >= 0"
+			)	
 
+		if warmup_sessions == 0:
+			warmup_start_dt = start_dt
+		else:
+			warmup_start_dt = self._get_warmup_start_dt(alpaca_api=alpaca_api, start_dt=start_dt, warmup_sessions=warmup_sessions)	
 
-		warmup_start_dt = start_dt - timedelta(days=warmup_days)
 
 		timeframes = self._strategy_timeframes(config)
+		
 		discovered_symbols = (
 			self._normalize_tickers(tickers)
 			or self._discover_tickers(timeframes)
@@ -423,7 +446,8 @@ class BackTester:
 			"start": start_dt.isoformat(),
 			"end": end_dt.isoformat(),
 			"warmup_start": warmup_start_dt.isoformat(),
-			"warmup_days": warmup_days,
+			#"warmup_days": warmup_days,
+			"warmup_sessions": warmup_sessions,
 			"tickers": symbols,
 			"warmup_signal_count": len(warmup_events),
 			"signal_count": len(report_events),
@@ -449,6 +473,36 @@ class BackTester:
 				if trade_event.get("event_type") == "order_rejected"
 			],					
 		}
+
+	def _get_warmup_start_dt(
+		self,
+		alpaca_api,
+		start_dt: datetime,
+		warmup_sessions: int,
+	) -> datetime:
+		calendars = alpaca_api.get_calendar(
+			start=(start_dt - timedelta(days=60)).date().isoformat(),
+			end=start_dt.date().isoformat(),
+		)
+
+		previous_sessions = [
+			session
+			for session in calendars
+			if pd.Timestamp(session.date).date() < start_dt.date()
+		]
+
+		if len(previous_sessions) < warmup_sessions:
+			raise ValueError(
+				"Insufficient market-calendar history for warm-up"
+			)
+
+		first_session = previous_sessions[-warmup_sessions]
+
+		return datetime.combine(
+			pd.Timestamp(first_session.date).date(),
+			time(hour=4),
+			tzinfo=self.tvw_helpers.eastern_tz,
+		)
 
 	def _process_event(
 		self,
