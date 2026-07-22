@@ -161,6 +161,7 @@ class BackTester:
 		warmup_sessions: Optional[int] = None,
 		exit_strategy: Optional[int] = None,
 		liquidate_before_market_close: bool = False,
+		run_exit_strategy: bool = True,
 	) -> dict[str, Any]:
 		"""
 		Run a chronological simulation with an optional unreported warm-up period.
@@ -185,12 +186,20 @@ class BackTester:
 			open positions and signal context created during warm-up.
 		"""
 		if not isinstance(
+			run_exit_strategy,
+			bool,
+		):
+			raise ValueError(
+				"run_exit_strategy must be a boolean"
+			)
+
+		if not isinstance(
 			liquidate_before_market_close,
 			bool,
 		):
 			raise ValueError(
 				"liquidate_before_market_close must be a boolean"
-			)		
+			)				
 		try:
 			ATR_multiplier = float(
 				ATR_multiplier
@@ -233,7 +242,9 @@ class BackTester:
 
 		config["selected_exit_strategy"] = selected_exit_strategy
 		config["ATR_multiplier"] = ATR_multiplier
-		config["liquidate_before_market_close"] = (liquidate_before_market_close)
+		config["liquidate_before_market_close"] = (liquidate_before_market_close  and run_exit_strategy)
+		config["run_exit_strategy"] = run_exit_strategy
+		config["entry_validation_only"] = not run_exit_strategy		
 
 		start_dt = self._parse_input_dt(start)
 		end_dt = self._parse_input_dt(end)
@@ -379,7 +390,8 @@ class BackTester:
 
 		market_close_liquidation_times = []
 
-		if liquidate_before_market_close:
+		#if liquidate_before_market_close:
+		if config["liquidate_before_market_close"]:
 			market_close_liquidation_times = (
 				self._get_market_close_liquidation_times(
 					alpaca_api=alpaca_api,
@@ -410,7 +422,8 @@ class BackTester:
 		warmup_events = [event for event in all_events if event["received_dt"] < start_dt]
 		report_events = [event for event in all_events if event["received_dt"] >= start_dt]
 
-		if config["selected_exit_strategy"] == 3:
+		#if config["selected_exit_strategy"] == 3:
+		if (config["run_exit_strategy"] and config["selected_exit_strategy"] == 3):		
 			self._run_price_tracked_backtest(
 				strategy_name,
 				state,
@@ -442,7 +455,22 @@ class BackTester:
 			"exit_strategy": config["selected_exit_strategy"],
 			"ATR_period": ATR_period,
 			"ATR_multiplier": ATR_multiplier,
-			"liquidate_before_market_close": liquidate_before_market_close,
+			"liquidate_before_market_close": (
+				config["liquidate_before_market_close"]
+			),
+			"run_exit_strategy": run_exit_strategy,
+			"entry_validation_only": config["entry_validation_only"],
+			"entry_condition_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("event_type") == "entry_condition"
+			),	
+			"trade_attempt_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("event_type")
+				!= "entry_condition"
+			),					
 			"anchor_timeframe": config["anchor_tf"],
 			"anchor_bars": anchor_ohlc,			
 			"start": start_dt.isoformat(),
@@ -456,9 +484,12 @@ class BackTester:
 			"trade_count": sum(
 				1
 				for trade_event in state.trade_events
-				if trade_event.get("event_type") != "order_rejected"
+				if trade_event.get("event_type")
+				not in {
+					"order_rejected",
+					"entry_condition",
+				}
 			),
-			"trade_attempt_count": len(state.trade_events),
 			"overall_pnl_history": state.overall_pnl_history,
 			"ticker_pnl_history": state.ticker_pnl_history,
 			"daily_max_open_exposure": self._daily_exposure_rows(state.daily_max_exposure),
@@ -966,156 +997,6 @@ class BackTester:
 			position.realized_pnl = 0.0
 
 
-	"""def plot_overall_pnl(
-		self,
-		result: dict[str, Any],
-		title: Optional[str] = None,
-	) -> io.BytesIO:
-		
-		Render overall PnL followed by anchor-timeframe candlesticks for every
-		ticker that received at least one simulated entry.
-		
-		history = result.get(
-			"overall_pnl_history"
-		) or []
-
-		if not history:
-			raise ValueError(
-				"No PnL history available to plot"
-			)
-
-		trade_events = result.get(
-			"trade_events"
-		) or []
-
-		entry_events = [
-			event
-			for event in trade_events
-			if event.get("event_type") in {
-				"open",
-				"add",
-			}
-		]
-
-		traded_tickers = sorted({
-			event["ticker"]
-			for event in entry_events
-			if event.get("ticker")
-		})
-
-		anchor_bars = result.get(
-			"anchor_bars"
-		) or {}
-
-		anchor_timeframe = result.get(
-			"anchor_timeframe"
-		) or "anchor"
-
-		chart_count = 1 + len(
-			traded_tickers
-		)
-
-		figure_height = (
-			5
-			+ 4 * len(traded_tickers)
-		)
-
-		fig, axes = plt.subplots(
-			nrows=chart_count,
-			ncols=1,
-			figsize=(
-				14,
-				figure_height,
-			),
-			squeeze=False,
-		)
-
-		axes = axes.flatten()
-
-		pnl_ax = axes[0]
-
-		x_values = [
-			datetime.fromisoformat(
-				row["time"]
-			)
-			for row in history
-		]
-		y_values = [
-			float(
-				row["overall_total_pnl"]
-			)
-			for row in history
-		]
-
-		pnl_ax.plot(
-			x_values,
-			y_values,
-		)
-		pnl_ax.axhline(
-			0,
-			linewidth=0.8,
-			alpha=0.5,
-		)
-		pnl_ax.set_title(
-			title
-			or (
-				"Backtest Overall PnL - "
-				f"{result.get('strategy_name')}"
-			)
-		)
-		pnl_ax.set_xlabel(
-			"Time"
-		)
-		pnl_ax.set_ylabel(
-			"Overall PnL ($)"
-		)
-		pnl_ax.grid(
-			True,
-			alpha=0.3,
-		)
-
-		for chart_index, ticker in enumerate(
-			traded_tickers,
-			start=1,
-		):
-			ticker_entries = [
-				event
-				for event in entry_events
-				if event.get("ticker") == ticker
-			]
-
-			self._plot_ticker_candlesticks(
-				ax=axes[chart_index],
-				ticker=ticker,
-				bars=anchor_bars.get(
-					ticker,
-					[],
-				),
-				entries=ticker_entries,
-				anchor_timeframe=anchor_timeframe,
-			)
-
-		fig.autofmt_xdate()
-		fig.tight_layout()
-
-		buf = io.BytesIO()
-
-		fig.savefig(
-			buf,
-			format="png",
-			dpi=120,
-			bbox_inches="tight",
-		)
-
-		plt.close(
-			fig
-		)
-
-		buf.seek(0)
-
-		return buf"""
-
-
 	def _get_strategy_config(self, strategy_name: str) -> dict[str, Any]:
 		"""Return a normalized strategy configuration or raise ValueError if unknown."""
 		name = str(strategy_name or "").strip()
@@ -1303,23 +1184,65 @@ class BackTester:
 		num_shares = position_size / market_price
 		event["exit_strategy"] = config["selected_exit_strategy"]
 		event["anchor_tf"] = config["anchor_tf"]
+		event["entry_validation_only"] = config["entry_validation_only"]
 
-		if config["selected_exit_strategy"] == 1:
-			self.strategies_instance.exit_strategy1(
-				strategy_name, config["lower_timeframes"], config["intermediary_tf"],
-				config["anchor_tf"], True, now_et, signal, None, symbol, tf, None,
-				state, config, event, market_price, self,
-			)
-		elif config["selected_exit_strategy"] == 2:
-			self.strategies_instance.exit_strategy2(
-				strategy_name, config["entry_tf"], True, now_et, signal, None,
-				symbol, tf, None, state, config, event, market_price, self,
-			)
+		if config["run_exit_strategy"]:
+			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == 2:
+				self.strategies_instance.exit_strategy2(
+					strategy_name,
+					config["entry_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
 
 		self.strategies_instance.entry_strategy1(
-			strategy_name, config["entry_tf"], config["intermediary_tf"],
-			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
-			num_shares, None, state, config, event, market_price, self,
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			num_shares,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
 		)
 
 	def _process_strategy2_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
@@ -1332,23 +1255,64 @@ class BackTester:
 		num_shares = position_size / market_price
 		event["exit_strategy"] = config["selected_exit_strategy"]
 		event["anchor_tf"] = config["anchor_tf"]
+		event["entry_validation_only"] = config["entry_validation_only"]
 
-		if config["selected_exit_strategy"] == 1:
-			self.strategies_instance.exit_strategy1(
-				strategy_name, config["lower_timeframes"], config["intermediary_tf"],
-				config["anchor_tf"], True, now_et, signal, None, symbol, tf, None,
-				state, config, event, market_price, self,
-			)
-		elif config["selected_exit_strategy"] == 2:
-			self.strategies_instance.exit_strategy2(
-				strategy_name, config["entry_tf"], True, now_et, signal, None,
-				symbol, tf, None, state, config, event, market_price, self,
-			)
+		if config["run_exit_strategy"]:
+			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == 2:
+				self.strategies_instance.exit_strategy2(
+					strategy_name,
+					config["entry_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
 
 		self.strategies_instance.entry_strategy2(
-			strategy_name, config["entry_tf"], config["intermediary_tf"],
-			True, now_et, signal, None, symbol, tf, num_shares, None, state,
-			config, event, market_price, self,
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			num_shares,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
 		)
 
 
@@ -1554,9 +1518,88 @@ class BackTester:
 
 		return closest_atr, closest_source_dt.to_pydatetime()
 
+
+	def _record_valid_entry_condition(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+		position_side: str,
+		qty: float,
+	) -> bool:
+		"""
+		Record a valid entry condition without creating or changing
+		a simulated position.
+		"""
+		try:
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+		except SimulatedOrderPriceUnavailable as exc:
+			logger.warning(
+				"Validated entry condition has no fresh execution price: "
+				"ticker=%s side=%s qty=%s received_dt=%s reason=%s",
+				event["ticker"],
+				position_side,
+				qty,
+				event["received_dt"],
+				exc,
+			)
+
+			if self.recording_enabled:
+				self._record_rejected_order(
+					state=state,
+					event=event,
+					order_type="entry_condition",
+					side=position_side,
+					qty=qty,
+					reason=str(exc),
+				)
+
+			return False
+
+		order_side = (
+			"buy"
+			if position_side == "long"
+			else "short"
+		)
+
+		price = self._get_execution_price(
+			quote,
+			order_side,
+		)
+
+		if self.recording_enabled:
+			state.trade_events.append({
+				"time": event["received_dt"].isoformat(),
+				"signal_time": event["time"],
+				"ticker": event["ticker"],
+				"event_type": "entry_condition",
+				"side": position_side,
+				"price": price,
+				"num_shares": qty,
+				"realized_delta": 0.0,
+			})
+
+		return True
+
+
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> bool:
 
 		execution_dt = event["received_dt"]
+
+		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(
+			execution_dt
+		):
+			return False
+
+		if event.get("entry_validation_only"):
+			return self._record_valid_entry_condition(
+				state=state,
+				event=event,
+				position_side=position_side,
+				qty=qty,
+			)
 
 		execution_date = (
 			execution_dt.date().isoformat()
@@ -1578,9 +1621,6 @@ class BackTester:
 					execution_dt,
 				)
 
-			return False
-
-		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			return False
 
 		"""Open a new position or add to an existing same-side position in memory."""
@@ -2162,8 +2202,8 @@ class BackTester:
 		title: Optional[str] = None,
 	) -> io.BytesIO:
 		"""
-		Build a ZIP containing the overall PnL chart followed by one separate
-		candlestick PNG for each ticker that received an entry.
+		Build a ZIP containing an optional overall PnL chart followed by one
+		candlestick PNG for each ticker with an entry or validated entry condition.
 		"""
 		trade_events = result.get(
 			"trade_events"
@@ -2175,6 +2215,7 @@ class BackTester:
 			if event.get("event_type") in {
 				"open",
 				"add",
+				"entry_condition",
 			}
 		]
 
@@ -2199,15 +2240,20 @@ class BackTester:
 			mode="w",
 			compression=zipfile.ZIP_DEFLATED,
 		) as zip_file:
-			pnl_image = self._build_overall_pnl_image(
-				result=result,
-				title=title,
-			)
+			history = result.get(
+				"overall_pnl_history"
+			) or []
 
-			zip_file.writestr(
-				"00_overall_pnl.png",
-				pnl_image.getvalue(),
-			)
+			if history:
+				pnl_image = self._build_overall_pnl_image(
+					result=result,
+					title=title,
+				)
+
+				zip_file.writestr(
+					"00_overall_pnl.png",
+					pnl_image.getvalue(),
+				)
 
 			for chart_number, ticker in enumerate(
 				traded_tickers,
@@ -3002,3 +3048,60 @@ class BackTester:
 				baseline_dt,
 				start_dt,
 			)
+
+
+	def _record_valid_entry_condition(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+		position_side: str,
+		qty: float,
+	) -> bool:
+		"""
+		Record a valid entry condition without opening, adding to,
+		reversing, or closing a simulated position.
+		"""
+		if not self.recording_enabled:
+			return True
+
+		try:
+			quote = self._get_simulated_quote(
+				state,
+				event,
+			)
+
+		except SimulatedOrderPriceUnavailable as exc:
+			logger.warning(
+				"Validated entry condition has no fresh marker price: "
+				"ticker=%s side=%s received_dt=%s reason=%s",
+				event["ticker"],
+				position_side,
+				event["received_dt"],
+				exc,
+			)
+
+			return False
+
+		order_side = (
+			"buy"
+			if position_side == "long"
+			else "short"
+		)
+
+		price = self._get_execution_price(
+			quote,
+			order_side,
+		)
+
+		state.trade_events.append({
+			"time": event["received_dt"].isoformat(),
+			"signal_time": event["time"],
+			"ticker": event["ticker"],
+			"event_type": "entry_condition",
+			"side": position_side,
+			"price": price,
+			"num_shares": qty,
+			"realized_delta": 0.0,
+		})
+
+		return True

@@ -741,7 +741,15 @@ def run_backtest(
 			"Liquidate all open positions one minute "
 			"before the official market close"
 		),
-	),			
+	),
+	run_exit_strategy: bool = Query(
+		default=True,
+		description=(
+			"Run the configured exit strategy. When false, "
+			"only validate and record entry conditions without "
+			"opening or modifying simulated positions."
+		),
+	),				
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -770,6 +778,7 @@ def run_backtest(
 			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
+			run_exit_strategy=run_exit_strategy,
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -803,6 +812,14 @@ def plot_backtest(
 		description=(
 			"Liquidate all open positions one minute "
 			"before the official market close"
+		),
+	),	
+	run_exit_strategy: bool = Query(
+		default=True,
+		description=(
+			"Run the configured exit strategy. When false, "
+			"only validate and record entry conditions without "
+			"opening or modifying simulated positions."
 		),
 	),		
 ):
@@ -846,6 +863,7 @@ def plot_backtest(
 			ATR_multiplier=ATR_multiplier,
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
+			run_exit_strategy=run_exit_strategy,
 		)
 
 		#image_buffer = backtester_instance.plot_overall_pnl(result)
