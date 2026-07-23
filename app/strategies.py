@@ -1479,6 +1479,390 @@ class Strategies:
 		return order.get(tf, -1)
 
 
+	def _get_strategy4_anchor_alerts(
+		self,
+		ticker,
+		anchor_tf,
+		simulation,
+		backtester,
+		state,
+		max_scan=500,
+	):
+		"""
+		Return recent anchor-timeframe alerts in reverse chronological order.
+
+		The newest alert is returned first. In live mode, alerts are read from the
+		ticker's Redis stream. In simulation mode, alerts are read only from events
+		that have already been processed by the current BackTester run.
+
+		Parameters:
+			ticker (str):
+				Ticker symbol whose anchor alerts should be retrieved.
+
+			anchor_tf (str):
+				Anchor timeframe used by Strategy 4.
+
+			simulation (bool):
+				True when running through BackTester and False during live execution.
+
+			backtester (BackTester | None):
+				BackTester instance used to access simulated alert history.
+
+			state (SimState | None):
+				Current in-memory simulation state.
+
+			max_scan (int):
+				Maximum number of recent anchor alerts to return.
+
+		Returns:
+			list[tuple]:
+				A newest-to-oldest list of tuples containing:
+					(stream_id, alert_fields)
+		"""
+		sym = str(
+			ticker
+			or ""
+		).upper().strip()
+
+		tf = self.tvw_helpers.normalize_tf(
+			anchor_tf
+		)
+
+		if not sym or not tf:
+			return []
+
+		if simulation:
+			events = state.all_events_by_ticker_tf.get(
+				(
+					sym,
+					tf,
+				),
+				[],
+			)
+
+			return [
+				(
+					item["stream_id"],
+					item["raw_fields"],
+				)
+				for item in reversed(
+					events[-max_scan:]
+				)
+			]
+
+		stream_key = self.tvw_helpers.stream_key(
+			tf,
+			sym,
+		)
+
+		try:
+			return self.r.xrevrange(
+				stream_key,
+				count=max_scan,
+			)
+		except Exception:
+			logger.exception(
+				"Strategy 4 failed reading anchor alerts: "
+				"ticker=%r anchor_tf=%r",
+				sym,
+				tf,
+			)
+			return []
+
+
+	def _is_strategy4_confirmation(
+		self,
+		fields,
+		expected_side,
+	):
+		"""
+		Return whether an alert is a confirmation signal of the requested side.
+
+		Normalized buy and buy-plus alerts are treated as buy. Normalized sell and
+		sell-plus alerts are treated as sell. Alerts whose signal role is not
+		confirmation are rejected.
+
+		Parameters:
+			fields (dict):
+				Raw TradingView alert fields.
+
+			expected_side (str):
+				Required normalized confirmation side: buy or sell.
+
+		Returns:
+			bool:
+				True when the alert is a confirmation alert matching the requested
+				normalized side.
+		"""
+		if not self.is_confirmation_signal(
+			fields
+		):
+			return False
+
+		return (
+			self.tvw_helpers.normalize_signal(
+				fields.get(
+					"signal"
+				)
+			)
+			== expected_side
+		)
+
+
+	def _strategy4_trend_entry_is_valid(
+		self,
+		alerts,
+		entry_side,
+	):
+		"""
+		Determine whether the current confirmation qualifies as a trend entry.
+
+		Long trend entry:
+			- The current alert is a confirmation buy.
+			- A prior bullish_exit exists.
+			- No bearish_exit occurred between that bullish_exit and the current
+			  confirmation buy.
+
+		Short trend entry:
+			- The current alert is a confirmation sell.
+			- A prior bearish_exit exists.
+			- No bullish_exit occurred between that bearish_exit and the current
+			  confirmation sell.
+
+		The first item in alerts is expected to be the current alert and is therefore
+		excluded from the historical scan.
+
+		Parameters:
+			alerts (list[tuple]):
+				Anchor alerts ordered newest to oldest.
+
+			entry_side (str):
+				Requested position side: long or short.
+
+		Returns:
+			bool:
+				True when the trend-entry condition is satisfied.
+		"""
+		if entry_side == "long":
+			required_previous_exit = "bullish_exit"
+			invalidating_exit = "bearish_exit"
+		elif entry_side == "short":
+			required_previous_exit = "bearish_exit"
+			invalidating_exit = "bullish_exit"
+		else:
+			return False
+
+		for _, fields in alerts[1:]:
+			historical_signal = str(
+				fields.get(
+					"signal"
+				)
+				or ""
+			).strip().lower()
+
+			if historical_signal == invalidating_exit:
+				return False
+
+			if historical_signal == required_previous_exit:
+				return True
+
+		return False
+
+
+	def _strategy4_range_entry_is_valid(
+		self,
+		alerts,
+		entry_side,
+	):
+		"""
+		Determine whether the current exit signal qualifies as a range entry.
+
+		Short range entry:
+			- The current alert is bullish_exit.
+			- Locate the most recent earlier confirmation sell.
+			- Exactly one bearish_exit must exist between that confirmation sell
+			  and the current bullish_exit.
+			- Consequently, the second-most-recent bearish_exit, when one exists,
+			  must precede that confirmation sell.
+
+		Long range entry:
+			- The current alert is bearish_exit.
+			- Locate the most recent earlier confirmation buy.
+			- Exactly one bullish_exit must exist between that confirmation buy
+			  and the current bearish_exit.
+			- Consequently, the second-most-recent bullish_exit, when one exists,
+			  must precede that confirmation buy.
+
+		The first item in alerts is expected to be the current exit alert and is
+		excluded from the historical scan.
+
+		Parameters:
+			alerts (list[tuple]):
+				Anchor alerts ordered newest to oldest.
+
+			entry_side (str):
+				Requested position side: long or short.
+
+		Returns:
+			bool:
+				True when exactly one required exit exists after the relevant
+				confirmation alert.
+		"""
+		if entry_side == "short":
+			confirmation_side = "sell"
+			required_exit = "bearish_exit"
+		elif entry_side == "long":
+			confirmation_side = "buy"
+			required_exit = "bullish_exit"
+		else:
+			return False
+
+		matching_exit_count = 0
+
+		for _, fields in alerts[1:]:
+			historical_signal = str(
+				fields.get(
+					"signal"
+				)
+				or ""
+			).strip().lower()
+
+			if historical_signal == required_exit:
+				matching_exit_count += 1
+
+				if matching_exit_count > 1:
+					return False
+
+			if self._is_strategy4_confirmation(
+				fields,
+				confirmation_side,
+			):
+				return matching_exit_count == 1
+
+		return False
+
+
+
+	def _get_strategy4_entry_side(
+		self,
+		ticker,
+		anchor_tf,
+		signal,
+		simulation,
+		backtester,
+		state,
+	):
+		"""
+		Return the Strategy 4 position side triggered by the current anchor alert.
+
+		Confirmation buy and sell alerts are evaluated using the trend-entry rules.
+		Bearish and bullish exit alerts are evaluated using the range-entry rules.
+
+		Parameters:
+			ticker (str):
+				Ticker being evaluated.
+
+			anchor_tf (str):
+				Strategy 4 anchor timeframe.
+
+			signal (str):
+				Current TradingView signal.
+
+			simulation (bool):
+				True during a backtest and False during live execution.
+
+			backtester (BackTester | None):
+				BackTester instance used in simulation mode.
+
+			state (SimState | None):
+				In-memory simulation state.
+
+		Returns:
+			str | None:
+				long, short, or None when no Strategy 4 entry is triggered.
+		"""
+		alerts = self._get_strategy4_anchor_alerts(
+			ticker=ticker,
+			anchor_tf=anchor_tf,
+			simulation=simulation,
+			backtester=backtester,
+			state=state,
+			max_scan=500,
+		)
+
+		if not alerts:
+			return None
+
+		_, current_fields = alerts[0]
+
+		current_signal = str(
+			signal
+			or ""
+		).strip().lower()
+
+		stored_current_signal = str(
+			current_fields.get(
+				"signal"
+			)
+			or ""
+		).strip().lower()
+
+		if current_signal != stored_current_signal:
+			return None
+
+		normalized_side = self.tvw_helpers.normalize_signal(
+			current_signal
+		)
+
+		if (
+			normalized_side == "buy"
+			and self._is_strategy4_confirmation(
+				current_fields,
+				"buy",
+			)
+		):
+			if self._strategy4_trend_entry_is_valid(
+				alerts,
+				"long",
+			):
+				return "long"
+
+			return None
+
+		if (
+			normalized_side == "sell"
+			and self._is_strategy4_confirmation(
+				current_fields,
+				"sell",
+			)
+		):
+			if self._strategy4_trend_entry_is_valid(
+				alerts,
+				"short",
+			):
+				return "short"
+
+			return None
+
+		if current_signal == "bullish_exit":
+			if self._strategy4_range_entry_is_valid(
+				alerts,
+				"short",
+			):
+				return "short"
+
+			return None
+
+		if current_signal == "bearish_exit":
+			if self._strategy4_range_entry_is_valid(
+				alerts,
+				"long",
+			):
+				return "long"
+
+		return None
+
+											
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
 		"""
 		Strategy relies on latest signals of three different timeframes; an anchor timeframe (highest timeframe), an entry timeframe (lowerst timeframe)
@@ -2182,7 +2566,190 @@ class Strategies:
 		)
 
 
+	def entry_strategy4(
+		self,
+		strategy_name,
+		anchor_tf,
+		simulation,
+		date,
+		signal,
+		prices,
+		ticker,
+		timeframe,
+		NUM_SHARES,
+		alpaca_api,
+		state,
+		config,
+		event,
+		price,
+		backtester,
+	):
+		"""
+		Execute a Strategy 4 anchor-timeframe entry.
 
+		Strategy 4 has two entry modes:
+
+			Trend:
+				A confirmation buy may enter long and a confirmation sell may enter
+				short when the corresponding trend rules are satisfied.
+
+			Range:
+				A bullish_exit may enter short and a bearish_exit may enter long when
+				exactly one matching opposite exit occurred after the relevant most
+				recent confirmation signal.
+
+		Only alerts from the configured anchor timeframe are eligible.
+
+		Parameters:
+			strategy_name (str):
+				Strategy configuration name.
+
+			anchor_tf (str):
+				Required anchor timeframe.
+
+			simulation (bool):
+				True during a backtest and False during live execution.
+
+			date (datetime):
+				Strategy decision time.
+
+			signal (str):
+				Current TradingView signal.
+
+			prices (dict | None):
+				Current live market-price dictionary.
+
+			ticker (str):
+				Ticker being evaluated.
+
+			timeframe (str):
+				Timeframe of the current signal.
+
+			NUM_SHARES (float):
+				Requested number of shares.
+
+			alpaca_api:
+				Alpaca client used during live execution.
+
+			state:
+				BackTester simulation state.
+
+			config (dict | None):
+				Backtest strategy configuration.
+
+			event (dict | None):
+				Current simulated event.
+
+			price (float | None):
+				Current simulated market price.
+
+			backtester:
+				BackTester instance used during simulation.
+
+		Returns:
+			Any:
+				Result returned by the simulated position function or live order
+				function. Returns None when no entry qualifies.
+		"""
+		tf = self.tvw_helpers.normalize_tf(
+			timeframe
+		)
+
+		anchor_tf_norm = self.tvw_helpers.normalize_tf(
+			anchor_tf
+		)
+
+		if tf != anchor_tf_norm:
+			return None
+
+		entry_side = self._get_strategy4_entry_side(
+			ticker=ticker,
+			anchor_tf=anchor_tf_norm,
+			signal=signal,
+			simulation=simulation,
+			backtester=backtester,
+			state=state,
+		)
+
+		if entry_side is None:
+			return None
+
+		logger.info(
+			"Strategy 4 entry qualified: "
+			"strategy=%r ticker=%r timeframe=%r signal=%r "
+			"entry_side=%r simulation=%r",
+			strategy_name,
+			ticker,
+			tf,
+			signal,
+			entry_side,
+			simulation,
+		)
+
+		if simulation:
+			return backtester._open_or_add_position(
+				state,
+				event,
+				entry_side,
+				NUM_SHARES,
+			)
+
+		if entry_side == "long":
+			return self.place_long_order(
+				strategy_name,
+				timeframe,
+				ticker,
+				date,
+				prices,
+				NUM_SHARES,
+				alpaca_api,
+			)
+
+		return self.place_short_order(
+			strategy_name,
+			timeframe,
+			ticker,
+			date,
+			prices,
+			NUM_SHARES,
+			alpaca_api,
+		)
+
+
+	def exit_strategy4(
+		self,
+		strategy_name,
+		anchor_tf,
+		simulation,
+		date,
+		signal,
+		prices,
+		ticker,
+		timeframe,
+		alpaca_api,
+		state,
+		config,
+		event,
+		price,
+		backtester,
+	):
+		"""
+		Placeholder for Strategy 4 exit logic.
+
+		Strategy 4 does not currently have a defined exit methodology. This function
+		intentionally performs no position inspection, order submission, position
+		modification, or simulation bookkeeping.
+
+		The function exists so Strategy 4 follows the same dispatcher and execution
+		structure as Strategies 1 and 2. Its implementation can later be replaced
+		without changing app.py or BackTester dispatch.
+
+		Returns:
+			None
+		"""
+		return None
+
+		
 	def place_order(
 		self,
 		strategy_name,

@@ -71,6 +71,20 @@ APCA_API_BASE_URL_STG2_4H = os.environ["APCA_API_BASE_URL_STG2_4H"]
 APCA_API_KEY_ID_STG2_4H = os.environ["APCA_API_KEY_ID_STG2_4H"]
 APCA_API_SECRET_KEY_STG2_4H = os.environ["APCA_API_SECRET_KEY_STG2_4H"]
 
+""" DO!
+APCA_API_BASE_URL_STG4_15M = os.environ["APCA_API_BASE_URL_STG4_15M"]
+APCA_API_KEY_ID_STG4_15M = os.environ["APCA_API_KEY_ID_STG4_15M"]
+APCA_API_SECRET_KEY_STG4_15M = os.environ["APCA_API_SECRET_KEY_STG4_15M"]
+
+APCA_API_BASE_URL_STG4_1H = os.environ["APCA_API_BASE_URL_STG4_1H"]
+APCA_API_KEY_ID_STG4_1H = os.environ["APCA_API_KEY_ID_STG4_1H"]
+APCA_API_SECRET_KEY_STG4_1H = os.environ["APCA_API_SECRET_KEY_STG4_1H"]
+
+APCA_API_BASE_URL_STG4_4H = os.environ["APCA_API_BASE_URL_STG4_4H"]
+APCA_API_KEY_ID_STG4_4H = os.environ["APCA_API_KEY_ID_STG4_4H"]
+APCA_API_SECRET_KEY_STG4_4H = os.environ["APCA_API_SECRET_KEY_STG4_4H"]
+"""
+
 POSITION_SIZE_15M = float(os.environ["POSITION_SIZE_15M"])
 POSITION_SIZE_1H = float(os.environ["POSITION_SIZE_1H"])
 POSITION_SIZE_4H = float(os.environ["POSITION_SIZE_4H"])
@@ -112,6 +126,21 @@ ALPACA_APIS = {
 		key_id=APCA_API_KEY_ID_STG2_4H, 
 		secret_key=APCA_API_SECRET_KEY_STG2_4H
 	),	
+	#"strategy4_15m_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG4_15M,
+		#key_id=APCA_API_KEY_ID_STG4_15M,
+		#secret_key=APCA_API_SECRET_KEY_STG4_15M,
+	#),
+	#"strategy4_1h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG4_1H,
+		#key_id=APCA_API_KEY_ID_STG4_1H,
+		#secret_key=APCA_API_SECRET_KEY_STG4_1H,
+	#),
+	#"strategy4_4h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG4_4H,
+		#key_id=APCA_API_KEY_ID_STG4_4H,
+		#secret_key=APCA_API_SECRET_KEY_STG4_4H,
+	#),	
 }
 
 MARKET_DATA_API = ALPACA_APIS["strategy1_15m_anchor"]
@@ -443,6 +472,112 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			ALPACA_APIS["strategy2_4h_anchor"],
 			None, None, None, None,	None,
 		)
+
+
+		strategies_instance.exit_strategy4(
+			"strategy4_15m_anchor",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy4_15m_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+
+		strategies_instance.entry_strategy4(
+			"strategy4_15m_anchor",
+			"15m",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES1,
+			ALPACA_APIS["strategy4_15m_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+
+		strategies_instance.exit_strategy4(
+			"strategy4_1h_anchor",
+			"1h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy4_1h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+
+		strategies_instance.entry_strategy4(
+			"strategy4_1h_anchor",
+			"1h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES2,
+			ALPACA_APIS["strategy4_1h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+
+		strategies_instance.exit_strategy4(
+			"strategy4_4h_anchor",
+			"4h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy4_4h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+
+		strategies_instance.entry_strategy4(
+			"strategy4_4h_anchor",
+			"4h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES3,
+			ALPACA_APIS["strategy4_4h_anchor"],
+			None,
+			None,
+			None,
+			None,
+			None,
+		)		
 		"""
 
 	except Exception:
@@ -733,7 +868,7 @@ def run_backtest(
 	exit_strategy: Optional[int] = Query(
 		default=None,
 		ge=1,
-		le=3,
+		le=4,
 	),	
 	liquidate_before_market_close: bool = Query(
 		default=False,
@@ -805,7 +940,7 @@ def plot_backtest(
 	exit_strategy: Optional[int] = Query(
 		default=None,
 		ge=1,
-		le=3,
+		le=4,
 	),	
 	liquidate_before_market_close: bool = Query(
 		default=False,

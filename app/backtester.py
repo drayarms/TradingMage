@@ -73,7 +73,7 @@ class BackTester:
 			"intermediary_tf": "15m",
 			"anchor_tf": "1h",
 			"lower_timeframes": {"1m", "5m"},
-			"default_position_size": 6000.0,
+			"default_position_size": 6600.0,
 			"exit_strategy": 1,
 			"warmup_sessions": 5,
 		},
@@ -101,7 +101,7 @@ class BackTester:
 			"intermediary_tf": "15m",
 			"anchor_tf": "1h",
 			"lower_timeframes": {"1m", "5m"},
-			"default_position_size": 6000.0,
+			"default_position_size": 6600.0,
 			"exit_strategy": 2,
 			"warmup_sessions": 5,
 		},
@@ -113,7 +113,34 @@ class BackTester:
 			"default_position_size": 20000.0,
 			"exit_strategy": 2,
 			"warmup_sessions": 10,
-		},		
+		},	
+		"strategy4_15m_anchor": {
+			"entry_tf": "15m",
+			"intermediary_tf": "15m",
+			"anchor_tf": "15m",
+			"lower_timeframes": set(),
+			"default_position_size": 2000.0,
+			"exit_strategy": 4,
+			"warmup_sessions": 2,
+		},
+		"strategy4_1h_anchor": {
+			"entry_tf": "1h",
+			"intermediary_tf": "1h",
+			"anchor_tf": "1h",
+			"lower_timeframes": set(),
+			"default_position_size": 6600.0,
+			"exit_strategy": 4,
+			"warmup_sessions": 5,
+		},
+		"strategy4_4h_anchor": {
+			"entry_tf": "4h",
+			"intermediary_tf": "4h",
+			"anchor_tf": "4h",
+			"lower_timeframes": set(),
+			"default_position_size": 20000.0,
+			"exit_strategy": 4,
+			"warmup_sessions": 10,
+		},			
 	}
 	TIMEFRAME_ORDER = {
 		"1m": 1,
@@ -179,7 +206,7 @@ class BackTester:
 			position_size: Optional dollar notional used to size the first entry signal.
 			warmup_sessions: Number of prior market sessions to simulate before start. 
 							 If omitted, the strategy-specific configured value is used.
-			exit_strategy: Optional override for the strategy config. Must be 1, 2, or 3.
+			exit_strategy: Optional override for the strategy config. Must be 1, 2, 3, or 4.
 
 		Returns:
 			Dictionary containing only the requested reporting window, while preserving
@@ -230,12 +257,12 @@ class BackTester:
 				selected_exit_strategy = int(exit_strategy)
 			except (TypeError, ValueError) as exc:
 				raise ValueError(
-					"exit_strategy must be 1, 2, or 3"
+					"exit_strategy must be 1, 2, 3, or 4"
 				) from exc
 
-			if selected_exit_strategy not in {1, 2, 3}:
+			if selected_exit_strategy not in {1, 2, 3, 4}:
 				raise ValueError(
-					"exit_strategy must be 1, 2, or 3"
+					"exit_strategy must be 1, 2, or 3, or 4"
 				)
 		else:
 			selected_exit_strategy = default_exit_strategy
@@ -546,13 +573,44 @@ class BackTester:
 		event: dict[str, Any],
 		position_size: float,
 	) -> None:
-		"""Dispatch one event to the configured strategy family."""
-		if strategy_name.startswith("strategy1_"):
-			self._process_strategy1_event(strategy_name, state, config, event, position_size)
-		elif strategy_name.startswith("strategy2_"):
-			self._process_strategy2_event(strategy_name, state, config, event, position_size)
+		"""
+		Dispatch one signal event to the configured strategy family.
+
+		Parameters:
+			strategy_name (str):
+				Configured strategy name.
+
+			state (SimState):
+				Current in-memory backtest state.
+
+			config (dict):
+				Resolved strategy configuration.
+
+			event (dict):
+				Current chronological signal event.
+
+			position_size (float):
+				Dollar notional used to calculate entry quantity.
+		"""
+		if strategy_name.startswith(
+			"strategy1_"
+		):
+			self._process_strategy1_event(strategy_name, state, config, event, position_size,
+			)
+		elif strategy_name.startswith(
+			"strategy2_"
+		):
+			self._process_strategy2_event(strategy_name, state, config, event, position_size,
+			)
+		elif strategy_name.startswith(
+			"strategy4_"
+		):
+			self._process_strategy4_event(strategy_name, state, config, event, position_size,
+			)
 		else:
-			raise ValueError(f"Unsupported strategy family: {strategy_name}")
+			raise ValueError(
+				f"Unsupported strategy family: {strategy_name}"
+			)
 
 
 	def _run_signal_backtest(
@@ -568,7 +626,10 @@ class BackTester:
 		end_dt: datetime,
 	) -> None:
 		"""
-		Run exit strategies 1 and 2 on a merged signal and sampled-price timeline.
+		Run signal-driven exit strategies on a merged signal and sampled-price timeline.
+
+		Strategies 1, 2, and 4 use this path. Exit Strategy 4 currently performs no
+		action. Exit Strategy 3 uses the separate minute-price-tracked path.
 
 		Signals retain their exact received times. Market prices are sampled every
 		five minutes for smoother PnL and exposure graphs without processing every
@@ -934,6 +995,10 @@ class BackTester:
 			self._process_strategy2_entry_only(
 				strategy_name, state, config, event, position_size
 			)
+		elif strategy_name.startswith("strategy4_"):
+			self._process_strategy4_entry_only(
+				strategy_name, state, config, event, position_size
+			)			
 		else:
 			raise ValueError(f"Unsupported strategy family: {strategy_name}")
 
@@ -977,6 +1042,81 @@ class BackTester:
 			strategy_name, config["entry_tf"], config["intermediary_tf"],
 			True, now_et, signal, None, symbol, tf, num_shares, None, state,
 			config, event, market_price, self,
+		)
+
+	def _process_strategy4_entry_only(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		"""
+		Process one Strategy 4 event in entry-validation-only mode.
+
+		This method evaluates Strategy 4 entry conditions without running an exit
+		strategy and without opening, adding to, closing, or reversing a simulated
+		position. A qualifying entry is recorded as an entry_condition event through
+		_open_or_add_position(), because the event's entry_validation_only flag is set.
+
+		Parameters:
+			strategy_name (str):
+				Configured Strategy 4 name.
+
+			state (SimState):
+				Current in-memory backtest state.
+
+			config (dict[str, Any]):
+				Resolved Strategy 4 configuration.
+
+			event (dict[str, Any]):
+				Current chronological anchor-timeframe signal event.
+
+			position_size (float):
+				Dollar notional used to calculate the hypothetical entry quantity.
+
+		Returns:
+			None
+		"""
+		now_et = event["dt"]
+		signal = event["signal"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+
+		if market_price is None or market_price <= 0:
+			return
+
+		num_shares = (
+			position_size
+			/ market_price
+		)
+
+		event["exit_strategy"] = config[
+			"selected_exit_strategy"
+		]
+		event["anchor_tf"] = config[
+			"anchor_tf"
+		]
+		event["entry_validation_only"] = True
+
+		self.strategies_instance.entry_strategy4(
+			strategy_name,
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			num_shares,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
 		)
 
 	def _reset_reporting_state(self, state: SimState) -> None:
@@ -1315,6 +1455,133 @@ class BackTester:
 			self,
 		)
 
+
+	def _process_strategy4_event(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		"""
+		Apply Strategy 4 to one chronological anchor signal event.
+
+		Strategy 4 uses the ordinary signal-driven execution path. The configured
+		exit function is called before the entry function, matching the execution
+		order used by Strategies 1 and 2. Exit Strategy 4 currently does nothing.
+
+		Parameters:
+			strategy_name (str):
+				Configured Strategy 4 name.
+
+			state (SimState):
+				Current in-memory backtest state.
+
+			config (dict):
+				Resolved strategy configuration.
+
+			event (dict):
+				Current chronological event.
+
+			position_size (float):
+				Dollar notional used to calculate entry quantity.
+		"""
+		now_et = event["dt"]
+		signal = event["signal"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+
+		if market_price is None or market_price <= 0:
+			return
+
+		num_shares = position_size / market_price
+
+		event["exit_strategy"] = config[
+			"selected_exit_strategy"
+		]
+		event["anchor_tf"] = config[
+			"anchor_tf"
+		]
+		event["entry_validation_only"] = config[
+			"entry_validation_only"
+		]
+
+		if config["run_exit_strategy"]:
+			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == 2:
+				self.strategies_instance.exit_strategy2(
+					strategy_name,
+					config["entry_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == 4:
+				self.strategies_instance.exit_strategy4(
+					strategy_name,
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+		self.strategies_instance.entry_strategy4(
+			strategy_name,
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			num_shares,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
+		)
 
 	def get_nth_last_alert(self, state: SimState, ticker: str, timeframe: str, n: int = 1):
 		"""
