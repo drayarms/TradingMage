@@ -3377,4 +3377,3 @@ class BackTester:
 		})
 
 		return True
-selected_exit_strategy
