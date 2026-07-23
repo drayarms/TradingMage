@@ -1152,12 +1152,12 @@ class BackTester:
 			config["exit_strategy"] = int(config["exit_strategy"])
 		except (KeyError, TypeError, ValueError) as exc:
 			raise ValueError(
-				f"Invalid exit_strategy for {name}; expected 1, 2, or 3"
+				f"Invalid exit_strategy for {name}; expected 1, 2, 3, or 4"
 			) from exc
 
-		if config["exit_strategy"] not in {1, 2, 3}:
+		if config["exit_strategy"] not in {1, 2, 3, 4}:
 			raise ValueError(
-				f"Invalid exit_strategy for {name}; expected 1, 2, or 3"
+				f"Invalid exit_strategy for {name}; expected 1, 2, 3, or 4"
 			)
 
 		return config
