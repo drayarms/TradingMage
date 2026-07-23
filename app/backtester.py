@@ -449,7 +449,6 @@ class BackTester:
 		warmup_events = [event for event in all_events if event["received_dt"] < start_dt]
 		report_events = [event for event in all_events if event["received_dt"] >= start_dt]
 
-		#if config["selected_exit_strategy"] == 3:
 		if (config["run_exit_strategy"] and config["selected_exit_strategy"] == 3):		
 			self._run_price_tracked_backtest(
 				strategy_name,
@@ -982,25 +981,60 @@ class BackTester:
 		event: dict[str, Any],
 		position_size: float,
 	) -> None:
-		"""Evaluate the configured strategy family's entry rules without signal exits."""
-		event["exit_strategy"] = 3
-		event["anchor_tf"] = config["anchor_tf"]
-		event["ATR_multiplier"] = config["ATR_multiplier"]		
+		"""
+		Evaluate entries without running a signal-driven exit.
 
-		if strategy_name.startswith("strategy1_"):
+		This path is used when Exit Strategy 3 manages positions through
+		the one-minute market-price timeline.
+		"""
+		event["exit_strategy"] = 3
+		event["anchor_tf"] = config[
+			"anchor_tf"
+		]
+		event["ATR_multiplier"] = config[
+			"ATR_multiplier"
+		]
+		event["entry_validation_only"] = config[
+			"entry_validation_only"
+		]
+
+		if strategy_name.startswith(
+			"strategy1_"
+		):
 			self._process_strategy1_entry_only(
-				strategy_name, state, config, event, position_size
+				strategy_name,
+				state,
+				config,
+				event,
+				position_size,
 			)
-		elif strategy_name.startswith("strategy2_"):
+
+		elif strategy_name.startswith(
+			"strategy2_"
+		):
 			self._process_strategy2_entry_only(
-				strategy_name, state, config, event, position_size
+				strategy_name,
+				state,
+				config,
+				event,
+				position_size,
 			)
-		elif strategy_name.startswith("strategy4_"):
+
+		elif strategy_name.startswith(
+			"strategy4_"
+		):
 			self._process_strategy4_entry_only(
-				strategy_name, state, config, event, position_size
-			)			
+				strategy_name,
+				state,
+				config,
+				event,
+				position_size,
+			)
+
 		else:
-			raise ValueError(f"Unsupported strategy family: {strategy_name}")
+			raise ValueError(
+				f"Unsupported strategy family: {strategy_name}"
+			)
 
 	def _process_strategy1_entry_only(
 		self,
@@ -1053,31 +1087,10 @@ class BackTester:
 		position_size: float,
 	) -> None:
 		"""
-		Process one Strategy 4 event in entry-validation-only mode.
+		Evaluate Strategy 4 entries without running a signal-driven exit.
 
-		This method evaluates Strategy 4 entry conditions without running an exit
-		strategy and without opening, adding to, closing, or reversing a simulated
-		position. A qualifying entry is recorded as an entry_condition event through
-		_open_or_add_position(), because the event's entry_validation_only flag is set.
-
-		Parameters:
-			strategy_name (str):
-				Configured Strategy 4 name.
-
-			state (SimState):
-				Current in-memory backtest state.
-
-			config (dict[str, Any]):
-				Resolved Strategy 4 configuration.
-
-			event (dict[str, Any]):
-				Current chronological anchor-timeframe signal event.
-
-			position_size (float):
-				Dollar notional used to calculate the hypothetical entry quantity.
-
-		Returns:
-			None
+		This method is used by Exit Strategy 3. It opens actual simulated
+		positions so the trailing-stop execution path can manage them.
 		"""
 		now_et = event["dt"]
 		signal = event["signal"]
@@ -1092,14 +1105,6 @@ class BackTester:
 			position_size
 			/ market_price
 		)
-
-		event["exit_strategy"] = config[
-			"selected_exit_strategy"
-		]
-		event["anchor_tf"] = config[
-			"anchor_tf"
-		]
-		event["entry_validation_only"] = True
 
 		self.strategies_instance.entry_strategy4(
 			strategy_name,
@@ -3372,3 +3377,4 @@ class BackTester:
 		})
 
 		return True
+selected_exit_strategy
