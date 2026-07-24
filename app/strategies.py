@@ -1807,13 +1807,14 @@ class Strategies:
 			or ""
 		).strip().lower()
 
+		"""
 		if current_signal != stored_current_signal:
 			return None
 
 		normalized_side = self.tvw_helpers.normalize_signal(
 			current_signal
 		)
-
+		
 		if (
 			normalized_side == "buy"
 			and self._is_strategy4_confirmation(
@@ -1843,6 +1844,7 @@ class Strategies:
 				return "short"
 
 			return None
+		"""
 
 		if current_signal == "bullish_exit":
 			if self._strategy4_range_entry_is_valid(
@@ -2749,7 +2751,7 @@ class Strategies:
 		"""
 		return None
 
-		
+
 	def place_order(
 		self,
 		strategy_name,
