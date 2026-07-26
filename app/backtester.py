@@ -30,6 +30,14 @@ class SimPosition:
 	trailing_stop_price: Optional[float] = None
 	trailing_stop_source_time: Optional[datetime] = None
 	last_trailing_bar_time: Optional[datetime] = None
+	entry_atr: Optional[float] = None
+	original_atr_multiplier: Optional[float] = None
+	active_atr_multiplier: Optional[float] = None
+	loss_liquidation_atr_factor: Optional[float] = None
+	profit_expansion_atr_factor: Optional[float] = None
+	trailing_stop_multiplier_factor: float = 1.0
+	trailing_stop_expanded: bool = False
+	trailing_stop_expanded_at: Optional[datetime] = None	
 
 
 @dataclass
@@ -184,6 +192,9 @@ class BackTester:
 		position_size: Optional[float] = None,
 		ATR_period: int = 14,
 		ATR_multiplier: float = 1.0,
+		loss_liquidation_atr_factor: Optional[float] = None,
+		profit_expansion_atr_factor: Optional[float] = None,
+		trailing_stop_multiplier_factor: float = 1.0,		
 		#warmup_days: int = 2,
 		warmup_sessions: Optional[int] = None,
 		exit_strategy: Optional[int] = None,
@@ -239,7 +250,50 @@ class BackTester:
 		if ATR_multiplier <= 0:
 			raise ValueError(
 				"ATR_multiplier must be > 0"
-			)		
+			)	
+		if loss_liquidation_atr_factor is not None:
+			try:
+				loss_liquidation_atr_factor = float(
+					loss_liquidation_atr_factor
+				)
+			except (TypeError, ValueError) as exc:
+				raise ValueError(
+					"loss_liquidation_atr_factor must be a number"
+				) from exc
+
+			if loss_liquidation_atr_factor <= 0:
+				raise ValueError(
+					"loss_liquidation_atr_factor must be > 0"
+				)
+
+		if profit_expansion_atr_factor is not None:
+			try:
+				profit_expansion_atr_factor = float(
+					profit_expansion_atr_factor
+				)
+			except (TypeError, ValueError) as exc:
+				raise ValueError(
+					"profit_expansion_atr_factor must be a number"
+				) from exc
+
+			if profit_expansion_atr_factor <= 0:
+				raise ValueError(
+					"profit_expansion_atr_factor must be > 0"
+				)
+
+		try:
+			trailing_stop_multiplier_factor = float(
+				trailing_stop_multiplier_factor
+			)
+		except (TypeError, ValueError) as exc:
+			raise ValueError(
+				"trailing_stop_multiplier_factor must be a number"
+			) from exc
+
+		if trailing_stop_multiplier_factor < 1:
+			raise ValueError(
+				"trailing_stop_multiplier_factor must be >= 1"
+			)				
 		try:
 			ATR_period = int(ATR_period)
 		except (TypeError, ValueError) as exc:
@@ -269,6 +323,9 @@ class BackTester:
 
 		config["selected_exit_strategy"] = selected_exit_strategy
 		config["ATR_multiplier"] = ATR_multiplier
+		config["loss_liquidation_atr_factor"] = (loss_liquidation_atr_factor)
+		config["profit_expansion_atr_factor"] = (profit_expansion_atr_factor)
+		config["trailing_stop_multiplier_factor"] = (trailing_stop_multiplier_factor)		
 		config["liquidate_before_market_close"] = (liquidate_before_market_close  and run_exit_strategy)
 		config["run_exit_strategy"] = run_exit_strategy
 		config["entry_validation_only"] = not run_exit_strategy		
@@ -481,6 +538,21 @@ class BackTester:
 			"exit_strategy": config["selected_exit_strategy"],
 			"ATR_period": ATR_period,
 			"ATR_multiplier": ATR_multiplier,
+			"loss_liquidation_atr_factor": (loss_liquidation_atr_factor),
+			"profit_expansion_atr_factor": (profit_expansion_atr_factor),
+			"trailing_stop_multiplier_factor": (trailing_stop_multiplier_factor),
+			"defensive_liquidation_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("exit_reason")
+				== "atr_cost_basis_liquidation"
+			),
+			"trailing_stop_expansion_count": sum(
+				1
+				for trade_event in state.trade_events
+				if trade_event.get("event_type")
+				== "trailing_stop_expanded"
+			),			
 			"liquidate_before_market_close": (
 				config["liquidate_before_market_close"]
 			),
@@ -591,25 +663,14 @@ class BackTester:
 			position_size (float):
 				Dollar notional used to calculate entry quantity.
 		"""
-		if strategy_name.startswith(
-			"strategy1_"
-		):
-			self._process_strategy1_event(strategy_name, state, config, event, position_size,
-			)
-		elif strategy_name.startswith(
-			"strategy2_"
-		):
-			self._process_strategy2_event(strategy_name, state, config, event, position_size,
-			)
-		elif strategy_name.startswith(
-			"strategy4_"
-		):
-			self._process_strategy4_event(strategy_name, state, config, event, position_size,
-			)
+		if strategy_name.startswith("strategy1_"):
+			self._process_strategy1_event(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("strategy2_"):
+			self._process_strategy2_event(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("strategy4_"):
+			self._process_strategy4_event(strategy_name, state, config, event, position_size)
 		else:
-			raise ValueError(
-				f"Unsupported strategy family: {strategy_name}"
-			)
+			raise ValueError(f"Unsupported strategy family: {strategy_name}")
 
 
 	def _run_signal_backtest(
@@ -912,6 +973,7 @@ class BackTester:
 			if timeline_event["kind"] == "market_bar":
 				self._process_trailing_stop_market_bar(
 					state,
+					config,
 					payload,
 				)
 
@@ -988,53 +1050,21 @@ class BackTester:
 		the one-minute market-price timeline.
 		"""
 		event["exit_strategy"] = 3
-		event["anchor_tf"] = config[
-			"anchor_tf"
-		]
-		event["ATR_multiplier"] = config[
-			"ATR_multiplier"
-		]
-		event["entry_validation_only"] = config[
-			"entry_validation_only"
-		]
+		event["anchor_tf"] = config["anchor_tf"]
+		event["ATR_multiplier"] = config["ATR_multiplier"]
+		event["loss_liquidation_atr_factor"] = config["loss_liquidation_atr_factor"]
+		event["profit_expansion_atr_factor"] = config["profit_expansion_atr_factor"]
+		event["trailing_stop_multiplier_factor"] = config["trailing_stop_multiplier_factor"]		
+		event["entry_validation_only"] = config["entry_validation_only"]
 
-		if strategy_name.startswith(
-			"strategy1_"
-		):
-			self._process_strategy1_entry_only(
-				strategy_name,
-				state,
-				config,
-				event,
-				position_size,
-			)
-
-		elif strategy_name.startswith(
-			"strategy2_"
-		):
-			self._process_strategy2_entry_only(
-				strategy_name,
-				state,
-				config,
-				event,
-				position_size,
-			)
-
-		elif strategy_name.startswith(
-			"strategy4_"
-		):
-			self._process_strategy4_entry_only(
-				strategy_name,
-				state,
-				config,
-				event,
-				position_size,
-			)
-
+		if strategy_name.startswith("strategy1_"):
+			self._process_strategy1_entry_only(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("strategy2_"):
+			self._process_strategy2_entry_only(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("strategy4_"):
+			self._process_strategy4_entry_only(strategy_name, state, config, event, position_size)
 		else:
-			raise ValueError(
-				f"Unsupported strategy family: {strategy_name}"
-			)
+			raise ValueError(f"Unsupported strategy family: {strategy_name}")
 
 	def _process_strategy1_entry_only(
 		self,
@@ -1963,27 +1993,15 @@ class BackTester:
 			position_kwargs = {}
 
 			if event.get("exit_strategy") == 3:
-				#trailing_stop_amount, trailing_stop_source_time = (
-					#self._get_anchor_atr_at_entry(state, event)
-				#)
 				anchor_atr, trailing_stop_source_time = (
-					self._get_anchor_atr_at_entry(
-						state,
-						event,
-					)
+					self._get_anchor_atr_at_entry(state, event)
 				)
 
 				ATR_multiplier = float(
-					event.get(
-						"ATR_multiplier",
-						1.0,
-					)
+					event.get("ATR_multiplier", 1.0)
 				)
 
-				trailing_stop_amount = (
-					anchor_atr
-					* ATR_multiplier
-				)
+				trailing_stop_amount = (anchor_atr * ATR_multiplier)
 				if position_side == "long":
 					trailing_stop_price = price - trailing_stop_amount
 				else:
@@ -1994,6 +2012,23 @@ class BackTester:
 					"trailing_stop_price": trailing_stop_price,
 					"trailing_stop_source_time": trailing_stop_source_time,
 					"last_trailing_bar_time": event["received_dt"],
+					"entry_atr": anchor_atr,
+					"original_atr_multiplier": ATR_multiplier,
+					"active_atr_multiplier": ATR_multiplier,
+					"loss_liquidation_atr_factor": event.get(
+						"loss_liquidation_atr_factor"
+					),
+					"profit_expansion_atr_factor": event.get(
+						"profit_expansion_atr_factor"
+					),
+					"trailing_stop_multiplier_factor": float(
+						event.get(
+							"trailing_stop_multiplier_factor",
+							1.0,
+						)
+					),
+					"trailing_stop_expanded": False,
+					"trailing_stop_expanded_at": None,
 				}
 
 			state.positions[ticker] = SimPosition(
@@ -2024,63 +2059,301 @@ class BackTester:
 	def _process_trailing_stop_market_bar(
 		self,
 		state: SimState,
+		config: dict[str, Any],
 		market_event: dict[str, Any],
 	) -> bool:
-		"""Advance one exit-strategy-3 position using a completed one-minute close."""
+		"""
+		Advance one Exit Strategy 3 position using a completed one-minute close.
+
+		The processing priority is:
+
+			1. Defensive cost-basis liquidation.
+			2. One-time profitable-position trailing-stop expansion.
+			3. Normal trailing-stop movement and execution.
+		"""
 		ticker = market_event["ticker"]
 		bar_dt = market_event["dt"]
-		market_price = float(market_event["close"])
-		position = state.positions.get(ticker)
+		market_price = float(
+			market_event["close"]
+		)
+		position = state.positions.get(
+			ticker
+		)
 
-		state.last_price_by_ticker[ticker] = market_price
+		state.last_price_by_ticker[
+			ticker
+		] = market_price
 
-		if position is None or position.num_shares <= 0:
+		if (
+			position is None
+			or position.num_shares <= 0
+		):
 			return False
 
-		if position.trailing_stop_amount is None or position.trailing_stop_amount <= 0:
+		if (
+			position.trailing_stop_amount is None
+			or position.trailing_stop_amount <= 0
+			or position.entry_atr is None
+			or position.entry_atr <= 0
+		):
 			return False
 
 		if (
 			position.last_trailing_bar_time is not None
-			and bar_dt <= position.last_trailing_bar_time
+			and bar_dt
+			<= position.last_trailing_bar_time
 		):
 			return False
 
 		position.last_trailing_bar_time = bar_dt
 
-		if not self.tvw_helpers._is_regular_hours_et(bar_dt):
+		if not self.tvw_helpers._is_regular_hours_et(
+			bar_dt
+		):
 			return False
 
-		trailing_amount = float(position.trailing_stop_amount)
+		entry_atr = float(
+			position.entry_atr
+		)
+		cost_basis = float(
+			position.avg_price_per_share
+		)
+
+		#
+		# 1. Defensive liquidation below/above cost basis.
+		#
+		loss_factor = (
+			position.loss_liquidation_atr_factor
+		)
+
+		if loss_factor is not None:
+			loss_distance = (
+				entry_atr
+				* float(loss_factor)
+			)
+
+			if position.side == "long":
+				defensive_exit_price = (
+					cost_basis
+					- loss_distance
+				)
+
+				defensive_exit_triggered = (
+					market_price
+					<= defensive_exit_price
+				)
+
+			else:
+				defensive_exit_price = (
+					cost_basis
+					+ loss_distance
+				)
+
+				defensive_exit_triggered = (
+					market_price
+					>= defensive_exit_price
+				)
+
+			if defensive_exit_triggered:
+				self._close_position_at_market_bar(
+					state=state,
+					ticker=ticker,
+					bar_dt=bar_dt,
+					market_price=market_price,
+					exit_reason=(
+						"atr_cost_basis_liquidation"
+					),
+				)
+
+				return True
+
+		#
+		# 2. One-time expansion after sufficient profit.
+		#
+		profit_factor = (
+			position.profit_expansion_atr_factor
+		)
+		multiplier_factor = float(
+			position.trailing_stop_multiplier_factor
+		)
+
+		can_expand = (
+			not position.trailing_stop_expanded
+			and profit_factor is not None
+			and multiplier_factor > 1
+			and position.original_atr_multiplier
+			is not None
+		)
+
+		if can_expand:
+			profit_distance = (
+				entry_atr
+				* float(profit_factor)
+			)
+
+			if position.side == "long":
+				expansion_trigger_price = (
+					cost_basis
+					+ profit_distance
+				)
+
+				expansion_triggered = (
+					market_price
+					>= expansion_trigger_price
+				)
+
+			else:
+				expansion_trigger_price = (
+					cost_basis
+					- profit_distance
+				)
+
+				expansion_triggered = (
+					market_price
+					<= expansion_trigger_price
+				)
+
+			if expansion_triggered:
+				original_trailing_amount = float(
+					position.trailing_stop_amount
+				)
+				original_atr_multiplier = float(
+					position.original_atr_multiplier
+				)
+				expanded_atr_multiplier = (
+					original_atr_multiplier
+					* multiplier_factor
+				)
+				expanded_trailing_amount = (
+					entry_atr
+					* expanded_atr_multiplier
+				)
+
+				position.active_atr_multiplier = (
+					expanded_atr_multiplier
+				)
+				position.trailing_stop_amount = (
+					expanded_trailing_amount
+				)
+				position.trailing_stop_expanded = True
+				position.trailing_stop_expanded_at = (
+					bar_dt
+				)
+
+				#
+				# Simulate canceling the old trailing stop and
+				# submitting a new one at the current price.
+				#
+				if position.side == "long":
+					position.high_water_price = (
+						market_price
+					)
+					position.trailing_stop_price = (
+						market_price
+						- expanded_trailing_amount
+					)
+				else:
+					position.low_water_price = (
+						market_price
+					)
+					position.trailing_stop_price = (
+						market_price
+						+ expanded_trailing_amount
+					)
+
+				if self.recording_enabled:
+					state.trade_events.append({
+						"time": bar_dt.isoformat(),
+						"ticker": ticker,
+						"event_type": (
+							"trailing_stop_expanded"
+						),
+						"side": position.side,
+						"market_price": market_price,
+						"cost_basis": cost_basis,
+						"entry_atr": entry_atr,
+						"profit_expansion_atr_factor": (
+							float(profit_factor)
+						),
+						"expansion_trigger_price": (
+							expansion_trigger_price
+						),
+						"original_atr_multiplier": (
+							original_atr_multiplier
+						),
+						"active_atr_multiplier": (
+							expanded_atr_multiplier
+						),
+						"trailing_stop_multiplier_factor": (
+							multiplier_factor
+						),
+						"original_trailing_stop_amount": (
+							original_trailing_amount
+						),
+						"trailing_stop_amount": (
+							expanded_trailing_amount
+						),
+						"trailing_stop_price": (
+							position.trailing_stop_price
+						),
+						"realized_delta": 0.0,
+					})
+
+		#
+		# 3. Continue normal trailing-stop processing.
+		#
+		trailing_amount = float(
+			position.trailing_stop_amount
+		)
 
 		if position.side == "long":
 			position.high_water_price = max(
-				position.high_water_price or market_price,
+				position.high_water_price
+				or market_price,
 				market_price,
 			)
 			position.trailing_stop_price = (
-				position.high_water_price - trailing_amount
+				position.high_water_price
+				- trailing_amount
 			)
 
-			if market_price <= position.trailing_stop_price:
+			if (
+				market_price
+				<= position.trailing_stop_price
+			):
 				self._close_position_at_market_bar(
-					state, ticker, bar_dt, market_price, "trailing_stop"
+					state=state,
+					ticker=ticker,
+					bar_dt=bar_dt,
+					market_price=market_price,
+					exit_reason="trailing_stop",
 				)
+
 				return True
 
 		elif position.side == "short":
 			position.low_water_price = min(
-				position.low_water_price or market_price,
+				position.low_water_price
+				or market_price,
 				market_price,
 			)
 			position.trailing_stop_price = (
-				position.low_water_price + trailing_amount
+				position.low_water_price
+				+ trailing_amount
 			)
 
-			if market_price >= position.trailing_stop_price:
+			if (
+				market_price
+				>= position.trailing_stop_price
+			):
 				self._close_position_at_market_bar(
-					state, ticker, bar_dt, market_price, "trailing_stop"
+					state=state,
+					ticker=ticker,
+					bar_dt=bar_dt,
+					market_price=market_price,
+					exit_reason="trailing_stop",
 				)
+
 				return True
 
 		return False
@@ -2140,10 +2413,24 @@ class BackTester:
 				"market_price": market_price,
 				"num_shares": position.num_shares,
 				"realized_delta": realized_delta,
-				"trailing_stop_amount": position.trailing_stop_amount,
-				"trailing_stop_price": position.trailing_stop_price,
-				"high_water_price": position.high_water_price,
-				"low_water_price": position.low_water_price,
+				"entry_atr": position.entry_atr,
+				"cost_basis": position.avg_price_per_share,
+				"original_atr_multiplier": (position.original_atr_multiplier),
+				"active_atr_multiplier": (position.active_atr_multiplier),
+				"loss_liquidation_atr_factor": (position.loss_liquidation_atr_factor),
+				"profit_expansion_atr_factor": (position.profit_expansion_atr_factor),
+				"trailing_stop_multiplier_factor": (position.trailing_stop_multiplier_factor),
+				"trailing_stop_expanded": (position.trailing_stop_expanded),
+				"trailing_stop_expanded_at": (
+					position.trailing_stop_expanded_at.isoformat()
+					if position.trailing_stop_expanded_at
+					is not None
+					else None
+				),
+				"trailing_stop_amount": (position.trailing_stop_amount),
+				"trailing_stop_price": (position.trailing_stop_price),
+				"high_water_price": (position.high_water_price),
+				"low_water_price": (position.low_water_price),
 			})		
 
 		state.positions.pop(ticker, None)
@@ -3377,3 +3664,4 @@ class BackTester:
 		})
 
 		return True
+_close_position_at_market_bar()

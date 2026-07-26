@@ -865,6 +865,31 @@ def run_backtest(
 		default=1.0,
 		gt=0,
 	),	
+	loss_liquidation_atr_factor: Optional[float] = Query(
+		default=None,
+		gt=0,
+		description=(
+			"For Exit Strategy 3, immediately liquidate a long position "
+			"when price falls below cost basis by this factor multiplied "
+			"by entry ATR. The condition is mirrored for short positions."
+		),
+	),
+	profit_expansion_atr_factor: Optional[float] = Query(
+		default=None,
+		gt=0,
+		description=(
+			"For Exit Strategy 3, widen the trailing stop once profit "
+			"reaches this factor multiplied by entry ATR."
+		),
+	),
+	trailing_stop_multiplier_factor: float = Query(
+		default=1.0,
+		ge=1.0,
+		description=(
+			"Factor multiplied by the original ATR_multiplier after the "
+			"profit-expansion threshold is reached."
+		),
+	),	
 	exit_strategy: Optional[int] = Query(
 		default=None,
 		ge=1,
@@ -911,6 +936,9 @@ def run_backtest(
 			position_size=position_size,
 			ATR_period=ATR_period,
 			ATR_multiplier=ATR_multiplier,
+			loss_liquidation_atr_factor=(loss_liquidation_atr_factor),
+			profit_expansion_atr_factor=(profit_expansion_atr_factor),
+			trailing_stop_multiplier_factor=(trailing_stop_multiplier_factor),			
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
 			run_exit_strategy=run_exit_strategy,
@@ -936,6 +964,31 @@ def plot_backtest(
 	ATR_multiplier: float = Query(
 		default=1.0,
 		gt=0,
+	),	
+	loss_liquidation_atr_factor: Optional[float] = Query(
+		default=None,
+		gt=0,
+		description=(
+			"For Exit Strategy 3, immediately liquidate a long position "
+			"when price falls below cost basis by this factor multiplied "
+			"by entry ATR. The condition is mirrored for short positions."
+		),
+	),
+	profit_expansion_atr_factor: Optional[float] = Query(
+		default=None,
+		gt=0,
+		description=(
+			"For Exit Strategy 3, widen the trailing stop once profit "
+			"reaches this factor multiplied by entry ATR."
+		),
+	),
+	trailing_stop_multiplier_factor: float = Query(
+		default=1.0,
+		ge=1.0,
+		description=(
+			"Factor multiplied by the original ATR_multiplier after the "
+			"profit-expansion threshold is reached."
+		),
 	),	
 	exit_strategy: Optional[int] = Query(
 		default=None,
@@ -996,6 +1049,9 @@ def plot_backtest(
 			position_size=position_size,
 			ATR_period=ATR_period,
 			ATR_multiplier=ATR_multiplier,
+			loss_liquidation_atr_factor=(loss_liquidation_atr_factor),
+			profit_expansion_atr_factor=(profit_expansion_atr_factor),
+			trailing_stop_multiplier_factor=(trailing_stop_multiplier_factor),				
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
 			run_exit_strategy=run_exit_strategy,
