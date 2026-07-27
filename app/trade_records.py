@@ -7,6 +7,7 @@ import csv
 import pandas as pd
 import numpy as np
 from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
+import math
 
 logger = logging.getLogger("tv-webhook")
 
@@ -668,3 +669,181 @@ class TradeRecords:
 		#)
 
 		return placeholder_atr		
+
+
+	def get_latest_completed_atr(
+		self,
+		alpaca_api,
+		ticker: str,
+		timeframe: str,
+		period: int = 14,
+		as_of: datetime = None,
+	) -> tuple[float, datetime]:
+		"""
+		Return the latest ATR whose source bar was fully completed by as_of.
+
+		This method is strategy-independent and can be used by any live
+		ATR-based exit or risk-management system.
+		"""
+		symbol = self._normalize_ticker(
+			ticker
+		)
+		tf = self.tvw_helpers.normalize_tf(
+			timeframe
+		)
+
+		if period < 1:
+			raise ValueError(
+				"period must be >= 1"
+			)
+
+		timeframe_configs = {
+			"15m": {
+				"alpaca_timeframe": self._15min_time_frame,
+				"duration": timedelta(minutes=15),
+				"bars_per_day": 26,
+			},
+			"1h": {
+				"alpaca_timeframe": self._1hr_time_frame,
+				"duration": timedelta(hours=1),
+				"bars_per_day": 7,
+			},
+			"4h": {
+				"alpaca_timeframe": self._4hr_time_frame,
+				"duration": timedelta(hours=4),
+				"bars_per_day": 2,
+			},
+		}
+
+		if tf not in timeframe_configs:
+			raise ValueError(
+				f"Unsupported ATR timeframe: {timeframe}"
+			)
+
+		now_et = (
+			as_of
+			or datetime.now(
+				self.tvw_helpers.eastern_tz
+			)
+		)
+
+		if now_et.tzinfo is None:
+			now_et = now_et.replace(
+				tzinfo=self.tvw_helpers.eastern_tz
+			)
+		else:
+			now_et = now_et.astimezone(
+				self.tvw_helpers.eastern_tz
+			)
+
+		tf_config = timeframe_configs[
+			tf
+		]
+
+		required_bars = period + 10
+
+		required_trading_days = math.ceil(
+			required_bars
+			/ tf_config["bars_per_day"]
+		)
+
+		calendar_lookback_days = (
+			math.ceil(
+				required_trading_days
+				* 7
+				/ 5
+			)
+			+ 4
+		)
+
+		start_dt = pd.Timestamp(
+			now_et
+			- timedelta(
+				days=calendar_lookback_days
+			)
+		)
+		end_dt = pd.Timestamp(
+			now_et
+		)
+
+		df = self.get_df(
+			alpaca_api,
+			[symbol],
+			tf_config["alpaca_timeframe"],
+			start_dt,
+			end_dt,
+		)
+
+		if df.empty:
+			raise ValueError(
+				f"No {tf} bars returned for {symbol}"
+			)
+
+		atr_by_ticker = self.dataframe_to_atr_dict(
+			df,
+			period=period,
+		)
+
+		ticker_atr = atr_by_ticker.get(
+			symbol,
+			{},
+		)
+
+		if not ticker_atr:
+			raise ValueError(
+				f"No valid {tf} ATR available for {symbol}"
+			)
+
+		latest_source_dt = None
+		latest_available_dt = None
+		latest_atr = None
+
+		for timestamp, atr_value in ticker_atr.items():
+			source_dt = pd.Timestamp(
+				timestamp
+			)
+
+			if source_dt.tzinfo is None:
+				source_dt = source_dt.tz_localize(
+					self.tvw_helpers.eastern_tz
+				)
+			else:
+				source_dt = source_dt.tz_convert(
+					self.tvw_helpers.eastern_tz
+				)
+
+			available_dt = (
+				source_dt
+				+ tf_config["duration"]
+			)
+
+			if available_dt > pd.Timestamp(
+				now_et
+			):
+				continue
+
+			if (
+				latest_available_dt is None
+				or available_dt
+				> latest_available_dt
+			):
+				latest_source_dt = source_dt
+				latest_available_dt = available_dt
+				latest_atr = float(
+					atr_value
+				)
+
+		if (
+			latest_source_dt is None
+			or latest_atr is None
+			or latest_atr <= 0
+		):
+			raise ValueError(
+				f"No completed {tf} ATR available "
+				f"for {symbol} at {now_et.isoformat()}"
+			)
+
+		return (
+			latest_atr,
+			latest_source_dt.to_pydatetime(),
+		)		

@@ -24,7 +24,6 @@ import strategies
 import trade_records
 import backtester
 import plot
-import threading
 
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
@@ -59,6 +58,7 @@ APCA_API_BASE_URL_STG1_4H = os.environ["APCA_API_BASE_URL_STG1_4H"]
 APCA_API_KEY_ID_STG1_4H = os.environ["APCA_API_KEY_ID_STG1_4H"]
 APCA_API_SECRET_KEY_STG1_4H = os.environ["APCA_API_SECRET_KEY_STG1_4H"]
 
+
 APCA_API_BASE_URL_STG2_15M = os.environ["APCA_API_BASE_URL_STG2_15M"]
 APCA_API_KEY_ID_STG2_15M = os.environ["APCA_API_KEY_ID_STG2_15M"]
 APCA_API_SECRET_KEY_STG2_15M = os.environ["APCA_API_SECRET_KEY_STG2_15M"]
@@ -71,6 +71,7 @@ APCA_API_BASE_URL_STG2_4H = os.environ["APCA_API_BASE_URL_STG2_4H"]
 APCA_API_KEY_ID_STG2_4H = os.environ["APCA_API_KEY_ID_STG2_4H"]
 APCA_API_SECRET_KEY_STG2_4H = os.environ["APCA_API_SECRET_KEY_STG2_4H"]
 
+""" DO!
 APCA_API_BASE_URL_STG4_15M = os.environ["APCA_API_BASE_URL_STG4_15M"]
 APCA_API_KEY_ID_STG4_15M = os.environ["APCA_API_KEY_ID_STG4_15M"]
 APCA_API_SECRET_KEY_STG4_15M = os.environ["APCA_API_SECRET_KEY_STG4_15M"]
@@ -82,7 +83,7 @@ APCA_API_SECRET_KEY_STG4_1H = os.environ["APCA_API_SECRET_KEY_STG4_1H"]
 APCA_API_BASE_URL_STG4_4H = os.environ["APCA_API_BASE_URL_STG4_4H"]
 APCA_API_KEY_ID_STG4_4H = os.environ["APCA_API_KEY_ID_STG4_4H"]
 APCA_API_SECRET_KEY_STG4_4H = os.environ["APCA_API_SECRET_KEY_STG4_4H"]
-
+"""
 
 POSITION_SIZE_15M = float(os.environ["POSITION_SIZE_15M"])
 POSITION_SIZE_1H = float(os.environ["POSITION_SIZE_1H"])
@@ -130,11 +131,11 @@ ALPACA_APIS = {
 		#key_id=APCA_API_KEY_ID_STG4_15M,
 		#secret_key=APCA_API_SECRET_KEY_STG4_15M,
 	#),
-	"strategy4_1h_anchor": tradeapi.REST(	
-		base_url=APCA_API_BASE_URL_STG4_1H,
-		key_id=APCA_API_KEY_ID_STG4_1H,
-		secret_key=APCA_API_SECRET_KEY_STG4_1H,
-	),
+	#"strategy4_1h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG4_1H,
+		#key_id=APCA_API_KEY_ID_STG4_1H,
+		#secret_key=APCA_API_SECRET_KEY_STG4_1H,
+	#),
 	#"strategy4_4h_anchor": tradeapi.REST(
 		#base_url=APCA_API_BASE_URL_STG4_4H,
 		#key_id=APCA_API_KEY_ID_STG4_4H,
@@ -151,6 +152,7 @@ trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
 backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance, strategies_instance, trade_records_instance)
 plot_instance = plot.Plot()
+
 
 
 class SignalFlags(BaseModel):
@@ -180,253 +182,6 @@ class TradingViewWebhook(BaseModel):
 	signals: SignalFlags
  
 
-
-def env_bool(
-	name: str,
-	default: bool = False,
-) -> bool:
-	raw_value = os.getenv(
-		name
-	)
-
-	if raw_value is None:
-		return default
-
-	value = str(
-		raw_value
-	).strip().lower()
-
-	if value in {
-		"1",
-		"true",
-		"yes",
-		"on",
-	}:
-		return True
-
-	if value in {
-		"0",
-		"false",
-		"no",
-		"off",
-	}:
-		return False
-
-	raise RuntimeError(
-		f"{name} must be true or false"
-	)
-
-
-TRAILING_STOP_EXIT_ENABLED = env_bool(
-	"TRAILING_STOP_EXIT_ENABLED",
-	False,
-)
-
-TRAILING_STOP_EXIT_ATR_PERIOD = int(
-	os.getenv(
-		"TRAILING_STOP_EXIT_ATR_PERIOD",
-		"14",
-	)
-)
-
-TRAILING_STOP_EXIT_ATR_MULTIPLIER = float(
-	os.getenv(
-		"TRAILING_STOP_EXIT_ATR_MULTIPLIER",
-		"0.8",
-	)
-)
-
-TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR = float(
-	os.getenv(
-		"TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR",
-		"0.6",
-	)
-)
-
-TRAILING_STOP_EXIT_PROFIT_EXPANSION_ATR_FACTOR = float(
-	os.getenv(
-		"TRAILING_STOP_EXIT_PROFIT_EXPANSION_ATR_FACTOR",
-		"2.5",
-	)
-)
-
-TRAILING_STOP_EXIT_MULTIPLIER_FACTOR = float(
-	os.getenv(
-		"TRAILING_STOP_EXIT_MULTIPLIER_FACTOR",
-		"1.8",
-	)
-)
-
-TRAILING_STOP_EXIT_LIQUIDATE_BEFORE_MARKET_CLOSE = env_bool(
-	"TRAILING_STOP_EXIT_LIQUIDATE_BEFORE_MARKET_CLOSE",
-	True,
-)
-
-TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS = int(
-	os.getenv(
-		"TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS",
-		"60",
-	)
-)
-
-TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS = int(
-	os.getenv(
-		"TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS",
-		"5",
-	)
-)
-
-TRAILING_STOP_EXIT_MANAGER_LOCK_SECONDS = int(
-	os.getenv(
-		"TRAILING_STOP_EXIT_MANAGER_LOCK_SECONDS",
-		"20",
-	)
-)
-
-
-if TRAILING_STOP_EXIT_ATR_PERIOD < 1:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_ATR_PERIOD must be >= 1"
-	)
-
-if TRAILING_STOP_EXIT_ATR_MULTIPLIER <= 0:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_ATR_MULTIPLIER must be > 0"
-	)
-
-if (
-	TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR
-	<= 0
-):
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR "
-		"must be > 0"
-	)
-
-if (
-	TRAILING_STOP_EXIT_PROFIT_EXPANSION_ATR_FACTOR
-	<= 0
-):
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_PROFIT_EXPANSION_ATR_FACTOR "
-		"must be > 0"
-	)
-
-if TRAILING_STOP_EXIT_MULTIPLIER_FACTOR < 1:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_MULTIPLIER_FACTOR must be >= 1"
-	)
-
-if TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS < 1:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS "
-		"must be >= 1"
-	)	
-
-if TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS < 1:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS "
-		"must be >= 1"
-	)
-
-if TRAILING_STOP_EXIT_MANAGER_LOCK_SECONDS < 1:
-	raise RuntimeError(
-		"TRAILING_STOP_EXIT_MANAGER_LOCK_SECONDS "
-		"must be >= 1"
-	)	
-
-LIVE_TRAILING_STOP_ACCOUNTS = {
-	"strategy4_1h_anchor": {
-		"enabled": True,
-		"alpaca_api": ALPACA_APIS[
-			"strategy4_1h_anchor"
-		],
-	},
-	#"strategy1_1h_anchor": {
-		#"enabled": True,
-		#"alpaca_api": ALPACA_APIS[
-			#"strategy1_1h_anchor"
-		#],
-	#},
-}
-
-
-trailing_stop_exit_stop_event = threading.Event()
-trailing_stop_exit_wake_event = threading.Event()
-trailing_stop_exit_thread = None
-
-
-def run_live_trailing_stop_exit_monitor() -> None:
-	logger.info(
-		"Live trailing-stop exit monitor started"
-	)
-
-	interval_seconds = (
-		TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS
-	)
-
-	while not trailing_stop_exit_stop_event.is_set():
-		trailing_stop_exit_wake_event.wait(
-			timeout=interval_seconds
-		)
-		trailing_stop_exit_wake_event.clear()
-
-		if trailing_stop_exit_stop_event.is_set():
-			break
-
-		for owner_name, account_config in (
-			LIVE_TRAILING_STOP_ACCOUNTS.items()
-		):
-			if not account_config.get(
-				"enabled",
-				False,
-			):
-				continue
-
-			try:
-				strategies_instance.manage_live_trailing_stop_account(
-					owner_name=owner_name,
-					alpaca_api=account_config[
-						"alpaca_api"
-					],
-					atr_period=(
-						TRAILING_STOP_EXIT_ATR_PERIOD
-					),
-					atr_multiplier=(
-						TRAILING_STOP_EXIT_ATR_MULTIPLIER
-					),
-					loss_liquidation_atr_factor=(
-						TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR
-					),
-					profit_expansion_atr_factor=(
-						TRAILING_STOP_EXIT_PROFIT_EXPANSION_ATR_FACTOR
-					),
-					trailing_stop_multiplier_factor=(
-						TRAILING_STOP_EXIT_MULTIPLIER_FACTOR
-					),
-					liquidate_before_market_close=(
-						TRAILING_STOP_EXIT_LIQUIDATE_BEFORE_MARKET_CLOSE
-					),
-					market_close_buffer_seconds=(
-						TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS
-					),
-					manager_lock_seconds=(
-						TRAILING_STOP_EXIT_MANAGER_LOCK_SECONDS
-					),
-				)
-
-			except Exception:
-				logger.exception(
-					"Live trailing-stop monitor iteration "
-					"failed: owner=%s",
-					owner_name,
-				)
-
-	logger.info(
-		"Live trailing-stop exit monitor stopped"
-	)
-
-
 # When app starts, this function runs once
 # systemd -> docker run -> uvicorn app:app -> FastAPI app object loads -> FastAPI startup event fires -> _startup() runs
 @app.on_event("startup")
@@ -441,17 +196,6 @@ def _startup():
 		except Exception as exc:
 			logger.exception("Alpaca get_account failed during startup for %s", strategy_name)
 			raise RuntimeError(f"Alpaca get_account failed during startup for {strategy_name}") from exc		
-
-	global trailing_stop_exit_thread
-
-	if TRAILING_STOP_EXIT_ENABLED:
-		trailing_stop_exit_thread = threading.Thread(
-			target=run_live_trailing_stop_exit_monitor,
-			name="live-trailing-stop-exit-monitor",
-			daemon=True,
-		)
-
-		trailing_stop_exit_thread.start()
 
 
 @app.get("/health")
@@ -474,19 +218,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 	)
 
 
-@app.on_event("shutdown")
-def _shutdown():
-	trailing_stop_exit_stop_event.set()
-	trailing_stop_exit_wake_event.set()	
-
-	if (
-		trailing_stop_exit_thread is not None
-		and trailing_stop_exit_thread.is_alive()
-	):
-		trailing_stop_exit_thread.join(
-			timeout=10
-		)
-	
 def process_trading_signal(symbol: str, tf: str, signal: str):
 	"""
 	Runs strategy logic after the webhook has already been accepted.
@@ -595,105 +326,36 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			None, None, None, None,	None,
 		)
 
-		#strategies_instance.exit_strategy1(
-			#"strategy1_1h_anchor",
-			#{"1m", "5m"},
-			#"15m",
-			#"1h",
-			#False,
-			#now_et,
-			#signal,
-			#prices,
-			#symbol,
-			#tf,
-			#ALPACA_APIS["strategy1_1h_anchor"],
-			#None, None, None, None,	None,			
-		#)
-
-		#strategies_instance.entry_strategy1(
-			#"strategy1_1h_anchor",
-			#"5m",
-			#"15m",
-			#"1h",
-			#False,
-			#now_et,
-			#signal,
-			#prices,
-			#symbol,
-			#tf,
-			#NUM_SHARES2,
-			#ALPACA_APIS["strategy1_1h_anchor"],
-			#None, None, None, None,	None,		
-		#)
-
-		entry_is_blocked = (
-			strategies_instance
-			.live_trailing_stop_entry_is_blocked(
-				owner_name="strategy4_1h_anchor",
-				ticker=symbol,
-				alpaca_api=ALPACA_APIS[
-					"strategy4_1h_anchor"
-				],
-			)
+		strategies_instance.exit_strategy1(
+			"strategy1_1h_anchor",
+			{"1m", "5m"},
+			"15m",
+			"1h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy1_1h_anchor"],
+			None, None, None, None,	None,			
 		)
 
-		entries_closed_for_day = (
-			strategies_instance
-			.live_trailing_stop_entries_closed_for_day(
-				owner_name="strategy4_1h_anchor",
-				now_et=now_et,
-			)
-		)	
-
-		if entries_closed_for_day:
-			logger.info(
-				"Strategy 4 entry skipped because trailing-stop "
-				"entries are closed for the day: "
-				"owner=%r ticker=%r now_et=%s",
-				"strategy4_1h_anchor",
-				symbol,
-				now_et,
-			)			
-
-		if (entry_is_blocked or entries_closed_for_day):
-			submitted_order = None
-		else:
-			submitted_order = (
-				strategies_instance.entry_strategy4(
-					"strategy4_1h_anchor",
-					"1h",
-					False,
-					now_et,
-					signal,
-					prices,
-					symbol,
-					tf,
-					NUM_SHARES2,
-					ALPACA_APIS["strategy4_1h_anchor"],
-					None,
-					None,
-					None,
-					None,
-					None,
-				)
-			)
-
-			if submitted_order is not None:
-				strategies_instance.register_live_trailing_stop_entry(
-					owner_name="strategy4_1h_anchor",
-					ticker=symbol,
-					anchor_tf="1h",
-					entry_order_id=str(
-						getattr(
-							submitted_order,
-							"id",
-							"",
-						)
-					),
-					entry_decision_time=now_et,
-				)				
-				trailing_stop_exit_wake_event.set()
-
+		strategies_instance.entry_strategy1(
+			"strategy1_1h_anchor",
+			"5m",
+			"15m",
+			"1h",
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			NUM_SHARES2,
+			ALPACA_APIS["strategy1_1h_anchor"],
+			None, None, None, None,	None,		
+		)
 
 		strategies_instance.exit_strategy1(
 			"strategy1_4h_anchor",
