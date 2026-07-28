@@ -11,9 +11,16 @@ import math
 
 logger = logging.getLogger("tv-webhook")
 
+#DIAGNOSTIC_TICKERS = {
+    #"AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
+    #"META", "GOOGL", "JPM", "XOM", "SPY",
+#}
+
 DIAGNOSTIC_TICKERS = {
     "AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
-    "META", "GOOGL", "JPM", "XOM", "SPY",
+    "META", "GOOGL", "JPM", "XOM", "SPY", "AMD", 
+    "AMAT", "INTC", "CRM", "ADBE", "SNOW", "JPM", 
+    "GS", "MS", "XOM", "CVX", "NFLX", "DIS"
 }
 
 LIVE_DIAGNOSTIC_LOG_PATH = os.getenv(
