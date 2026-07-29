@@ -110,21 +110,21 @@ ALPACA_APIS = {
 		key_id=APCA_API_KEY_ID_STG1_4H, 
 		secret_key=APCA_API_SECRET_KEY_STG1_4H
 	),
-	"strategy2_15m_anchor": tradeapi.REST(
-		base_url=APCA_API_BASE_URL_STG2_15M, 
-		key_id=APCA_API_KEY_ID_STG2_15M, 
-		secret_key=APCA_API_SECRET_KEY_STG2_15M
-	),
-	"strategy2_1h_anchor": tradeapi.REST(
-		base_url=APCA_API_BASE_URL_STG2_1H, 
-		key_id=APCA_API_KEY_ID_STG2_1H, 
-		secret_key=APCA_API_SECRET_KEY_STG2_1H
-	),
-	"strategy2_4h_anchor": tradeapi.REST(
-		base_url=APCA_API_BASE_URL_STG2_4H, 
-		key_id=APCA_API_KEY_ID_STG2_4H, 
-		secret_key=APCA_API_SECRET_KEY_STG2_4H
-	),	
+	#"strategy2_15m_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG2_15M, 
+		#key_id=APCA_API_KEY_ID_STG2_15M, 
+		#secret_key=APCA_API_SECRET_KEY_STG2_15M
+	#),
+	#"strategy2_1h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG2_1H, 
+		#key_id=APCA_API_KEY_ID_STG2_1H, 
+		#secret_key=APCA_API_SECRET_KEY_STG2_1H
+	#),
+	#"strategy2_4h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG2_4H, 
+		#key_id=APCA_API_KEY_ID_STG2_4H, 
+		#secret_key=APCA_API_SECRET_KEY_STG2_4H
+	#),	
 	#"strategy4_15m_anchor": tradeapi.REST(
 		#base_url=APCA_API_BASE_URL_STG4_15M,
 		#key_id=APCA_API_KEY_ID_STG4_15M,
