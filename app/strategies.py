@@ -4445,10 +4445,33 @@ class Strategies:
 					ex=60 * 60 * 24 * 3,
 				)
 
-			pattern = (
-				"tv:live_trailing_stop:managed:"
-				f"{owner_name}:*"
-			)
+				account_is_flat = (
+					self.liquidate_live_account_positions(
+						owner_name=owner_name,
+						alpaca_api=alpaca_api,
+						exit_reason=(
+							"market_close_liquidation"
+						),
+					)
+				)
+
+				if account_is_flat:
+					logger.warning(
+						"Market-close liquidation complete: "
+						"owner=%r",
+						owner_name,
+					)
+
+				else:
+					logger.warning(
+						"Market-close liquidation still in progress; "
+						"will retry next monitor iteration: "
+						"owner=%r seconds_to_close=%r",
+						owner_name,
+						seconds_to_close,
+					)
+
+				return				
 
 			pattern = (
 				"tv:live_trailing_stop:managed:"
@@ -4548,28 +4571,24 @@ class Strategies:
 						symbol
 					)
 
-				except Exception:
-					entry_order_id = managed_state.get(
-						"entry_order_id",
-						"",
+				except Exception as exc:
+					logger.exception(
+						"Unable to read Alpaca position: "
+						"owner=%r ticker=%r",
+						owner_name,
+						symbol,
 					)
 
-					if self._entry_order_is_still_pending(
-						alpaca_api,
-						entry_order_id,
-					):
-						continue
-
-					self.r.delete(
-						managed_key
-					)
-
-					self.r.delete(
-						self._live_trailing_stop_state_key(
-							owner_name,
-							symbol,
+					# Only remove registration if Alpaca explicitly says
+					# the position does not exist.
+					if "position does not exist" in str(exc).lower():
+						self.r.delete(managed_key)
+						self.r.delete(
+							self._live_trailing_stop_state_key(
+								owner_name,
+								symbol,
+							)
 						)
-					)
 
 					continue
 
@@ -4602,7 +4621,7 @@ class Strategies:
 					else "short"
 				)
 
-				if in_market_close_window:
+				"""if in_market_close_window:
 					daily_key = (
 						"tv:live_trailing_stop:market_close:"
 						f"{owner_name}:"
@@ -4677,7 +4696,7 @@ class Strategies:
 								},
 							)
 
-					continue
+					continue"""
 
 				if not bool(
 					getattr(
@@ -4831,3 +4850,190 @@ class Strategies:
 				key
 			)
 		)
+
+
+	def liquidate_live_account_positions(
+		self,
+		*,
+		owner_name: str,
+		alpaca_api,
+		exit_reason: str,
+	) -> bool:
+		"""
+		Request liquidation of every position currently reported by Alpaca.
+
+		Returns True only when Alpaca reports that the account is already flat.
+		Otherwise, submits or maintains closing requests and returns False so the
+		next manager iteration can reconcile again.
+		"""
+		try:
+			positions = list(
+				alpaca_api.list_positions()
+			)
+
+		except Exception:
+			logger.exception(
+				"Unable to list Alpaca positions during "
+				"account liquidation: owner=%r",
+				owner_name,
+			)
+			return False
+
+		if not positions:
+			logger.warning(
+				"Live account liquidation confirmed flat: "
+				"owner=%r reason=%r",
+				owner_name,
+				exit_reason,
+			)
+			return True
+
+		try:
+			open_orders = list(
+				alpaca_api.list_orders(
+					status="open",
+					limit=500,
+				)
+			)
+
+		except Exception:
+			logger.exception(
+				"Unable to list open orders during "
+				"account liquidation: owner=%r",
+				owner_name,
+			)
+			return False
+
+		orders_by_symbol = {}
+
+		for order in open_orders:
+			symbol = str(
+				getattr(
+					order,
+					"symbol",
+					"",
+				)
+				or ""
+			).upper().strip()
+
+			if not symbol:
+				continue
+
+			orders_by_symbol.setdefault(
+				symbol,
+				[],
+			).append(
+				order
+			)
+
+		for position in positions:
+			symbol = str(
+				getattr(
+					position,
+					"symbol",
+					"",
+				)
+				or ""
+			).upper().strip()
+
+			raw_qty = float(
+				getattr(
+					position,
+					"qty",
+					0.0,
+				)
+				or 0.0
+			)
+
+			if (
+				not symbol
+				or raw_qty == 0
+			):
+				continue
+
+			symbol_orders = orders_by_symbol.get(
+				symbol,
+				[],
+			)
+
+			# Cancel trailing stops and any other existing orders that could
+			# conflict with a full-position market close.
+			for order in symbol_orders:
+				order_id = str(
+					getattr(
+						order,
+						"id",
+						"",
+					)
+					or ""
+				).strip()
+
+				if not order_id:
+					continue
+
+				try:
+					alpaca_api.cancel_order(
+						order_id
+					)
+
+					logger.warning(
+						"Canceled open order before account "
+						"liquidation: owner=%r ticker=%r "
+						"order_id=%r type=%r",
+						owner_name,
+						symbol,
+						order_id,
+						getattr(
+							order,
+							"type",
+							"",
+						),
+					)
+
+				except Exception:
+					logger.exception(
+						"Unable to cancel order before account "
+						"liquidation: owner=%r ticker=%r "
+						"order_id=%r",
+						owner_name,
+						symbol,
+						order_id,
+					)
+
+			# Do not submit a second closing order in the same iteration.
+			# The next monitor iteration will inspect the remaining position.
+			if symbol_orders:
+				continue
+
+			try:
+				order = alpaca_api.close_position(
+					symbol
+				)
+
+				logger.warning(
+					"Account liquidation submitted: "
+					"owner=%r ticker=%r qty=%r "
+					"order_id=%r reason=%r",
+					owner_name,
+					symbol,
+					raw_qty,
+					getattr(
+						order,
+						"id",
+						"",
+					),
+					exit_reason,
+				)
+
+			except Exception:
+				logger.exception(
+					"Account liquidation submission failed: "
+					"owner=%r ticker=%r qty=%r "
+					"reason=%r",
+					owner_name,
+					symbol,
+					raw_qty,
+					exit_reason,
+				)
+
+		return False

@@ -100,11 +100,11 @@ ALPACA_APIS = {
 		key_id=APCA_API_KEY_ID_STG1_15M, 
 		secret_key=APCA_API_SECRET_KEY_STG1_15M
 	),
-	"strategy1_1h_anchor": tradeapi.REST(
-		base_url=APCA_API_BASE_URL_STG1_1H, 
-		key_id=APCA_API_KEY_ID_STG1_1H, 
-		secret_key=APCA_API_SECRET_KEY_STG1_1H
-	),
+	#"strategy1_1h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG1_1H, 
+		#key_id=APCA_API_KEY_ID_STG1_1H, 
+		#secret_key=APCA_API_SECRET_KEY_STG1_1H
+	#),
 	"strategy1_4h_anchor": tradeapi.REST(
 		base_url=APCA_API_BASE_URL_STG1_4H, 
 		key_id=APCA_API_KEY_ID_STG1_4H, 
@@ -265,14 +265,14 @@ TRAILING_STOP_EXIT_LIQUIDATE_BEFORE_MARKET_CLOSE = env_bool(
 TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS = int(
 	os.getenv(
 		"TRAILING_STOP_EXIT_MARKET_CLOSE_BUFFER_SECONDS",
-		"60",
+		"300",
 	)
 )
 
 TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS = int(
 	os.getenv(
 		"TRAILING_STOP_EXIT_MONITOR_INTERVAL_SECONDS",
-		"5",
+		"30",
 	)
 )
 
