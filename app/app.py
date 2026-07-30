@@ -25,6 +25,7 @@ import trade_records
 import backtester
 import plot
 import threading
+import math
 
 
 # All trade, event, and snapshot timestamps are stored in Eastern Time (America/New_York).
@@ -532,8 +533,19 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			return
 
 		NUM_SHARES1 = POSITION_SIZE_15M / market_price
-		NUM_SHARES2 = POSITION_SIZE_1H / market_price
+		NUM_SHARES2 = math.floor(POSITION_SIZE_1H / market_price) #Since the strategy tied to this number of shares will use trailing stops
 		NUM_SHARES3 = POSITION_SIZE_4H / market_price
+
+		if NUM_SHARES2 < 1:
+			logger.info(
+				"Strategy 4 entry skipped because position size "
+				"is insufficient for one whole share: "
+				"ticker=%r position_size=%r market_price=%r",
+				symbol,
+				POSITION_SIZE_1H,
+				market_price,
+			)
+			return		
 
 		##strategies_instance.entry_strategy1( # Will be implemented when we are ready to trade real money. May not be this strategy/anchor
 			#"real_money",

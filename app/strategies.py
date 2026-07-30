@@ -4284,9 +4284,205 @@ class Strategies:
 			== "trailing_stop"
 		]
 
-		if trailing_orders:
+		#
+		# Add up the quantity protected by all active
+		# trailing-stop orders.
+		#
+		trailing_qty = 0.0
+
+		for trailing_order in trailing_orders:
+			try:
+				order_qty = abs(
+					float(
+						getattr(
+							trailing_order,
+							"qty",
+							0.0,
+						)
+						or 0.0
+					)
+				)
+
+			except Exception:
+				logger.exception(
+					"Unable to parse trailing-stop order quantity: "
+					"owner=%r ticker=%r order_id=%r qty=%r",
+					owner_name,
+					symbol,
+					getattr(
+						trailing_order,
+						"id",
+						None,
+					),
+					getattr(
+						trailing_order,
+						"qty",
+						None,
+					),
+				)
+				return
+
+			trailing_qty += order_qty
+
+		#
+		# Use a small tolerance to avoid replacing an order
+		# because of insignificant floating-point differences.
+		#
+		qty_tolerance = 0.000000001
+
+		trailing_qty_matches_position = (
+			bool(
+				trailing_orders
+			)
+			and math.isclose(
+				trailing_qty,
+				position_qty,
+				rel_tol=0.0,
+				abs_tol=qty_tolerance,
+			)
+		)
+
+		#
+		# Existing trailing protection already covers the full
+		# position. No replacement is needed.
+		#
+		if trailing_qty_matches_position:
+			self.r.hset(
+				state_key,
+				mapping={
+					"trailing_order_id": str(
+						getattr(
+							trailing_orders[0],
+							"id",
+							"",
+						)
+					),
+					"last_checked_at": (
+						now_et.isoformat()
+					),
+					"protected_position_qty": str(
+						position_qty
+					),
+				},
+			)
+
 			return
 
+		#
+		# A trailing stop exists, but its total quantity does not
+		# match the current Alpaca position. Cancel all existing
+		# closing orders before replacing the trailing stop.
+		#
+		if trailing_orders:
+			logger.warning(
+				"Live trailing-stop quantity mismatch; "
+				"canceling and replacing: "
+				"owner=%r ticker=%r position_qty=%r "
+				"trailing_qty=%r trailing_order_count=%r",
+				owner_name,
+				symbol,
+				position_qty,
+				trailing_qty,
+				len(
+					trailing_orders
+				),
+			)
+
+			if not self._cancel_orders_and_wait(
+				alpaca_api,
+				closing_orders,
+			):
+				logger.warning(
+					"Live trailing-stop replacement deferred "
+					"because order cancellation was not confirmed: "
+					"owner=%r ticker=%r",
+					owner_name,
+					symbol,
+				)
+				return
+
+			#
+			# Refresh the live position after cancellation. Its
+			# quantity could have changed while cancellation was
+			# being processed.
+			#
+			try:
+				refreshed_position = (
+					alpaca_api.get_position(
+						symbol
+					)
+				)
+
+			except Exception as exc:
+				if (
+					"position does not exist"
+					in str(
+						exc
+					).lower()
+				):
+					logger.info(
+						"Trailing-stop replacement skipped "
+						"because the position is now flat: "
+						"owner=%r ticker=%r",
+						owner_name,
+						symbol,
+					)
+
+					self.r.delete(
+						state_key
+					)
+
+				else:
+					logger.exception(
+						"Unable to refresh Alpaca position "
+						"after trailing-stop cancellation: "
+						"owner=%r ticker=%r",
+						owner_name,
+						symbol,
+					)
+
+				return
+
+			refreshed_raw_qty = float(
+				getattr(
+					refreshed_position,
+					"qty",
+					0.0,
+				)
+				or 0.0
+			)
+
+			if refreshed_raw_qty == 0:
+				logger.info(
+					"Trailing-stop replacement skipped because "
+					"the refreshed position quantity is zero: "
+					"owner=%r ticker=%r",
+					owner_name,
+					symbol,
+				)
+
+				self.r.delete(
+					state_key
+				)
+				return
+
+			position_qty = abs(
+				refreshed_raw_qty
+			)
+
+			position_side = (
+				"long"
+				if refreshed_raw_qty > 0
+				else "short"
+			)
+
+		#
+		# No matching trailing stop exists. This handles both:
+		#
+		# 1. No trailing stop existed.
+		# 2. A mismatched trailing stop was canceled and the
+		#    position was refreshed.
+		#
 		trailing_amount = (
 			entry_atr
 			* active_multiplier
@@ -4315,9 +4511,11 @@ class Strategies:
 					"last_checked_at": (
 						now_et.isoformat()
 					),
+					"protected_position_qty": str(
+						position_qty
+					),
 				},
 			)
-
 
 
 	def _entry_order_is_still_pending(
@@ -4337,7 +4535,13 @@ class Strategies:
 				order_id
 			)
 		except Exception:
-			return False
+			logger.exception(
+				"Unable to verify entry-order status; "
+				"deferring trailing-stop management: "
+				"entry_order_id=%r",
+				order_id,
+			)
+			return True
 
 		status = str(
 			getattr(
@@ -4354,6 +4558,7 @@ class Strategies:
 			"new",
 			"partially_filled",
 			"pending_replace",
+			"pending_cancel",
 		}
 
 
@@ -4391,8 +4596,13 @@ class Strategies:
 		try:
 			now_et = self.tvw_helpers._now_et()
 
+			#
+			# Read the Alpaca market clock once for this manager
+			# iteration.
+			#
 			try:
 				clock = alpaca_api.get_clock()
+
 			except Exception:
 				logger.exception(
 					"Unable to read Alpaca clock: owner=%r",
@@ -4409,6 +4619,7 @@ class Strategies:
 						clock.timestamp
 					)
 				).total_seconds()
+
 			except Exception:
 				logger.exception(
 					"Unable to calculate time to market close: "
@@ -4417,21 +4628,27 @@ class Strategies:
 				)
 				seconds_to_close = None
 
+			market_is_open = bool(
+				getattr(
+					clock,
+					"is_open",
+					False,
+				)
+			)
+
 			in_market_close_window = (
 				liquidate_before_market_close
-				and bool(
-					getattr(
-						clock,
-						"is_open",
-						False,
-					)
-				)
+				and market_is_open
 				and seconds_to_close is not None
 				and 0
 				< seconds_to_close
 				<= market_close_buffer_seconds
 			)
 
+			#
+			# Market-close liquidation takes priority over normal
+			# trailing-stop management.
+			#
 			if in_market_close_window:
 				entries_closed_key = (
 					"tv:live_trailing_stop:entries_closed:"
@@ -4471,7 +4688,14 @@ class Strategies:
 						seconds_to_close,
 					)
 
-				return				
+				return
+
+			#
+			# Normal trailing-stop management should run only while
+			# the market is open.
+			#
+			if not market_is_open:
+				return
 
 			pattern = (
 				"tv:live_trailing_stop:managed:"
@@ -4481,54 +4705,71 @@ class Strategies:
 			for managed_key in self.r.scan_iter(
 				pattern
 			):
-				managed_state = self.r.hgetall(
-					managed_key
-				)
-
-				symbol = str(
-					managed_state.get(
-						"ticker",
-						"",
+				try:
+					managed_state = self.r.hgetall(
+						managed_key
 					)
-					or ""
-				).upper().strip()
 
-				anchor_tf = (
-					self.tvw_helpers.normalize_tf(
+					symbol = str(
 						managed_state.get(
-							"anchor_tf",
+							"ticker",
 							"",
 						)
-					)
-				)
+						or ""
+					).upper().strip()
 
-				entry_decision_time_raw = str(
-					managed_state.get(
-						"entry_decision_time",
-						"",
-					)
-					or ""
-				).strip()
-
-				try:
-					entry_decision_time = (
-						datetime.fromisoformat(
-							entry_decision_time_raw
+					anchor_tf = (
+						self.tvw_helpers.normalize_tf(
+							managed_state.get(
+								"anchor_tf",
+								"",
+							)
 						)
 					)
-				except Exception:
-					logger.warning(
-						"Invalid entry decision time; using "
-						"registration time instead: "
-						"owner=%r ticker=%r value=%r",
-						owner_name,
-						symbol,
-						entry_decision_time_raw,
-					)
 
-					registered_at_raw = str(
+					entry_order_id = str(
 						managed_state.get(
-							"registered_at",
+							"entry_order_id",
+							"",
+						)
+						or ""
+					).strip()
+
+					if not symbol or not anchor_tf:
+						logger.warning(
+							"Invalid trailing-stop managed state: "
+							"owner=%r key=%r state=%r",
+							owner_name,
+							managed_key,
+							managed_state,
+						)
+						continue
+
+					#
+					# Do not initialize or modify trailing protection
+					# while the entry order is still being filled.
+					#
+					if (
+						entry_order_id
+						and self._entry_order_is_still_pending(
+							alpaca_api,
+							entry_order_id,
+						)
+					):
+						logger.info(
+							"Live trailing-stop management deferred "
+							"because entry order is still pending: "
+							"owner=%r ticker=%r "
+							"entry_order_id=%r",
+							owner_name,
+							symbol,
+							entry_order_id,
+						)
+						continue
+
+					entry_decision_time_raw = str(
+						managed_state.get(
+							"entry_decision_time",
 							"",
 						)
 						or ""
@@ -4537,52 +4778,123 @@ class Strategies:
 					try:
 						entry_decision_time = (
 							datetime.fromisoformat(
-								registered_at_raw
+								entry_decision_time_raw
 							)
 						)
+
 					except Exception:
-						entry_decision_time = now_et
-
-				if entry_decision_time.tzinfo is None:
-					entry_decision_time = (
-						entry_decision_time.replace(
-							tzinfo=self.tvw_helpers.eastern_tz
+						logger.warning(
+							"Invalid entry decision time; using "
+							"registration time instead: "
+							"owner=%r ticker=%r value=%r",
+							owner_name,
+							symbol,
+							entry_decision_time_raw,
 						)
-					)
-				else:
-					entry_decision_time = (
-						entry_decision_time.astimezone(
-							self.tvw_helpers.eastern_tz
+
+						registered_at_raw = str(
+							managed_state.get(
+								"registered_at",
+								"",
+							)
+							or ""
+						).strip()
+
+						try:
+							entry_decision_time = (
+								datetime.fromisoformat(
+									registered_at_raw
+								)
+							)
+
+						except Exception:
+							entry_decision_time = now_et
+
+					if entry_decision_time.tzinfo is None:
+						entry_decision_time = (
+							entry_decision_time.replace(
+								tzinfo=(
+									self.tvw_helpers.eastern_tz
+								)
+							)
 						)
-					)				
 
-				if not symbol or not anchor_tf:
-					logger.warning(
-						"Invalid trailing-stop managed state: "
-						"owner=%r key=%r state=%r",
-						owner_name,
-						managed_key,
-						managed_state,
+					else:
+						entry_decision_time = (
+							entry_decision_time.astimezone(
+								self.tvw_helpers.eastern_tz
+							)
+						)
+
+					#
+					# Confirm that the position exists before fetching
+					# prices or invoking the position manager.
+					#
+					try:
+						position = alpaca_api.get_position(
+							symbol
+						)
+
+					except Exception as exc:
+						exception_message = str(
+							exc
+						).lower()
+
+						if (
+							"position does not exist"
+							in exception_message
+						):
+							logger.info(
+								"Removing trailing-stop registration "
+								"because Alpaca confirms position is "
+								"flat: owner=%r ticker=%r",
+								owner_name,
+								symbol,
+							)
+
+							self.r.delete(
+								managed_key
+							)
+
+							self.r.delete(
+								self._live_trailing_stop_state_key(
+									owner_name,
+									symbol,
+								)
+							)
+
+						else:
+							logger.exception(
+								"Unable to read Alpaca position: "
+								"owner=%r ticker=%r",
+								owner_name,
+								symbol,
+							)
+
+						continue
+
+					raw_qty = float(
+						getattr(
+							position,
+							"qty",
+							0.0,
+						)
+						or 0.0
 					)
-					continue
 
-				try:
-					position = alpaca_api.get_position(
-						symbol
-					)
+					if raw_qty == 0:
+						logger.info(
+							"Removing trailing-stop registration "
+							"because Alpaca position quantity is "
+							"zero: owner=%r ticker=%r",
+							owner_name,
+							symbol,
+						)
 
-				except Exception as exc:
-					logger.exception(
-						"Unable to read Alpaca position: "
-						"owner=%r ticker=%r",
-						owner_name,
-						symbol,
-					)
+						self.r.delete(
+							managed_key
+						)
 
-					# Only remove registration if Alpaca explicitly says
-					# the position does not exist.
-					if "position does not exist" in str(exc).lower():
-						self.r.delete(managed_key)
 						self.r.delete(
 							self._live_trailing_stop_state_key(
 								owner_name,
@@ -4590,179 +4902,93 @@ class Strategies:
 							)
 						)
 
-					continue
+						continue
 
-				raw_qty = float(
-					getattr(
-						position,
-						"qty",
-						0.0,
-					)
-					or 0.0
-				)
-
-				if raw_qty == 0:
-					self.r.delete(
-						managed_key
+					prices = (
+						self.trade_records.get_market_prices(
+							[symbol],
+							alpaca_api,
+						)
 					)
 
-					self.r.delete(
-						self._live_trailing_stop_state_key(
+					current_price = (
+						prices.get(
+							symbol,
+							{},
+						).get(
+							"market"
+						)
+					)
+
+					if (
+						current_price is None
+						or float(
+							current_price
+						) <= 0
+					):
+						logger.warning(
+							"Trailing-stop management skipped due "
+							"to invalid price: owner=%r ticker=%r "
+							"price=%r",
+							owner_name,
+							symbol,
+							current_price,
+						)
+						continue
+
+					#
+					# Keep each symbol isolated. An Alpaca rejection or
+					# unexpected failure for one position must not stop
+					# management of the remaining positions.
+					#
+					try:
+						self.manage_live_trailing_stop_position(
+							owner_name=owner_name,
+							ticker=symbol,
+							anchor_tf=anchor_tf,
+							alpaca_api=alpaca_api,
+							current_price=float(
+								current_price
+							),
+							atr_period=atr_period,
+							atr_multiplier=atr_multiplier,
+							loss_liquidation_atr_factor=(
+								loss_liquidation_atr_factor
+							),
+							profit_expansion_atr_factor=(
+								profit_expansion_atr_factor
+							),
+							trailing_stop_multiplier_factor=(
+								trailing_stop_multiplier_factor
+							),
+							now_et=now_et,
+							entry_decision_time=(
+								entry_decision_time
+							),
+						)
+
+					except Exception:
+						logger.exception(
+							"Live trailing-stop position management "
+							"failed: owner=%r ticker=%r",
 							owner_name,
 							symbol,
 						)
-					)
+						continue
 
-					continue
-
-				position_side = (
-					"long"
-					if raw_qty > 0
-					else "short"
-				)
-
-				"""if in_market_close_window:
-					daily_key = (
-						"tv:live_trailing_stop:market_close:"
-						f"{owner_name}:"
-						f"{now_et.date().isoformat()}:"
-						f"{symbol}"
-					)
-
-					first_attempt = self.r.set(
-						daily_key,
-						"1",
-						nx=True,
-						ex=60 * 60 * 24 * 7,
-					)
-
-					if first_attempt:
-						entries_closed_key = (
-							"tv:live_trailing_stop:entries_closed:"
-							f"{owner_name}:"
-							f"{now_et.date().isoformat()}"
-						)
-
-						self.r.set(
-							entries_closed_key,
-							"1",
-							ex=60 * 60 * 24 * 3,
-						)						
-						order = (
-							self._submit_live_market_liquidation(
-								owner_name=owner_name,
-								ticker=symbol,
-								position_side=position_side,
-								alpaca_api=alpaca_api,
-								exit_reason=(
-									"market_close_liquidation"
-								),
-							)
-						)
-
-						if order is None:
-							self.r.delete(
-								daily_key
-							)
-
-						else:
-							state_key = (
-								self._live_trailing_stop_state_key(
-									owner_name,
-									symbol,
-								)
-							)
-
-							self.r.hset(
-								state_key,
-								mapping={
-									"exit_pending": "1",
-									"exit_reason": (
-										"market_close_liquidation"
-									),
-									"exit_order_id": str(
-										getattr(
-											order,
-											"id",
-											"",
-										)
-									),
-									"exit_requested_at": (
-										now_et.isoformat()
-									),
-									"market_close_daily_key": (
-										daily_key
-									),
-								},
-							)
-
-					continue"""
-
-				if not bool(
-					getattr(
-						clock,
-						"is_open",
-						False,
-					)
-				):
-					continue
-
-				prices = (
-					self.trade_records.get_market_prices(
-						[symbol],
-						alpaca_api,
-					)
-				)
-
-				current_price = prices.get(
-					symbol,
-					{},
-				).get(
-					"market"
-				)
-
-				if (
-					current_price is None
-					or current_price <= 0
-				):
-					logger.warning(
-						"Trailing-stop management skipped due "
-						"to invalid price: owner=%r ticker=%r "
-						"price=%r",
+				except Exception:
+					logger.exception(
+						"Unexpected failure processing trailing-stop "
+						"registration: owner=%r key=%r",
 						owner_name,
-						symbol,
-						current_price,
+						managed_key,
 					)
 					continue
-
-				self.manage_live_trailing_stop_position(
-					owner_name=owner_name,
-					ticker=symbol,
-					anchor_tf=anchor_tf,
-					alpaca_api=alpaca_api,
-					current_price=float(
-						current_price
-					),
-					atr_period=atr_period,
-					atr_multiplier=atr_multiplier,
-					loss_liquidation_atr_factor=(
-						loss_liquidation_atr_factor
-					),
-					profit_expansion_atr_factor=(
-						profit_expansion_atr_factor
-					),
-					trailing_stop_multiplier_factor=(
-						trailing_stop_multiplier_factor
-					),
-					now_et=now_et,
-					entry_decision_time=(
-						entry_decision_time
-					),					
-				)
 
 		finally:
 			try:
 				manager_lock.release()
+
 			except Exception:
 				logger.exception(
 					"Unable to release trailing-stop manager lock: "
