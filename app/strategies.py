@@ -4842,34 +4842,151 @@ class Strategies:
 
 						if (
 							"position does not exist"
-							in exception_message
+							not in exception_message
 						):
-							logger.info(
-								"Removing trailing-stop registration "
-								"because Alpaca confirms position is "
-								"flat: owner=%r ticker=%r",
-								owner_name,
-								symbol,
-							)
-
-							self.r.delete(
-								managed_key
-							)
-
-							self.r.delete(
-								self._live_trailing_stop_state_key(
-									owner_name,
-									symbol,
-								)
-							)
-
-						else:
 							logger.exception(
 								"Unable to read Alpaca position: "
 								"owner=%r ticker=%r",
 								owner_name,
 								symbol,
 							)
+							continue
+
+						#
+						# A newly submitted entry can exist before Alpaca exposes
+						# the resulting position. Recheck the registered entry order
+						# before treating the registration as stale.
+						#
+						entry_order_status = ""
+
+						if entry_order_id:
+							try:
+								entry_order = alpaca_api.get_order(
+									entry_order_id
+								)
+
+								entry_order_status = str(
+									getattr(
+										entry_order,
+										"status",
+										"",
+									)
+									or ""
+								).lower()
+
+							except Exception:
+								logger.exception(
+									"Unable to verify entry order before removing "
+									"trailing-stop registration: "
+									"owner=%r ticker=%r entry_order_id=%r",
+									owner_name,
+									symbol,
+									entry_order_id,
+								)
+
+								#
+								# Fail safe: retain the registration if Alpaca order
+								# state cannot be verified.
+								#
+								continue
+
+						if entry_order_status in {
+							"accepted",
+							"new",
+							"pending_new",
+							"partially_filled",
+							"pending_replace",
+							"pending_cancel",
+						}:
+							logger.info(
+								"Keeping trailing-stop registration because entry "
+								"order is still pending: owner=%r ticker=%r "
+								"entry_order_id=%r status=%r",
+								owner_name,
+								symbol,
+								entry_order_id,
+								entry_order_status,
+							)
+							continue
+
+						registered_at_raw = str(
+							managed_state.get(
+								"registered_at",
+								"",
+							)
+							or ""
+						).strip()
+
+						registration_age_seconds = float(
+							"inf"
+						)
+
+						if registered_at_raw:
+							try:
+								registered_at = datetime.fromisoformat(
+									registered_at_raw
+								)
+
+								if registered_at.tzinfo is None:
+									registered_at = registered_at.replace(
+										tzinfo=self.tvw_helpers.eastern_tz
+									)
+
+								else:
+									registered_at = registered_at.astimezone(
+										self.tvw_helpers.eastern_tz
+									)
+
+								registration_age_seconds = (
+									now_et
+									- registered_at
+								).total_seconds()
+
+							except Exception:
+								logger.warning(
+									"Unable to parse trailing-stop registration "
+									"time: owner=%r ticker=%r registered_at=%r",
+									owner_name,
+									symbol,
+									registered_at_raw,
+								)
+
+						if (
+							entry_order_status == "filled"
+							and registration_age_seconds < 60
+						):
+							logger.info(
+								"Keeping trailing-stop registration during post-fill "
+								"position visibility grace period: "
+								"owner=%r ticker=%r entry_order_id=%r "
+								"registration_age_seconds=%r",
+								owner_name,
+								symbol,
+								entry_order_id,
+								registration_age_seconds,
+							)						
+							continue
+						logger.info(
+							"Removing trailing-stop registration because Alpaca "
+							"confirms position is flat and the registered entry "
+							"is no longer pending: owner=%r ticker=%r "
+							"entry_order_id=%r entry_order_status=%r",
+							owner_name,
+							symbol,
+							entry_order_id,
+							entry_order_status,
+						)
+
+						self.r.delete(
+							managed_key
+						)
+
+						self.r.delete(
+							self._live_trailing_stop_state_key(
+								owner_name,
+								symbol,
+							)
+						)
 
 						continue
 
@@ -5263,3 +5380,4 @@ class Strategies:
 				)
 
 		return False
+60
