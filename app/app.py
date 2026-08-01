@@ -691,20 +691,34 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 
 			if submitted_order is not None:
-				strategies_instance.register_live_trailing_stop_entry(
-					owner_name="strategy4_1h_anchor",
-					ticker=symbol,
-					anchor_tf="1h",
-					entry_order_id=str(
-						getattr(
-							submitted_order,
-							"id",
-							"",
-						)
-					),
-					entry_decision_time=now_et,
-				)				
-				trailing_stop_exit_wake_event.set()
+				entry_order_id = str(
+					submitted_order.get(
+						"order_id",
+						"",
+					)
+					or ""
+				).strip()
+
+				if not entry_order_id:
+					logger.error(
+						"Strategy 4 entry returned no order ID; "
+						"trailing-stop registration skipped: "
+						"owner=%r ticker=%r submitted_order=%r",
+						"strategy4_1h_anchor",
+						symbol,
+						submitted_order,
+					)
+
+				else:
+					strategies_instance.register_live_trailing_stop_entry(
+						owner_name="strategy4_1h_anchor",
+						ticker=symbol,
+						anchor_tf="1h",
+						entry_order_id=entry_order_id,
+						entry_decision_time=now_et,
+					)
+
+					trailing_stop_exit_wake_event.set()
 
 
 		strategies_instance.exit_strategy1(

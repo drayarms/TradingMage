@@ -3441,6 +3441,20 @@ class Strategies:
 			ticker or ""
 		).upper().strip()
 
+		entry_order_id = str(
+			entry_order_id or ""
+		).strip()
+
+		if not entry_order_id:
+			logger.error(
+				"Refusing live trailing-stop registration without "
+				"an entry order ID: owner=%r ticker=%r anchor_tf=%r",
+				owner_name,
+				symbol,
+				anchor_tf,
+			)
+			return		
+
 		registered_at = (
 			self.tvw_helpers._now_et()
 		)
@@ -3475,9 +3489,7 @@ class Strategies:
 						anchor_tf
 					)
 				),
-				"entry_order_id": str(
-					entry_order_id or ""
-				),
+				"entry_order_id": entry_order_id,
 				"entry_decision_time": (
 					entry_decision_time.isoformat()
 				),
@@ -5380,4 +5392,3 @@ class Strategies:
 				)
 
 		return False
-60
