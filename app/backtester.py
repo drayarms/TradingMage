@@ -2119,6 +2119,14 @@ class BackTester:
 			position.avg_price_per_share
 		)
 
+		loss_distance = None
+		defensive_exit_price = None
+		defensive_exit_triggered = False
+
+		profit_distance = None
+		expansion_trigger_price = None
+		expansion_triggered = False		
+
 		#
 		# 1. Defensive liquidation below/above cost basis.
 		#
@@ -2155,6 +2163,62 @@ class BackTester:
 				)
 
 			if defensive_exit_triggered:
+				if (
+					self.diagnostic_logging_enabled
+					and self.recording_enabled
+					and ticker in {
+						"CRM",
+						"ADBE",
+						"SNOW",
+						"NFLX",
+						"AMAT",
+					}
+				):
+					logger.info(
+						"[EXIT3_STATE] "
+						"source=sim "
+						"ticker=%r "
+						"time=%s "
+						"decision=%r "
+						"side=%r "
+						"current_price=%.6f "
+						"entry_price=%.6f "
+						"entry_atr=%.6f "
+						"high_water_price=%r "
+						"low_water_price=%r "
+						"original_multiplier=%r "
+						"active_multiplier=%r "
+						"trailing_amount=%r "
+						"trailing_stop_price=%r "
+						"loss_distance=%r "
+						"defensive_price=%r "
+						"defensive_triggered=%r "
+						"profit_distance=%r "
+						"expansion_price=%r "
+						"expansion_triggered=%r "
+						"stop_expanded=%r",
+						ticker,
+						bar_dt.isoformat(),
+						"atr_cost_basis_liquidation",
+						position.side,
+						market_price,
+						cost_basis,
+						entry_atr,
+						position.high_water_price,
+						position.low_water_price,
+						position.original_atr_multiplier,
+						position.active_atr_multiplier,
+						position.trailing_stop_amount,
+						position.trailing_stop_price,
+						loss_distance,
+						defensive_exit_price,
+						defensive_exit_triggered,
+						profit_distance,
+						expansion_trigger_price,
+						expansion_triggered,
+						position.trailing_stop_expanded,
+					)
+
 				self._close_position_at_market_bar(
 					state=state,
 					ticker=ticker,
@@ -2299,6 +2363,61 @@ class BackTester:
 						"realized_delta": 0.0,
 					})
 
+		if (
+			self.diagnostic_logging_enabled
+			and self.recording_enabled
+			and ticker in {
+				"CRM",
+				"ADBE",
+				"SNOW",
+				"NFLX",
+				"AMAT",
+			}
+		):
+			logger.info(
+				"[EXIT3_STATE] "
+				"source=sim "
+				"ticker=%r "
+				"time=%s "
+				"decision=%r "
+				"side=%r "
+				"current_price=%.6f "
+				"entry_price=%.6f "
+				"entry_atr=%.6f "
+				"high_water_price=%r "
+				"low_water_price=%r "
+				"original_multiplier=%r "
+				"active_multiplier=%r "
+				"trailing_amount=%r "
+				"trailing_stop_price=%r "
+				"loss_distance=%r "
+				"defensive_price=%r "
+				"defensive_triggered=%r "
+				"profit_distance=%r "
+				"expansion_price=%r "
+				"expansion_triggered=%r "
+				"stop_expanded=%r",
+				ticker,
+				bar_dt.isoformat(),
+				"continue",
+				position.side,
+				market_price,
+				cost_basis,
+				entry_atr,
+				position.high_water_price,
+				position.low_water_price,
+				position.original_atr_multiplier,
+				position.active_atr_multiplier,
+				position.trailing_stop_amount,
+				position.trailing_stop_price,
+				loss_distance,
+				defensive_exit_price,
+				defensive_exit_triggered,
+				profit_distance,
+				expansion_trigger_price,
+				expansion_triggered,
+				position.trailing_stop_expanded,
+			)
 		#
 		# 3. Continue normal trailing-stop processing.
 		#
@@ -2321,6 +2440,47 @@ class BackTester:
 				market_price
 				<= position.trailing_stop_price
 			):
+				if (
+					self.diagnostic_logging_enabled
+					and self.recording_enabled
+					and ticker in {
+						"CRM",
+						"ADBE",
+						"SNOW",
+						"NFLX",
+						"AMAT",
+					}
+				):
+					logger.info(
+						"[EXIT3_STATE] "
+						"source=sim "
+						"ticker=%r "
+						"time=%s "
+						"decision=%r "
+						"side=%r "
+						"current_price=%.6f "
+						"entry_price=%.6f "
+						"entry_atr=%.6f "
+						"high_water_price=%r "
+						"low_water_price=%r "
+						"active_multiplier=%r "
+						"trailing_amount=%r "
+						"trailing_stop_price=%r "
+						"stop_expanded=%r",
+						ticker,
+						bar_dt.isoformat(),
+						"trailing_stop",
+						position.side,
+						market_price,
+						cost_basis,
+						entry_atr,
+						position.high_water_price,
+						position.low_water_price,
+						position.active_atr_multiplier,
+						position.trailing_stop_amount,
+						position.trailing_stop_price,
+						position.trailing_stop_expanded,
+					)			
 				self._close_position_at_market_bar(
 					state=state,
 					ticker=ticker,
@@ -2346,6 +2506,47 @@ class BackTester:
 				market_price
 				>= position.trailing_stop_price
 			):
+				if (
+					self.diagnostic_logging_enabled
+					and self.recording_enabled
+					and ticker in {
+						"CRM",
+						"ADBE",
+						"SNOW",
+						"NFLX",
+						"AMAT",
+					}
+				):
+					logger.info(
+						"[EXIT3_STATE] "
+						"source=sim "
+						"ticker=%r "
+						"time=%s "
+						"decision=%r "
+						"side=%r "
+						"current_price=%.6f "
+						"entry_price=%.6f "
+						"entry_atr=%.6f "
+						"high_water_price=%r "
+						"low_water_price=%r "
+						"active_multiplier=%r "
+						"trailing_amount=%r "
+						"trailing_stop_price=%r "
+						"stop_expanded=%r",
+						ticker,
+						bar_dt.isoformat(),
+						"trailing_stop",
+						position.side,
+						market_price,
+						cost_basis,
+						entry_atr,
+						position.high_water_price,
+						position.low_water_price,
+						position.active_atr_multiplier,
+						position.trailing_stop_amount,
+						position.trailing_stop_price,
+						position.trailing_stop_expanded,
+					)			
 				self._close_position_at_market_bar(
 					state=state,
 					ticker=ticker,
@@ -3664,3 +3865,4 @@ class BackTester:
 		})
 
 		return True
+_close_position_at_market_bar()
