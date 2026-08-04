@@ -2756,7 +2756,7 @@ class Strategies:
 		)
 
 
-	def exit_strategy4(
+	def exit_strategy4_placeholder(
 		self,
 		strategy_name,
 		anchor_tf,
@@ -2788,6 +2788,107 @@ class Strategies:
 			None
 		"""
 		return None
+
+
+
+	def exit_strategy4(
+		self,
+		strategy_name,
+		anchor_tf,
+		simulation,
+		date,
+		signal,
+		prices,
+		ticker,
+		timeframe,
+		alpaca_api,
+		state,
+		config,
+		event,
+		price,
+		backtester,
+	):
+		"""
+		Exit Strategy 4 when the opposite normalized anchor signal arrives.
+
+		Long position:
+			Exit on normalized sell.
+
+		Short position:
+			Exit on normalized buy.
+		"""
+		if not simulation:
+			return None
+
+		if state is None or event is None or backtester is None:
+			return None
+
+		timeframe_normalized = self.tvw_helpers.normalize_tf(
+			timeframe
+		)
+
+		anchor_tf_normalized = self.tvw_helpers.normalize_tf(
+			anchor_tf
+		)
+
+		if timeframe_normalized != anchor_tf_normalized:
+			return None
+
+		normalized_signal = self.tvw_helpers.normalize_signal(
+			signal
+		)
+
+		if normalized_signal not in {
+			"buy",
+			"sell",
+		}:
+			return None
+
+		symbol = str(
+			ticker or ""
+		).strip().upper()
+
+		position = state.positions.get(
+			symbol
+		)
+
+		if position is None:
+			return None
+
+		if float(position.num_shares or 0.0) <= 0:
+			return None
+
+		position_side = str(
+			position.side or ""
+		).strip().lower()
+
+		should_exit = (
+			position_side == "long"
+			and normalized_signal == "sell"
+		) or (
+			position_side == "short"
+			and normalized_signal == "buy"
+		)
+
+		if not should_exit:
+			return None
+
+		logger.info(
+			"Strategy 4 opposite-signal exit: "
+			"strategy=%r ticker=%r timeframe=%r "
+			"position_side=%r signal=%r date=%r",
+			strategy_name,
+			symbol,
+			timeframe_normalized,
+			position_side,
+			normalized_signal,
+			date,
+		)
+
+		return backtester._close_position(
+			state,
+			event,
+		)
 
 
 	def place_order(
