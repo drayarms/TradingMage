@@ -3865,4 +3865,3 @@ class BackTester:
 		})
 
 		return True
-_close_position_at_market_bar()
