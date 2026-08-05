@@ -3972,4 +3972,3 @@ class BackTester:
 		})
 
 		return True
-market_data
