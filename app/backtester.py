@@ -491,6 +491,113 @@ class BackTester:
 			"market_close_liquidation_times": market_close_liquidation_times,
 		}
 
+		close_1m_data = state.market_data.get(
+			"close_1m",
+			{},
+		)
+
+		target_windows = {
+			"GS": (
+				pd.Timestamp(
+					"2026-08-04T04:15:00-04:00"
+				),
+				pd.Timestamp(
+					"2026-08-04T05:05:00-04:00"
+				),
+			),
+			"MS": (
+				pd.Timestamp(
+					"2026-08-04T08:20:00-04:00"
+				),
+				pd.Timestamp(
+					"2026-08-04T09:05:00-04:00"
+				),
+			),
+		}
+
+		for diagnostic_ticker in {
+			"GS",
+			"MS",
+		}:
+			ticker_prices = close_1m_data.get(
+				diagnostic_ticker,
+				{},
+			)
+
+			if not ticker_prices:
+				logger.warning(
+					"[1M_DATA] no one-minute prices loaded: "
+					"ticker=%r",
+					diagnostic_ticker,
+				)
+				continue
+
+			sorted_timestamps = []
+
+			for timestamp in ticker_prices:
+				normalized_timestamp = pd.Timestamp(
+					timestamp
+				)
+
+				if normalized_timestamp.tzinfo is None:
+					normalized_timestamp = (
+						normalized_timestamp.tz_localize(
+							self.tvw_helpers.eastern_tz
+						)
+					)
+				else:
+					normalized_timestamp = (
+						normalized_timestamp.tz_convert(
+							self.tvw_helpers.eastern_tz
+						)
+					)
+
+				sorted_timestamps.append(
+					normalized_timestamp
+				)
+
+			sorted_timestamps.sort()
+
+			logger.info(
+				"[1M_DATA] summary: "
+				"ticker=%r bars=%d first=%s last=%s",
+				diagnostic_ticker,
+				len(sorted_timestamps),
+				sorted_timestamps[0],
+				sorted_timestamps[-1],
+			)
+
+			window_start, window_end = (
+				target_windows[
+					diagnostic_ticker
+				]
+			)
+
+			window_timestamps = [
+				timestamp
+				for timestamp in sorted_timestamps
+				if (
+					window_start
+					<= timestamp
+					<= window_end
+				)
+			]
+
+			logger.info(
+				"[1M_DATA] target window: "
+				"ticker=%r start=%s end=%s "
+				"bars_found=%d timestamps=%r",
+				diagnostic_ticker,
+				window_start,
+				window_end,
+				len(window_timestamps),
+				[
+					str(timestamp)
+					for timestamp in window_timestamps
+				],
+			)
+
+
 		self.diagnostic_logging_enabled = (
 			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
 		)
@@ -3865,3 +3972,4 @@ class BackTester:
 		})
 
 		return True
+market_data
