@@ -52,37 +52,41 @@ APCA_API_BASE_URL_STG1_15M = os.environ["APCA_API_BASE_URL_STG1_15M"]
 APCA_API_KEY_ID_STG1_15M = os.environ["APCA_API_KEY_ID_STG1_15M"]
 APCA_API_SECRET_KEY_STG1_15M = os.environ["APCA_API_SECRET_KEY_STG1_15M"]
 
-APCA_API_BASE_URL_STG1_1H = os.environ["APCA_API_BASE_URL_STG1_1H"]
-APCA_API_KEY_ID_STG1_1H = os.environ["APCA_API_KEY_ID_STG1_1H"]
-APCA_API_SECRET_KEY_STG1_1H = os.environ["APCA_API_SECRET_KEY_STG1_1H"]
+#APCA_API_BASE_URL_STG1_1H = os.environ["APCA_API_BASE_URL_STG1_1H"]
+#APCA_API_KEY_ID_STG1_1H = os.environ["APCA_API_KEY_ID_STG1_1H"]
+#APCA_API_SECRET_KEY_STG1_1H = os.environ["APCA_API_SECRET_KEY_STG1_1H"]
 
-APCA_API_BASE_URL_STG1_4H = os.environ["APCA_API_BASE_URL_STG1_4H"]
-APCA_API_KEY_ID_STG1_4H = os.environ["APCA_API_KEY_ID_STG1_4H"]
-APCA_API_SECRET_KEY_STG1_4H = os.environ["APCA_API_SECRET_KEY_STG1_4H"]
+#APCA_API_BASE_URL_STG1_4H = os.environ["APCA_API_BASE_URL_STG1_4H"]
+#APCA_API_KEY_ID_STG1_4H = os.environ["APCA_API_KEY_ID_STG1_4H"]
+#APCA_API_SECRET_KEY_STG1_4H = os.environ["APCA_API_SECRET_KEY_STG1_4H"]
 
-APCA_API_BASE_URL_STG2_15M = os.environ["APCA_API_BASE_URL_STG2_15M"]
-APCA_API_KEY_ID_STG2_15M = os.environ["APCA_API_KEY_ID_STG2_15M"]
-APCA_API_SECRET_KEY_STG2_15M = os.environ["APCA_API_SECRET_KEY_STG2_15M"]
+#APCA_API_BASE_URL_STG2_15M = os.environ["APCA_API_BASE_URL_STG2_15M"]
+#APCA_API_KEY_ID_STG2_15M = os.environ["APCA_API_KEY_ID_STG2_15M"]
+#APCA_API_SECRET_KEY_STG2_15M = os.environ["APCA_API_SECRET_KEY_STG2_15M"]
 
-APCA_API_BASE_URL_STG2_1H = os.environ["APCA_API_BASE_URL_STG2_1H"]
-APCA_API_KEY_ID_STG2_1H = os.environ["APCA_API_KEY_ID_STG2_1H"]
-APCA_API_SECRET_KEY_STG2_1H = os.environ["APCA_API_SECRET_KEY_STG2_1H"]
+#APCA_API_BASE_URL_STG2_1H = os.environ["APCA_API_BASE_URL_STG2_1H"]
+#APCA_API_KEY_ID_STG2_1H = os.environ["APCA_API_KEY_ID_STG2_1H"]
+#APCA_API_SECRET_KEY_STG2_1H = os.environ["APCA_API_SECRET_KEY_STG2_1H"]
 
-APCA_API_BASE_URL_STG2_4H = os.environ["APCA_API_BASE_URL_STG2_4H"]
-APCA_API_KEY_ID_STG2_4H = os.environ["APCA_API_KEY_ID_STG2_4H"]
-APCA_API_SECRET_KEY_STG2_4H = os.environ["APCA_API_SECRET_KEY_STG2_4H"]
+#APCA_API_BASE_URL_STG2_4H = os.environ["APCA_API_BASE_URL_STG2_4H"]
+#APCA_API_KEY_ID_STG2_4H = os.environ["APCA_API_KEY_ID_STG2_4H"]
+#APCA_API_SECRET_KEY_STG2_4H = os.environ["APCA_API_SECRET_KEY_STG2_4H"]
 
-APCA_API_BASE_URL_STG4_15M = os.environ["APCA_API_BASE_URL_STG4_15M"]
-APCA_API_KEY_ID_STG4_15M = os.environ["APCA_API_KEY_ID_STG4_15M"]
-APCA_API_SECRET_KEY_STG4_15M = os.environ["APCA_API_SECRET_KEY_STG4_15M"]
+#APCA_API_BASE_URL_STG4_15M = os.environ["APCA_API_BASE_URL_STG4_15M"]
+#APCA_API_KEY_ID_STG4_15M = os.environ["APCA_API_KEY_ID_STG4_15M"]
+#APCA_API_SECRET_KEY_STG4_15M = os.environ["APCA_API_SECRET_KEY_STG4_15M"]
 
 APCA_API_BASE_URL_STG4_1H = os.environ["APCA_API_BASE_URL_STG4_1H"]
 APCA_API_KEY_ID_STG4_1H = os.environ["APCA_API_KEY_ID_STG4_1H"]
 APCA_API_SECRET_KEY_STG4_1H = os.environ["APCA_API_SECRET_KEY_STG4_1H"]
 
-APCA_API_BASE_URL_STG4_4H = os.environ["APCA_API_BASE_URL_STG4_4H"]
-APCA_API_KEY_ID_STG4_4H = os.environ["APCA_API_KEY_ID_STG4_4H"]
-APCA_API_SECRET_KEY_STG4_4H = os.environ["APCA_API_SECRET_KEY_STG4_4H"]
+APCA_API_BASE_URL_STG4B_1H = os.environ["APCA_API_BASE_URL_STG4B_1H"]
+APCA_API_KEY_ID_STG4B_1H = os.environ["APCA_API_KEY_ID_STG4B_1H"]
+APCA_API_SECRET_KEY_STG4B_1H = os.environ["APCA_API_SECRET_KEY_STG4B_1H"]
+
+#APCA_API_BASE_URL_STG4_4H = os.environ["APCA_API_BASE_URL_STG4_4H"]
+#APCA_API_KEY_ID_STG4_4H = os.environ["APCA_API_KEY_ID_STG4_4H"]
+#APCA_API_SECRET_KEY_STG4_4H = os.environ["APCA_API_SECRET_KEY_STG4_4H"]
 
 
 POSITION_SIZE_15M = float(os.environ["POSITION_SIZE_15M"])
@@ -106,11 +110,11 @@ ALPACA_APIS = {
 		#key_id=APCA_API_KEY_ID_STG1_1H, 
 		#secret_key=APCA_API_SECRET_KEY_STG1_1H
 	#),
-	"strategy1_4h_anchor": tradeapi.REST(
-		base_url=APCA_API_BASE_URL_STG1_4H, 
-		key_id=APCA_API_KEY_ID_STG1_4H, 
-		secret_key=APCA_API_SECRET_KEY_STG1_4H
-	),
+	#"strategy1_4h_anchor": tradeapi.REST(
+		#base_url=APCA_API_BASE_URL_STG1_4H, 
+		#key_id=APCA_API_KEY_ID_STG1_4H, 
+		#secret_key=APCA_API_SECRET_KEY_STG1_4H
+	#),
 	#"strategy2_15m_anchor": tradeapi.REST(
 		#base_url=APCA_API_BASE_URL_STG2_15M, 
 		#key_id=APCA_API_KEY_ID_STG2_15M, 
@@ -136,6 +140,11 @@ ALPACA_APIS = {
 		key_id=APCA_API_KEY_ID_STG4_1H,
 		secret_key=APCA_API_SECRET_KEY_STG4_1H,
 	),
+	"strategy4b_1h_anchor": tradeapi.REST(	
+		base_url=APCA_API_BASE_URL_STG4B_1H,
+		key_id=APCA_API_KEY_ID_STG4B_1H,
+		secret_key=APCA_API_SECRET_KEY_STG4B_1H,
+	),	
 	#"strategy4_4h_anchor": tradeapi.REST(
 		#base_url=APCA_API_BASE_URL_STG4_4H,
 		#key_id=APCA_API_KEY_ID_STG4_4H,
@@ -342,13 +351,17 @@ LIVE_TRAILING_STOP_ACCOUNTS = {
 		"alpaca_api": ALPACA_APIS[
 			"strategy4_1h_anchor"
 		],
+		"use_trailing_stop": True,
+		"use_profit_expansion": True,		
 	},
-	#"strategy1_1h_anchor": {
-		#"enabled": True,
-		#"alpaca_api": ALPACA_APIS[
-			#"strategy1_1h_anchor"
-		#],
-	#},
+	"strategy4b_1h_anchor": {
+		"enabled": True,
+		"alpaca_api": ALPACA_APIS[
+			"strategy4b_1h_anchor"
+		],
+		"use_trailing_stop": False,
+		"use_profit_expansion": False,		
+	},	
 }
 
 
@@ -385,7 +398,7 @@ def run_live_trailing_stop_exit_monitor() -> None:
 				continue
 
 			try:
-				strategies_instance.manage_live_trailing_stop_account(
+				strategies_instance.manage_live_positions(
 					owner_name=owner_name,
 					alpaca_api=account_config[
 						"alpaca_api"
@@ -405,6 +418,12 @@ def run_live_trailing_stop_exit_monitor() -> None:
 					trailing_stop_multiplier_factor=(
 						TRAILING_STOP_EXIT_MULTIPLIER_FACTOR
 					),
+					use_trailing_stop=account_config[
+						"use_trailing_stop"
+					],
+					use_profit_expansion=account_config[
+						"use_profit_expansion"
+					],					
 					liquidate_before_market_close=(
 						TRAILING_STOP_EXIT_LIQUIDATE_BEFORE_MARKET_CLOSE
 					),
@@ -710,7 +729,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 					)
 
 				else:
-					strategies_instance.register_live_trailing_stop_entry(
+					strategies_instance.register_live_position(
 						owner_name="strategy4_1h_anchor",
 						ticker=symbol,
 						anchor_tf="1h",
@@ -721,36 +740,122 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 					trailing_stop_exit_wake_event.set()
 
 
-		strategies_instance.exit_strategy1(
-			"strategy1_4h_anchor",
-			{"1m", "5m", "15m"},
-			"1h",
-			"4h",
-			False,
-			now_et,
-			signal,
-			prices,
-			symbol,
-			tf,
-			ALPACA_APIS["strategy1_4h_anchor"],
-			None, None, None, None,	None,			
+
+
+
+
+
+		entry_is_blocked_b = (
+			strategies_instance
+			.live_trailing_stop_entry_is_blocked(
+				owner_name="strategy4b_1h_anchor",
+				ticker=symbol,
+				alpaca_api=ALPACA_APIS[
+					"strategy4b_1h_anchor"
+				],
+			)
 		)
 
-		strategies_instance.entry_strategy1(
-			"strategy1_4h_anchor",
-			"15m",
-			"1h",
-			"4h",
-			False,
-			now_et,
-			signal,
-			prices,
-			symbol,
-			tf,
-			NUM_SHARES3,
-			ALPACA_APIS["strategy1_4h_anchor"],
-			None, None, None, None,	None,		
-		)
+		entries_closed_for_day_b = (
+			strategies_instance
+			.live_trailing_stop_entries_closed_for_day(
+				owner_name="strategy4b_1h_anchor",
+				now_et=now_et,
+			)
+		)	
+
+		if entries_closed_for_day_b:
+			logger.info(
+				"Strategy 4b entry skipped because trailing-stop "
+				"entries are closed for the day: "
+				"owner=%r ticker=%r now_et=%s",
+				"strategy4b_1h_anchor",
+				symbol,
+				now_et,
+			)			
+
+		if (entry_is_blocked_b or entries_closed_for_day_b):
+			submitted_order = None
+		else:
+			strategies_instance.exit_strategy4(
+				"strategy4b_1h_anchor",
+				"1h",
+				TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR,
+				False,
+				now_et,
+				signal,
+				prices,
+				symbol,
+				tf,
+				ALPACA_APIS["strategy4b_1h_anchor"],
+				None, None, None, None, None,
+			)
+
+			submitted_order_b = strategies_instance.entry_strategy4(
+				"strategy4b_1h_anchor",
+				"1h",
+				False,
+				now_et,
+				signal,
+				prices,
+				symbol,
+				tf,
+				NUM_SHARES2,
+				ALPACA_APIS["strategy4b_1h_anchor"],
+				None, None, None, None, None,
+			)
+
+			if submitted_order_b is not None:
+				entry_order_id_b = str(
+					submitted_order_b.get(
+						"order_id",
+						"",
+					)
+					or ""
+				).strip()
+
+				if entry_order_id_b:
+					strategies_instance.register_live_position(
+						owner_name="strategy4b_1h_anchor",
+						ticker=symbol,
+						anchor_tf="1h",
+						entry_order_id=entry_order_id_b,
+						entry_decision_time=now_et,
+					)
+
+					trailing_stop_exit_wake_event.set()
+
+
+		#strategies_instance.exit_strategy1(
+			#"strategy1_4h_anchor",
+			#{"1m", "5m", "15m"},
+			#"1h",
+			#"4h",
+			#False,
+			#now_et,
+			#signal,
+			#prices,
+			#symbol,
+			#tf,
+			#ALPACA_APIS["strategy1_4h_anchor"],
+			#None, None, None, None,	None,			
+		#)
+
+		#strategies_instance.entry_strategy1(
+			#"strategy1_4h_anchor",
+			#"15m",
+			#"1h",
+			#"4h",
+			#False,
+			#now_et,
+			#signal,
+			#prices,
+			#symbol,
+			#tf,
+			#NUM_SHARES3,
+			#ALPACA_APIS["strategy1_4h_anchor"],
+			#None, None, None, None,	None,		
+		#)
 
 		"""
 		strategies_instance.exit_strategy2(

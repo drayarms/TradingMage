@@ -2756,6 +2756,285 @@ class Strategies:
 		)
 
 
+	def exit_strategy4(
+		self,
+		strategy_name,
+		anchor_tf,
+		loss_liquidation_atr_factor,
+		simulation,
+		date,
+		signal,
+		prices,
+		ticker,
+		timeframe,
+		alpaca_api,
+		state,
+		config,
+		event,
+		price,
+		backtester,
+	):
+		"""
+		Exit Strategy 4 using either:
+
+			1. An opposite normalized anchor-timeframe signal.
+			2. An ATR-based defensive liquidation.
+
+		Long position:
+			Exit on normalized sell.
+
+		Short position:
+			Exit on normalized buy.
+
+		During simulation, BackTester evaluates the ATR defensive
+		liquidation threshold against one-minute market bars.
+
+		During live execution, the generic live trailing-stop manager
+		handles the ATR defensive liquidation. This function handles
+		the opposite anchor-signal exit.
+		"""
+		if loss_liquidation_atr_factor is not None:
+			try:
+				loss_liquidation_atr_factor = float(
+					loss_liquidation_atr_factor
+				)
+			except (TypeError, ValueError) as exc:
+				raise ValueError(
+					"loss_liquidation_atr_factor must be a number"
+				) from exc
+
+			if loss_liquidation_atr_factor <= 0:
+				raise ValueError(
+					"loss_liquidation_atr_factor must be > 0"
+				)
+
+		timeframe_normalized = self.tvw_helpers.normalize_tf(
+			timeframe
+		)
+
+		anchor_tf_normalized = self.tvw_helpers.normalize_tf(
+			anchor_tf
+		)
+
+		if timeframe_normalized != anchor_tf_normalized:
+			return None
+
+		normalized_signal = self.tvw_helpers.normalize_signal(
+			signal
+		)
+
+		if normalized_signal not in {
+			"buy",
+			"sell",
+		}:
+			return None
+
+		symbol = str(
+			ticker or ""
+		).strip().upper()
+
+		if not symbol:
+			return None
+
+		if simulation:
+			if (
+				state is None
+				or event is None
+				or backtester is None
+			):
+				return None
+
+			position = state.positions.get(
+				symbol
+			)
+
+			if position is None:
+				return None
+
+			if float(
+				position.num_shares or 0.0
+			) <= 0:
+				return None
+
+			position_side = str(
+				position.side or ""
+			).strip().lower()
+
+			should_exit = (
+				position_side == "long"
+				and normalized_signal == "sell"
+			) or (
+				position_side == "short"
+				and normalized_signal == "buy"
+			)
+
+			if not should_exit:
+				return None
+
+			logger.info(
+				"Strategy 4 opposite-signal exit: "
+				"strategy=%r ticker=%r timeframe=%r "
+				"position_side=%r signal=%r "
+				"loss_liquidation_atr_factor=%r "
+				"simulation=%r date=%r",
+				strategy_name,
+				symbol,
+				timeframe_normalized,
+				position_side,
+				normalized_signal,
+				loss_liquidation_atr_factor,
+				simulation,
+				date,
+			)
+
+			return backtester._close_position(
+				state,
+				event,
+			)
+
+		if alpaca_api is None:
+			logger.error(
+				"Strategy 4 live exit skipped because Alpaca API "
+				"is unavailable: strategy=%r ticker=%r",
+				strategy_name,
+				symbol,
+			)
+			return None
+
+		try:
+			alpaca_position = alpaca_api.get_position(
+				symbol
+			)
+		except Exception as exc:
+			error_text = str(
+				exc
+			).lower()
+
+			if (
+				"position does not exist" in error_text
+				or "no position" in error_text
+				or "404" in error_text
+			):
+				logger.info(
+					"Strategy 4 live exit skipped because no "
+					"Alpaca position exists: "
+					"strategy=%r ticker=%r signal=%r",
+					strategy_name,
+					symbol,
+					normalized_signal,
+				)
+				return None
+
+			logger.exception(
+				"Strategy 4 failed retrieving live position: "
+				"strategy=%r ticker=%r signal=%r",
+				strategy_name,
+				symbol,
+				normalized_signal,
+			)
+			return None
+
+		position_side = str(
+			getattr(
+				alpaca_position,
+				"side",
+				"",
+			)
+			or ""
+		).strip().lower()
+
+		try:
+			position_qty = abs(
+				float(
+					getattr(
+						alpaca_position,
+						"qty",
+						0.0,
+					)
+					or 0.0
+				)
+			)
+		except (TypeError, ValueError):
+			logger.exception(
+				"Strategy 4 live position has invalid quantity: "
+				"strategy=%r ticker=%r qty=%r",
+				strategy_name,
+				symbol,
+				getattr(
+					alpaca_position,
+					"qty",
+					None,
+				),
+			)
+			return None
+
+		if position_qty <= 0:
+			return None
+
+		should_exit = (
+			position_side == "long"
+			and normalized_signal == "sell"
+		) or (
+			position_side == "short"
+			and normalized_signal == "buy"
+		)
+
+		if not should_exit:
+			return None
+
+		logger.info(
+			"Strategy 4 live opposite-signal exit qualified: "
+			"strategy=%r ticker=%r timeframe=%r "
+			"position_side=%r position_qty=%r signal=%r "
+			"loss_liquidation_atr_factor=%r date=%r",
+			strategy_name,
+			symbol,
+			timeframe_normalized,
+			position_side,
+			position_qty,
+			normalized_signal,
+			loss_liquidation_atr_factor,
+			date,
+		)
+
+		if position_side == "long":
+			return self.sell_long_order(
+				strategy_name,
+				timeframe_normalized,
+				symbol,
+				date,
+				prices,
+				position_qty,
+				alpaca_api,
+				None,
+				do_redis_bookkeeping=False,
+			)
+
+		if position_side == "short":
+			return self.cover_short_order(
+				strategy_name,
+				timeframe_normalized,
+				symbol,
+				date,
+				prices,
+				position_qty,
+				alpaca_api,
+				None,
+				do_redis_bookkeeping=False,
+			)
+
+		logger.warning(
+			"Strategy 4 live exit skipped because Alpaca returned "
+			"an unknown position side: "
+			"strategy=%r ticker=%r position_side=%r",
+			strategy_name,
+			symbol,
+			position_side,
+		)
+
+		return None
+
+
 	def exit_strategy4_placeholder(
 		self,
 		strategy_name,
@@ -2891,7 +3170,7 @@ class Strategies:
 		)
 
 
-	def exit_strategy4(
+	def exit_strategy4_sim_only(
 		self,
 		strategy_name,
 		anchor_tf,
@@ -3656,7 +3935,7 @@ class Strategies:
 		)"""
 
 
-	def register_live_trailing_stop_entry(
+	def register_live_position(
 		self,
 		*,
 		owner_name: str,
@@ -4231,6 +4510,8 @@ class Strategies:
 		loss_liquidation_atr_factor: float,
 		profit_expansion_atr_factor: float,
 		trailing_stop_multiplier_factor: float,
+		use_trailing_stop: bool,
+		use_profit_expansion: bool,		
 		entry_decision_time: datetime,
 		now_et: datetime,
 	) -> None:
@@ -4401,8 +4682,12 @@ class Strategies:
 
 			return
 
+		if not use_trailing_stop:
+			return			
+
 		#
-		# 2. One-time trailing-stop expansion.
+		# 2. Optional trailing-stop management.
+		#    (Profit expansion + trailing stop)
 		#
 		profit_distance = (
 			entry_atr
@@ -4429,7 +4714,8 @@ class Strategies:
 			)
 
 		if (
-			not stop_expanded
+			use_profit_expansion
+			and not stop_expanded
 			and trailing_stop_multiplier_factor > 1
 			and expansion_triggered
 		):
@@ -4813,7 +5099,7 @@ class Strategies:
 
 
 
-	def manage_live_trailing_stop_account(
+	"""def manage_live_positions(
 		self,
 		*,
 		owner_name: str,
@@ -4826,7 +5112,23 @@ class Strategies:
 		liquidate_before_market_close: bool,
 		market_close_buffer_seconds: int,
 		manager_lock_seconds: int,
-	) -> None:
+	) -> None:"""
+	def manage_live_positions(
+		self,
+		*,
+		owner_name: str,
+		alpaca_api,
+		atr_period: int,
+		atr_multiplier: float,
+		loss_liquidation_atr_factor: float,
+		profit_expansion_atr_factor: float,
+		trailing_stop_multiplier_factor: float,
+		use_trailing_stop: bool,
+		use_profit_expansion: bool,
+		liquidate_before_market_close: bool,
+		market_close_buffer_seconds: int,
+		manager_lock_seconds: int,
+	) -> None:	
 		manager_lock = self.r.lock(
 			self._live_trailing_stop_lock_key(
 				owner_name
@@ -5328,11 +5630,37 @@ class Strategies:
 							trailing_stop_multiplier_factor=(
 								trailing_stop_multiplier_factor
 							),
+							use_trailing_stop=use_trailing_stop,
+							use_profit_expansion=use_profit_expansion,
 							now_et=now_et,
 							entry_decision_time=(
 								entry_decision_time
 							),
-						)
+						)						
+						"""self.manage_live_trailing_stop_position(
+							owner_name=owner_name,
+							ticker=symbol,
+							anchor_tf=anchor_tf,
+							alpaca_api=alpaca_api,
+							current_price=float(
+								current_price
+							),
+							atr_period=atr_period,
+							atr_multiplier=atr_multiplier,
+							loss_liquidation_atr_factor=(
+								loss_liquidation_atr_factor
+							),
+							profit_expansion_atr_factor=(
+								profit_expansion_atr_factor
+							),
+							trailing_stop_multiplier_factor=(
+								trailing_stop_multiplier_factor
+							),
+							now_et=now_et,
+							entry_decision_time=(
+								entry_decision_time
+							),
+						)"""
 
 					except Exception:
 						logger.exception(
