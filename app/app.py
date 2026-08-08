@@ -1338,9 +1338,9 @@ def run_backtest(
 		default=None,
 		gt=0,
 		description=(
-			"For Exit Strategy 3, immediately liquidate a long position "
-			"when price falls below cost basis by this factor multiplied "
-			"by entry ATR. The condition is mirrored for short positions."
+			"For supported exit strategies, liquidate a long "
+			"when price falls below cost basis by this factor "
+			"multiplied by entry ATR. Mirror the condition for shorts."
 		),
 	),
 	profit_expansion_atr_factor: Optional[float] = Query(
@@ -1378,7 +1378,21 @@ def run_backtest(
 			"only validate and record entry conditions without "
 			"opening or modifying simulated positions."
 		),
-	),				
+	),
+	record_factor_research: bool = Query(
+		default=False,
+		description=(
+			"Persist one completed-trade research row for "
+			"later liquidation-factor analysis"
+		),
+	),
+	research_group_id: Optional[str] = Query(
+		default=None,
+		description=(
+			"Stable identifier shared by every liquidation-factor "
+			"run in the same research experiment"
+		),
+	),					
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -1411,6 +1425,8 @@ def run_backtest(
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
 			run_exit_strategy=run_exit_strategy,
+			record_factor_research=record_factor_research,
+			research_group_id=research_group_id,			
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -1438,9 +1454,9 @@ def plot_backtest(
 		default=None,
 		gt=0,
 		description=(
-			"For Exit Strategy 3, immediately liquidate a long position "
-			"when price falls below cost basis by this factor multiplied "
-			"by entry ATR. The condition is mirrored for short positions."
+			"For supported exit strategies, liquidate a long "
+			"when price falls below cost basis by this factor "
+			"multiplied by entry ATR. Mirror the condition for shorts."
 		),
 	),
 	profit_expansion_atr_factor: Optional[float] = Query(
@@ -1477,6 +1493,20 @@ def plot_backtest(
 			"Run the configured exit strategy. When false, "
 			"only validate and record entry conditions without "
 			"opening or modifying simulated positions."
+		),
+	),	
+	record_factor_research: bool = Query(
+		default=False,
+		description=(
+			"Persist one completed-trade research row for "
+			"later liquidation-factor analysis"
+		),
+	),
+	research_group_id: Optional[str] = Query(
+		default=None,
+		description=(
+			"Stable identifier shared by every liquidation-factor "
+			"run in the same research experiment"
 		),
 	),		
 ):
@@ -1524,6 +1554,8 @@ def plot_backtest(
 			exit_strategy=exit_strategy,
 			liquidate_before_market_close=liquidate_before_market_close,
 			run_exit_strategy=run_exit_strategy,
+			record_factor_research=record_factor_research,
+			research_group_id=research_group_id,
 		)
 
 		#image_buffer = backtester_instance.plot_overall_pnl(result)
@@ -1549,3 +1581,213 @@ def plot_backtest(
 		logger.exception("Backtest plot failed")
 		raise HTTPException(status_code=500, detail="Backtest plot failed")
 
+
+
+@app.get("/backtest/factor-research/plot")
+def plot_backtest_factor_research(
+	research_group_id: str = Query(
+		...,
+		min_length=1,
+	),
+	minimum_pnl_margin: float = Query(
+		default=0.0,
+		ge=0.0,
+		description=(
+			"Minimum percentage-point PnL advantage required "
+			"for a winning liquidation factor"
+		),
+	),
+	pnl_tie_tolerance: float = Query(
+		default=0.0,
+		ge=0.0,
+		description=(
+			"Treat factor results within this many PnL percentage "
+			"points as tied and choose the smaller factor"
+		),
+	),
+	require_all_factors: bool = Query(
+		default=True,
+		description=(
+			"Include only trades found under every liquidation "
+			"factor in the research group"
+		),
+	),
+):
+	"""
+	E.g.
+	RESEARCH_GROUP="strategy4_1h_20260531_20260804_v1"
+	echo "$RESEARCH_GROUP"
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body "http://localhost:8000/backtest/run?strategy_name=strategy4_1h_anchor&start=2026-05-31T04:00:00-04:00&end=2026-08-04T20:00:00-04:00&position_size=6600&exit_strategy=4&loss_liquidation_atr_factor=0.6&liquidate_before_market_close=true&record_factor_research=true&research_group_id=strategy4_1h_20260531_20260804_v1"' \
+	> factor_0.6.json	
+	Repeat for other factors
+	Then
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body "http://localhost:8000/backtest/factor-research/plot?research_group_id=strategy4_1h_20260531_20260804_v1&require_all_factors=true&pnl_tie_tolerance=0.01&minimum_pnl_margin=0.01"' \
+	> factor_research_charts.zip
+
+	rm -rf factor_research_charts
+	mkdir factor_research_charts
+	unzip -q factor_research_charts.zip \
+		-d factor_research_charts	
+	"""
+	try:
+		zip_buffer = (
+			backtester_instance
+			.build_factor_research_chart_zip(
+				research_group_id=research_group_id,
+				minimum_pnl_margin=minimum_pnl_margin,
+				pnl_tie_tolerance=pnl_tie_tolerance,
+				require_all_factors=require_all_factors,
+			)
+		)
+
+		return StreamingResponse(
+			zip_buffer,
+			media_type="application/zip",
+			headers={
+				"Content-Disposition": (
+					'attachment; '
+					'filename="factor_research_charts.zip"'
+				),
+			},
+		)
+
+	except ValueError as exc:
+		raise HTTPException(
+			status_code=400,
+			detail=str(
+				exc
+			),
+		)
+
+	except Exception:
+		logger.exception(
+			"Backtest factor-research plot failed"
+		)
+
+		raise HTTPException(
+			status_code=500,
+			detail=(
+				"Backtest factor-research plot failed"
+			),
+		)
+
+
+@app.delete("/backtest/factor-research")
+def delete_backtest_factor_research(
+	research_group_ids: Optional[str] = Query(
+		default=None,
+		description=(
+			"Comma-separated research group IDs to delete"
+		),
+	),
+	delete_all: bool = Query(
+		default=False,
+		description=(
+			"Delete every factor-research record"
+		),
+	),
+	confirm: bool = Query(
+		default=False,
+		description=(
+			"Required when delete_all=true"
+		),
+	),
+):
+	"""
+	Delete selected factor-research groups or all stored research data.
+	E.g. Delete 1 group
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body -X DELETE "http://localhost:8000/backtest/factor-research?research_group_ids=strategy4_1h_20260531_20260804_v1"'	
+	Delete several groups
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body -X DELETE "http://localhost:8000/backtest/factor-research?research_group_ids=strategy4_test_v1,strategy4_test_v2,strategy4_test_v3"'	
+	Delete everything
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body -X DELETE "http://localhost:8000/backtest/factor-research?delete_all=true&confirm=true"'	
+	"""
+	try:
+		if delete_all and not confirm:
+			raise ValueError(
+				"Deleting all factor-research data requires "
+				"delete_all=true and confirm=true"
+			)
+
+		if delete_all and research_group_ids:
+			raise ValueError(
+				"Do not provide research_group_ids when "
+				"delete_all=true"
+			)
+
+		group_id_list = None
+
+		if research_group_ids:
+			group_id_list = [
+				group_id.strip()
+				for group_id in (
+					research_group_ids.split(
+						","
+					)
+				)
+				if group_id.strip()
+			]
+
+		return (
+			backtester_instance
+			.delete_factor_research_records(
+				research_group_ids=group_id_list,
+				delete_all=delete_all,
+			)
+		)
+
+	except ValueError as exc:
+		raise HTTPException(
+			status_code=400,
+			detail=str(
+				exc
+			),
+		)
+
+	except Exception:
+		logger.exception(
+			"Deleting backtest factor-research data failed"
+		)
+
+		raise HTTPException(
+			status_code=500,
+			detail=(
+				"Deleting backtest factor-research data failed"
+			),
+		)		
+
+
+@app.get("/backtest/factor-research/groups")
+def list_backtest_factor_research_groups():
+	"""
+	List all stored factor-research groups and their metadata.
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body "http://localhost:8000/backtest/factor-research/groups"' \
+	| python3 -m json.tool	
+	Then you can copy an exact group ID from the response into the deletion request:
+	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
+	'curl -sS --fail-with-body -X DELETE "http://localhost:8000/backtest/factor-research?research_group_ids=strategy4_1h_20260531_20260804_v1"' \
+	| python3 -m json.tool	
+	"""
+	try:
+		return (
+			backtester_instance
+			.list_factor_research_groups()
+		)
+
+	except Exception:
+		logger.exception(
+			"Listing backtest factor-research groups failed"
+		)
+
+		raise HTTPException(
+			status_code=500,
+			detail=(
+				"Listing backtest factor-research groups failed"
+			),
+		)		

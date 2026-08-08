@@ -11,8 +11,21 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import zipfile
 
+import csv
+import hashlib
+import json
+import os
+import zipfile
+import threading
+
 logger = logging.getLogger("tv-webhook")
 
+BACKTEST_FACTOR_RESEARCH_LOG_PATH = os.getenv(
+	"TV_BACKTEST_FACTOR_RESEARCH_LOG",
+	"/app/logs/backtest_factor_research.jsonl",
+)
+
+BACKTEST_FACTOR_RESEARCH_FILE_LOCK = threading.RLock()
 
 @dataclass
 class SimPosition:
@@ -38,6 +51,12 @@ class SimPosition:
 	trailing_stop_multiplier_factor: float = 1.0
 	trailing_stop_expanded: bool = False
 	trailing_stop_expanded_at: Optional[datetime] = None	
+	entry_time: Optional[datetime] = None
+	entry_signal_time: Optional[datetime] = None
+	entry_price: Optional[float] = None
+	entry_quantity: Optional[float] = None
+	entry_features: dict[str, Optional[float]] = field(default_factory=dict)
+	trade_id: Optional[str] = None	
 
 
 @dataclass
@@ -57,6 +76,14 @@ class SimState:
 	market_data: dict[str, Any] = field(default_factory=dict)
 	market_close_liquidation_dates: set[str] = field(default_factory=set)
 	reporting_baselines: dict[str, dict[str, Any]] = field(default_factory=dict)
+	completed_trade_records: list[dict[str, Any]] = field(default_factory=list)
+	research_group_id: Optional[str] = None
+	record_factor_research: bool = False
+	research_reporting_start: Optional[datetime] = None
+	research_reporting_end: Optional[datetime] = None
+	research_run_metadata: dict[str, Any] = field(
+		default_factory=dict
+	)	
 
 
 class SimulatedOrderPriceUnavailable(ValueError):
@@ -200,6 +227,8 @@ class BackTester:
 		exit_strategy: Optional[int] = None,
 		liquidate_before_market_close: bool = False,
 		run_exit_strategy: bool = True,
+		record_factor_research: bool = False,
+		research_group_id: Optional[str] = None,		
 	) -> dict[str, Any]:
 		"""
 		Run a chronological simulation with an optional unreported warm-up period.
@@ -226,6 +255,30 @@ class BackTester:
 			Dictionary containing only the requested reporting window, while preserving
 			open positions and signal context created during warm-up.
 		"""
+		if not isinstance(
+			record_factor_research,
+			bool,
+		):
+			raise ValueError(
+				"record_factor_research must be a boolean"
+			)
+
+		if record_factor_research:
+			research_group_id = str(
+				research_group_id or ""
+			).strip()
+
+			if not research_group_id:
+				raise ValueError(
+					"research_group_id is required when "
+					"record_factor_research=true"
+				)
+
+			if loss_liquidation_atr_factor is None:
+				raise ValueError(
+					"loss_liquidation_atr_factor is required when "
+					"record_factor_research=true"
+				)		
 		if not isinstance(
 			run_exit_strategy,
 			bool,
@@ -462,22 +515,21 @@ class BackTester:
 			)
 		)
 
-		anchor_ATR = self.trade_records_instance.dataframe_to_atr_dict(
-			anchor_df,
-			period=ATR_period
-		)
+		anchor_ATR = self.trade_records_instance.dataframe_to_atr_dict(anchor_df,period=ATR_period)
 
-		anchor_ohlc = self._dataframe_to_ohlc_rows(
-			anchor_df,
-			start_dt,
-			end_dt,
-		)
+		anchor_entry_features = (self._build_anchor_entry_features(anchor_df=anchor_df,anchor_tf=anchor_tf,atr_period=ATR_period,))	
+
+		anchor_ohlc = self._dataframe_to_ohlc_rows(anchor_df,start_dt,end_dt,)
 
 		state = SimState()
 
+		state.research_group_id = research_group_id
+		state.record_factor_research = record_factor_research
+		state.research_reporting_start = start_dt
+		state.research_reporting_end = end_dt
+
 		market_close_liquidation_times = []
 
-		#if liquidate_before_market_close:
 		if config["liquidate_before_market_close"]:
 			market_close_liquidation_times = (
 				self._get_market_close_liquidation_times(
@@ -491,8 +543,30 @@ class BackTester:
 			"close_1m": _1min_close_prices,
 			"anchor_atr": anchor_ATR,
 			"anchor_ohlc": anchor_ohlc,
-			"market_close_liquidation_times": market_close_liquidation_times,
-		}
+			"anchor_entry_features":anchor_entry_features,
+			"market_close_liquidation_times":market_close_liquidation_times,
+		}	
+
+		if position_size is None:
+			position_size = float(config["default_position_size"])
+		else:
+			position_size = float(position_size)
+
+		if position_size <= 0:
+			raise ValueError("position_size must be > 0")
+		state.research_run_metadata = {
+			"research_group_id": research_group_id,
+			"strategy_name": strategy_name,
+			"start": start_dt.isoformat(),
+			"end": end_dt.isoformat(),
+			"position_size": position_size,
+			"anchor_timeframe": config["anchor_tf"],
+			"exit_strategy": selected_exit_strategy,
+			"ATR_period": ATR_period,
+			"ATR_multiplier": ATR_multiplier,
+			"loss_liquidation_atr_factor": (loss_liquidation_atr_factor),
+			"liquidate_before_market_close": (config["liquidate_before_market_close"]),
+		}		
 
 		close_1m_data = state.market_data.get(
 			"close_1m",
@@ -605,14 +679,6 @@ class BackTester:
 			(end_dt - start_dt) <= timedelta(days=self.BACKTEST_DIAGNOSTIC_MAX_DAYS)
 		)
 
-		if position_size is None:
-			position_size = float(config["default_position_size"])
-		else:
-			position_size = float(position_size)
-
-		if position_size <= 0:
-			raise ValueError("position_size must be > 0")
-
 		warmup_events = [event for event in all_events if event["received_dt"] < start_dt]
 		report_events = [event for event in all_events if event["received_dt"] >= start_dt]
 
@@ -656,6 +722,11 @@ class BackTester:
 			)
 
 		self._print_daily_max_open_exposure_table(strategy_name, state.daily_max_exposure)
+
+		research_records_written = 0
+
+		if record_factor_research:
+			research_records_written = self._append_factor_research_records(state.completed_trade_records)	
 
 		return {
 			"strategy_name": strategy_name,
@@ -727,7 +798,15 @@ class BackTester:
 				for trade_event in state.trade_events
 				if trade_event.get("event_type") == "order_rejected"
 			],	
-			"reporting_baselines": state.reporting_baselines,				
+			"reporting_baselines": state.reporting_baselines,	
+			"record_factor_research":
+				record_factor_research,
+			"research_group_id":
+				research_group_id,
+			"research_records_written":
+				research_records_written,
+			"completed_trade_records":
+				state.completed_trade_records,						
 		}
 
 	def _get_warmup_start_dt(
@@ -2160,57 +2239,6 @@ class BackTester:
 			event_type = "add"
 		else:
 			position_kwargs = {}
-
-			#if event.get("exit_strategy") == 3:
-			#uses_atr_position_state = (
-				#event.get("exit_strategy") == 3
-				#or (
-					#event.get("exit_strategy") == 4
-					#and event.get(
-						#"loss_liquidation_atr_factor"
-					#) is not None
-				#)
-			#)
-
-			#if uses_atr_position_state:			
-				#anchor_atr, trailing_stop_source_time = (
-					#self._get_anchor_atr_at_entry(state, event)
-				#)
-
-				#ATR_multiplier = float(
-					#event.get("ATR_multiplier", 1.0)
-				#)
-
-				#trailing_stop_amount = (anchor_atr * ATR_multiplier)
-				#if position_side == "long":
-					#trailing_stop_price = price - trailing_stop_amount
-				#else:
-					#trailing_stop_price = price + trailing_stop_amount
-
-				#position_kwargs = {
-					#"trailing_stop_amount": trailing_stop_amount,
-					#"trailing_stop_price": trailing_stop_price,
-					#"trailing_stop_source_time": trailing_stop_source_time,
-					#"last_trailing_bar_time": event["received_dt"],
-					#"entry_atr": anchor_atr,
-					#"original_atr_multiplier": ATR_multiplier,
-					#"active_atr_multiplier": ATR_multiplier,
-					#"loss_liquidation_atr_factor": event.get(
-						#"loss_liquidation_atr_factor"
-					#),
-					#"profit_expansion_atr_factor": event.get(
-						#"profit_expansion_atr_factor"
-					#),
-					#"trailing_stop_multiplier_factor": float(
-						#event.get(
-							#"trailing_stop_multiplier_factor",
-							#1.0,
-						#)
-					#),
-					#"trailing_stop_expanded": False,
-					#"trailing_stop_expanded_at": None,
-				#}
-
 			if event.get("exit_strategy") == 3:				
 				anchor_atr, trailing_stop_source_time = (
 					self._get_anchor_atr_at_entry(
@@ -2304,6 +2332,35 @@ class BackTester:
 						),
 				}				
 
+			entry_signal_time = event.get(
+				"dt"
+			) or event.get(
+				"received_dt"
+			)
+
+			entry_features = (
+				self._get_entry_features(
+					state,
+					event,
+				)
+			)
+
+			trade_id = (
+				self._build_research_trade_id(
+					strategy_name=event.get(
+						"strategy_name",
+						"",
+					),
+					ticker=ticker,
+					side=position_side,
+					entry_signal_time=(
+						entry_signal_time
+					),
+				)
+			)
+
+
+
 			state.positions[ticker] = SimPosition(
 				ticker=ticker,
 				side=position_side,
@@ -2311,9 +2368,26 @@ class BackTester:
 				num_shares=qty,
 				high_water_price=price,
 				low_water_price=price,
+
+				entry_time=event[
+					"received_dt"
+				],
+				entry_signal_time=(
+					entry_signal_time
+				),
+				entry_price=price,
+				entry_quantity=qty,
+				entry_features=entry_features,
+				trade_id=trade_id,
+
 				**position_kwargs,
 			)
+
 			event_type = "open"
+
+
+
+
 
 		if self.recording_enabled:
 			state.trade_events.append({
@@ -2907,6 +2981,15 @@ class BackTester:
 				"low_water_price": (position.low_water_price),
 			})		
 
+		self._record_completed_research_trade(
+			state=state,
+			position=position,
+			exit_time=bar_dt,
+			exit_price=fill_price,
+			exit_reason=exit_reason,
+			realized_pnl=realized_delta,
+		)
+
 		state.positions.pop(ticker, None)
 
 		return True
@@ -3329,7 +3412,6 @@ class BackTester:
 
 											
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> bool:
-
 		execution_dt = event["received_dt"]
 		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
 			return False
@@ -3399,6 +3481,20 @@ class BackTester:
 			realized_delta = (
 				pnl_cost_basis - price
 			) * position.num_shares
+
+		self._record_completed_research_trade(
+			state=state,
+			position=position,
+			exit_time=execution_dt,
+			exit_price=price,
+			exit_reason=str(
+				event.get(
+					"exit_reason"
+				)
+				or "opposite_signal"
+			),
+			realized_pnl=realized_delta,
+		)			
 
 		state.realized_by_ticker[ticker] = state.realized_by_ticker.get(ticker, 0.0) + realized_delta
 		if self.recording_enabled:
@@ -4261,4 +4357,1816 @@ class BackTester:
 				"atr_cost_basis_liquidation"
 			),
 		)
+
+
+	def _build_anchor_entry_features(
+		self,
+		anchor_df: pd.DataFrame,
+		anchor_tf: str,
+		atr_period: int,
+	) -> dict[str, list[dict[str, Any]]]:
+		"""
+		Precompute OHLCV-derived entry features for every completed anchor bar.
+
+		Each feature row includes the time at which the anchor bar became
+		available. Entry lookups therefore use only information that was
+		available at the simulated decision time.
+		"""
+		if anchor_df.empty:
+			return {}
+
+		required_columns = {
+			"symbol",
+			"open",
+			"high",
+			"low",
+			"close",
+		}
+
+		missing_columns = (
+			required_columns
+			- set(anchor_df.columns)
+		)
+
+		if missing_columns:
+			raise ValueError(
+				"Anchor DataFrame is missing required columns: "
+				f"{sorted(missing_columns)}"
+			)
+
+		anchor_duration = self._timeframe_timedelta(
+			anchor_tf
+		)
+
+		working = anchor_df.copy()
+
+		working.index = pd.to_datetime(
+			working.index,
+			utc=True,
+		).tz_convert(
+			self.tvw_helpers.eastern_tz
+		)
+
+		features_by_ticker: dict[
+			str,
+			list[dict[str, Any]],
+		] = {}
+
+		for ticker, ticker_df in working.groupby(
+			"symbol",
+			sort=False,
+		):
+			ticker = str(
+				ticker
+			).upper().strip()
+
+			group = (
+				ticker_df
+				.sort_index()
+				.loc[
+					lambda frame:
+						~frame.index.duplicated(
+							keep="last"
+						)
+				]
+				.copy()
+			)
+
+			high = group["high"].astype(float)
+			low = group["low"].astype(float)
+			close = group["close"].astype(float)
+
+			previous_close = close.shift(1)
+
+			true_range = pd.concat(
+				[
+					high - low,
+					(high - previous_close).abs(),
+					(low - previous_close).abs(),
+				],
+				axis=1,
+			).max(
+				axis=1
+			)
+
+			atr = true_range.rolling(
+				window=atr_period,
+				min_periods=atr_period,
+			).mean()
+
+			atr_mean_20 = atr.rolling(
+				window=20,
+				min_periods=10,
+			).mean()
+
+			returns = close.pct_change()
+
+			range_percent = (
+				(high - low)
+				/ close.replace(
+					0.0,
+					np.nan,
+				)
+				* 100.0
+			)
+
+			ema_10 = close.ewm(
+				span=10,
+				adjust=False,
+			).mean()
+
+			ema_20 = close.ewm(
+				span=20,
+				adjust=False,
+			).mean()
+
+			def efficiency_ratio(
+				lookback: int,
+			) -> pd.Series:
+				net_change = (
+					close
+					- close.shift(
+						lookback
+					)
+				).abs()
+
+				total_movement = (
+					close.diff()
+					.abs()
+					.rolling(
+						window=lookback,
+						min_periods=lookback,
+					)
+					.sum()
+				)
+
+				return (
+					net_change
+					/ total_movement.replace(
+						0.0,
+						np.nan,
+					)
+				)
+
+			feature_frame = pd.DataFrame(
+				index=group.index
+			)
+
+			feature_frame["vol_atr_percent"] = (
+				atr
+				/ close.replace(
+					0.0,
+					np.nan,
+				)
+				* 100.0
+			)
+
+			feature_frame["vol_atr_to_mean_ratio"] = (
+				atr
+				/ atr_mean_20.replace(
+					0.0,
+					np.nan,
+				)
+			)
+
+			feature_frame["vol_atr_change_percent_5"] = (
+				(
+					atr
+					/ atr.shift(
+						5
+					)
+				)
+				- 1.0
+			) * 100.0
+
+			feature_frame["vol_return_stddev_10"] = (
+				returns
+				.rolling(
+					window=10,
+					min_periods=10,
+				)
+				.std()
+				* 100.0
+			)
+
+			feature_frame["vol_return_stddev_20"] = (
+				returns
+				.rolling(
+					window=20,
+					min_periods=20,
+				)
+				.std()
+				* 100.0
+			)
+
+			feature_frame[
+				"vol_average_range_percent_10"
+			] = (
+				range_percent
+				.rolling(
+					window=10,
+					min_periods=10,
+				)
+				.mean()
+			)
+
+			feature_frame[
+				"vol_average_range_percent_20"
+			] = (
+				range_percent
+				.rolling(
+					window=20,
+					min_periods=20,
+				)
+				.mean()
+			)
+
+			feature_frame[
+				"vol_efficiency_ratio_10"
+			] = efficiency_ratio(
+				10
+			)
+
+			feature_frame[
+				"vol_efficiency_ratio_20"
+			] = efficiency_ratio(
+				20
+			)
+
+			feature_frame[
+				"vol_ema_10_slope_percent_5"
+			] = (
+				(
+					ema_10
+					/ ema_10.shift(
+						5
+					)
+				)
+				- 1.0
+			) * 100.0
+
+			feature_frame[
+				"vol_distance_from_ema_20_percent"
+			] = (
+				(
+					close
+					- ema_20
+				)
+				/ ema_20.replace(
+					0.0,
+					np.nan,
+				)
+				* 100.0
+			)
+
+			rows = []
+
+			for source_time, feature_row in (
+				feature_frame.iterrows()
+			):
+				available_time = (
+					source_time
+					+ anchor_duration
+				)
+
+				row = {
+					"source_time":
+						source_time.to_pydatetime(),
+					"available_time":
+						available_time.to_pydatetime(),
+				}
+
+				for column_name, value in (
+					feature_row.items()
+				):
+					if pd.isna(
+						value
+					):
+						row[column_name] = None
+					else:
+						row[column_name] = float(
+							value
+						)
+
+				rows.append(
+					row
+				)
+
+			features_by_ticker[
+				ticker
+			] = rows
+
+		return features_by_ticker
+
+
+	def _get_entry_features(
+		self,
+		state: SimState,
+		event: dict[str, Any],
+	) -> dict[str, Optional[float]]:
+		"""
+		Return the latest completed anchor feature row available at entry.
+		"""
+		ticker = str(
+			event["ticker"]
+		).upper().strip()
+
+		entry_time = pd.Timestamp(
+			event["received_dt"]
+		)
+
+		if entry_time.tzinfo is None:
+			entry_time = entry_time.tz_localize(
+				self.tvw_helpers.eastern_tz
+			)
+		else:
+			entry_time = entry_time.tz_convert(
+				self.tvw_helpers.eastern_tz
+			)
+
+		rows = (
+			state.market_data
+			.get(
+				"anchor_entry_features",
+				{},
+			)
+			.get(
+				ticker,
+				[],
+			)
+		)
+
+		selected_row = None
+
+		for row in rows:
+			available_time = pd.Timestamp(
+				row["available_time"]
+			)
+
+			if available_time.tzinfo is None:
+				available_time = (
+					available_time.tz_localize(
+						self.tvw_helpers.eastern_tz
+					)
+				)
+			else:
+				available_time = (
+					available_time.tz_convert(
+						self.tvw_helpers.eastern_tz
+					)
+				)
+
+			if available_time > entry_time:
+				break
+
+			selected_row = row
+
+		if selected_row is None:
+			return {}
+
+		return {
+			key: value
+			for key, value in selected_row.items()
+			if key.startswith(
+				"vol_"
+			)
+		}
+
+
+	def _build_research_trade_id(
+		self,
+		strategy_name: str,
+		ticker: str,
+		side: str,
+		entry_signal_time: datetime,
+	) -> str:
+		raw_key = "|".join(
+			[
+				str(
+					strategy_name
+				).strip(),
+				str(
+					ticker
+				).upper().strip(),
+				str(
+					side
+				).lower().strip(),
+				pd.Timestamp(
+					entry_signal_time
+				).isoformat(),
+			]
+		)
+
+		return hashlib.sha256(
+			raw_key.encode(
+				"utf-8"
+			)
+		).hexdigest()
+
+
+	def _record_completed_research_trade(
+		self,
+		state: SimState,
+		position: SimPosition,
+		exit_time: datetime,
+		exit_price: float,
+		exit_reason: str,
+		realized_pnl: float,
+	) -> None:
+		if not state.record_factor_research:
+			return
+
+		if position.entry_time is None:
+			return
+
+		reporting_start = state.research_reporting_start
+		reporting_end = state.research_reporting_end
+
+		if (
+			reporting_start is not None
+			and position.entry_time
+			< reporting_start
+		):
+			# Do not include a position inherited from warm-up.
+			return
+
+		if (
+			reporting_end is not None
+			and position.entry_time
+			> reporting_end
+		):
+			return
+
+		entry_notional = (
+			float(
+				position.avg_price_per_share
+			)
+			* float(
+				position.num_shares
+			)
+		)
+
+		pnl_percent = (
+			float(
+				realized_pnl
+			)
+			/ entry_notional
+			* 100.0
+			if entry_notional > 0
+			else 0.0
+		)
+
+		record = {
+			**state.research_run_metadata,
+
+			"trade_id": position.trade_id,
+			"ticker": position.ticker,
+			"side": position.side,
+
+			"entry_time": (
+				position.entry_time.isoformat()
+			),
+			"entry_signal_time": (
+				position.entry_signal_time.isoformat()
+				if position.entry_signal_time
+				is not None
+				else None
+			),
+			"initial_entry_price": (
+				float(
+					position.entry_price
+				)
+				if position.entry_price is not None
+				else None
+			),
+			"initial_entry_quantity": (
+				float(
+					position.entry_quantity
+				)
+				if position.entry_quantity is not None
+				else None
+			),
+
+			"final_cost_basis": float(
+				position.avg_price_per_share
+			),
+			"final_quantity": float(
+				position.num_shares
+			),
+			"entry_notional": entry_notional,
+			"entry_sequence_count": int(
+				position.entry_sequence_count
+			),
+
+			"exit_time": pd.Timestamp(
+				exit_time
+			).isoformat(),
+			"exit_price": float(
+				exit_price
+			),
+			"exit_reason": str(
+				exit_reason
+			),
+
+			"pnl": float(
+				realized_pnl
+			),
+			"pnl_percent": float(
+				pnl_percent
+			),
+
+			**position.entry_features,
+		}
+
+		state.completed_trade_records.append(
+			record
+		)
+
+
+	def _append_factor_research_records(
+		self,
+		records: list[dict[str, Any]],
+	) -> int:
+		if not records:
+			return 0
+
+		directory = os.path.dirname(
+			BACKTEST_FACTOR_RESEARCH_LOG_PATH
+		)
+
+		if directory:
+			os.makedirs(
+				directory,
+				exist_ok=True,
+			)
+
+		with BACKTEST_FACTOR_RESEARCH_FILE_LOCK:
+			with open(
+				BACKTEST_FACTOR_RESEARCH_LOG_PATH,
+				"a",
+				encoding="utf-8",
+			) as research_file:
+				for record in records:
+					research_file.write(
+						json.dumps(
+							record,
+							sort_keys=True,
+							allow_nan=False,
+						)
+					)
+
+					research_file.write(
+						"\n"
+					)
+
+		return len(
+			records
+		)
+
+
+	def delete_factor_research_records(
+		self,
+		research_group_ids: Optional[list[str]] = None,
+		delete_all: bool = False,
+	) -> dict[str, Any]:
+		"""
+		Delete factor-research records from the JSONL file.
+
+		When delete_all is false, only records whose research_group_id
+		matches one of research_group_ids are removed.
+		"""
+		normalized_group_ids = {
+			str(
+				group_id
+			).strip()
+			for group_id in (
+				research_group_ids or []
+			)
+			if str(
+				group_id
+			).strip()
+		}
+
+		if (
+			not delete_all
+			and not normalized_group_ids
+		):
+			raise ValueError(
+				"Provide at least one research_group_id "
+				"or set delete_all=true"
+			)
+
+		research_path = (
+			BACKTEST_FACTOR_RESEARCH_LOG_PATH
+		)
+
+		if not os.path.exists(
+			research_path
+		):
+			return {
+				"ok": True,
+				"delete_all": delete_all,
+				"requested_research_group_ids": sorted(
+					normalized_group_ids
+				),
+				"records_before": 0,
+				"records_deleted": 0,
+				"records_remaining": 0,
+				"deleted_research_group_ids": [],
+				"message": (
+					"No factor-research file existed"
+				),
+			}
+
+		directory = os.path.dirname(
+			research_path
+		)
+
+		if directory:
+			os.makedirs(
+				directory,
+				exist_ok=True,
+			)
+
+		temporary_path = (
+			f"{research_path}.delete.tmp"
+		)
+
+		records_before = 0
+		records_deleted = 0
+		records_remaining = 0
+
+		deleted_group_ids = set()
+		found_group_ids = set()
+
+		with BACKTEST_FACTOR_RESEARCH_FILE_LOCK:
+			try:
+				with open(
+					research_path,
+					"r",
+					encoding="utf-8",
+				) as source_file:
+					with open(
+						temporary_path,
+						"w",
+						encoding="utf-8",
+					) as destination_file:
+						for line_number, line in enumerate(
+							source_file,
+							start=1,
+						):
+							stripped_line = line.strip()
+
+							if not stripped_line:
+								continue
+
+							try:
+								record = json.loads(
+									stripped_line
+								)
+
+							except json.JSONDecodeError:
+								logger.warning(
+									"Preserving invalid factor-research "
+									"JSONL row during deletion: line=%s",
+									line_number,
+								)
+
+								destination_file.write(
+									line
+								)
+
+								continue
+
+							records_before += 1
+
+							record_group_id = str(
+								record.get(
+									"research_group_id",
+									"",
+								)
+							).strip()
+
+							if record_group_id:
+								found_group_ids.add(
+									record_group_id
+								)
+
+							should_delete = (
+								delete_all
+								or record_group_id
+								in normalized_group_ids
+							)
+
+							if should_delete:
+								records_deleted += 1
+
+								if record_group_id:
+									deleted_group_ids.add(
+										record_group_id
+									)
+
+								continue
+
+							destination_file.write(
+								json.dumps(
+									record,
+									sort_keys=True,
+									allow_nan=False,
+								)
+							)
+
+							destination_file.write(
+								"\n"
+							)
+
+							records_remaining += 1
+
+						destination_file.flush()
+
+						os.fsync(
+							destination_file.fileno()
+						)
+
+				os.replace(
+					temporary_path,
+					research_path,
+				)
+
+			finally:
+				if os.path.exists(
+					temporary_path
+				):
+					os.remove(
+						temporary_path
+					)
+
+		missing_group_ids = (
+			normalized_group_ids
+			- found_group_ids
+		)
+
+		return {
+			"ok": True,
+			"delete_all": delete_all,
+			"requested_research_group_ids": sorted(
+				normalized_group_ids
+			),
+			"deleted_research_group_ids": sorted(
+				deleted_group_ids
+			),
+			"missing_research_group_ids": sorted(
+				missing_group_ids
+			),
+			"records_before": records_before,
+			"records_deleted": records_deleted,
+			"records_remaining": records_remaining,
+		}
+
+
+	def build_factor_research_chart_zip(
+		self,
+		research_group_id: str,
+		minimum_pnl_margin: float = 0.0,
+		pnl_tie_tolerance: float = 0.0,
+		require_all_factors: bool = True,
+	) -> io.BytesIO:
+		research_group_id = str(
+			research_group_id or ""
+		).strip()
+
+		if not research_group_id:
+			raise ValueError(
+				"research_group_id is required"
+			)
+
+		if minimum_pnl_margin < 0:
+			raise ValueError(
+				"minimum_pnl_margin must be >= 0"
+			)
+
+		if pnl_tie_tolerance < 0:
+			raise ValueError(
+				"pnl_tie_tolerance must be >= 0"
+			)
+
+		if not os.path.exists(
+			BACKTEST_FACTOR_RESEARCH_LOG_PATH
+		):
+			raise ValueError(
+				"No factor-research file exists"
+			)
+
+		records = []
+
+		with BACKTEST_FACTOR_RESEARCH_FILE_LOCK:
+			with open(
+				BACKTEST_FACTOR_RESEARCH_LOG_PATH,
+				"r",
+				encoding="utf-8",
+			) as research_file:
+				for line_number, line in enumerate(
+					research_file,
+					start=1,
+				):
+					line = line.strip()
+
+					if not line:
+						continue
+
+					try:
+						record = json.loads(
+							line
+						)
+
+					except json.JSONDecodeError:
+						logger.warning(
+							"Skipping invalid factor-research "
+							"JSONL row: line=%s",
+							line_number,
+						)
+
+						continue
+
+					if (
+						record.get(
+							"research_group_id"
+						)
+						!= research_group_id
+					):
+						continue
+
+					records.append(
+						record
+					)
+
+		if not records:
+			raise ValueError(
+				"No records found for research_group_id="
+				f"{research_group_id!r}"
+			)
+
+		df = pd.DataFrame(
+			records
+		)
+
+		required_columns = {
+			"trade_id",
+			"loss_liquidation_atr_factor",
+			"pnl",
+			"pnl_percent",
+		}
+
+		missing_columns = (
+			required_columns
+			- set(df.columns)
+		)
+
+		if missing_columns:
+			raise ValueError(
+				"Research data is missing required columns: "
+				f"{sorted(missing_columns)}"
+			)
+
+		df = (
+			df
+			.sort_values(
+				[
+					"trade_id",
+					"loss_liquidation_atr_factor",
+					"exit_time",
+				]
+			)
+			.drop_duplicates(
+				subset=[
+					"trade_id",
+					"loss_liquidation_atr_factor",
+				],
+				keep="last",
+			)
+		)
+
+		tested_factors = sorted(
+			float(
+				value
+			)
+			for value in (
+				df[
+					"loss_liquidation_atr_factor"
+				]
+				.dropna()
+				.unique()
+			)
+		)
+
+		if len(
+			tested_factors
+		) < 2:
+			raise ValueError(
+				"At least two liquidation factors are required"
+			)
+
+		factor_count_by_trade = (
+			df.groupby(
+				"trade_id"
+			)[
+				"loss_liquidation_atr_factor"
+			]
+			.nunique()
+		)
+
+		if require_all_factors:
+			complete_trade_ids = (
+				factor_count_by_trade[
+					factor_count_by_trade
+					== len(
+						tested_factors
+					)
+				]
+				.index
+			)
+
+			comparison_df = df[
+				df["trade_id"].isin(
+					complete_trade_ids
+				)
+			].copy()
+		else:
+			comparison_df = df.copy()
+
+		if comparison_df.empty:
+			raise ValueError(
+				"No comparable trades remain after "
+				"factor-completeness filtering"
+			)
+
+		best_rows = []
+
+		for trade_id, trade_group in (
+			comparison_df.groupby(
+				"trade_id",
+				sort=False,
+			)
+		):
+			group = trade_group.sort_values(
+				[
+					"pnl_percent",
+					"loss_liquidation_atr_factor",
+				],
+				ascending=[
+					False,
+					True,
+				],
+			)
+
+			maximum_pnl = float(
+				group["pnl_percent"].max()
+			)
+
+			acceptable = group[
+				group["pnl_percent"]
+				>= (
+					maximum_pnl
+					- pnl_tie_tolerance
+				)
+			]
+
+			# Choose the tightest factor among effective ties.
+			best_row = (
+				acceptable
+				.sort_values(
+					"loss_liquidation_atr_factor"
+				)
+				.iloc[0]
+				.copy()
+			)
+
+			ordered_pnl = (
+				group["pnl_percent"]
+				.sort_values(
+					ascending=False
+				)
+				.tolist()
+			)
+
+			second_best_pnl = (
+				float(
+					ordered_pnl[1]
+				)
+				if len(
+					ordered_pnl
+				) > 1
+				else float(
+					ordered_pnl[0]
+				)
+			)
+
+			best_row[
+				"best_factor_pnl_margin"
+			] = (
+				maximum_pnl
+				- second_best_pnl
+			)
+
+			best_rows.append(
+				best_row
+			)
+
+		best_df = pd.DataFrame(
+			best_rows
+		)
+
+		best_df = best_df[
+			best_df[
+				"best_factor_pnl_margin"
+			]
+			>= minimum_pnl_margin
+		].copy()
+
+		if best_df.empty:
+			raise ValueError(
+				"No trades remain after minimum_pnl_margin filtering"
+			)
+
+		feature_columns = sorted(
+			column
+			for column in best_df.columns
+			if column.startswith(
+				"vol_"
+			)
+		)
+
+		if not feature_columns:
+			raise ValueError(
+				"No volatility-feature columns were found"
+			)
+
+		summary_rows = []
+		zip_buffer = io.BytesIO()
+
+		with zipfile.ZipFile(
+			zip_buffer,
+			"w",
+			compression=zipfile.ZIP_DEFLATED,
+		) as zip_file:
+			for chart_number, feature_name in enumerate(
+				feature_columns,
+				start=1,
+			):
+				plot_df = (
+					best_df[
+						[
+							feature_name,
+							"loss_liquidation_atr_factor",
+							"best_factor_pnl_margin",
+							"trade_id",
+							"ticker",
+						]
+					]
+					.dropna(
+						subset=[
+							feature_name,
+							"loss_liquidation_atr_factor",
+						]
+					)
+					.copy()
+				)
+
+				if plot_df.empty:
+					continue
+
+				x_values = plot_df[
+					feature_name
+				].astype(
+					float
+				)
+
+				y_values = plot_df[
+					"loss_liquidation_atr_factor"
+				].astype(
+					float
+				)
+
+				pearson = (
+					float(
+						x_values.corr(
+							y_values,
+							method="pearson",
+						)
+					)
+					if len(
+						plot_df
+					) >= 2
+					else None
+				)
+
+				spearman = (
+					float(
+						x_values.corr(
+							y_values,
+							method="spearman",
+						)
+					)
+					if len(
+						plot_df
+					) >= 2
+					else None
+				)
+
+				slope = None
+				intercept = None
+				r_squared = None
+
+				if (
+					len(
+						plot_df
+					) >= 2
+					and x_values.nunique() >= 2
+				):
+					slope, intercept = np.polyfit(
+						x_values,
+						y_values,
+						1,
+					)
+
+					predicted = (
+						slope
+						* x_values
+						+ intercept
+					)
+
+					residual_sum = float(
+						(
+							(
+								y_values
+								- predicted
+							)
+							** 2
+						).sum()
+					)
+
+					total_sum = float(
+						(
+							(
+								y_values
+								- y_values.mean()
+							)
+							** 2
+						).sum()
+					)
+
+					r_squared = (
+						1.0
+						- residual_sum
+						/ total_sum
+						if total_sum > 0
+						else None
+					)
+
+				figure, axis = plt.subplots(
+					figsize=(
+						11,
+						7,
+					)
+				)
+
+				random_generator = (
+					np.random.default_rng(
+						42
+					)
+				)
+
+				y_jittered = (
+					y_values
+					+ random_generator.normal(
+						loc=0.0,
+						scale=0.008,
+						size=len(
+							y_values
+						),
+					)
+				)
+
+				axis.scatter(
+					x_values,
+					y_jittered,
+					alpha=0.45,
+				)
+
+				if (
+					slope is not None
+					and intercept is not None
+				):
+					line_x = np.linspace(
+						float(
+							x_values.min()
+						),
+						float(
+							x_values.max()
+						),
+						100,
+					)
+
+					line_y = (
+						slope
+						* line_x
+						+ intercept
+					)
+
+					axis.plot(
+						line_x,
+						line_y,
+					)
+
+				axis.set_title(
+					f"{feature_name} vs ideal loss-liquidation factor"
+				)
+
+				axis.set_xlabel(
+					feature_name
+				)
+
+				axis.set_ylabel(
+					"Ideal loss-liquidation ATR factor"
+				)
+
+				axis.grid(
+					True,
+					alpha=0.25,
+				)
+
+				figure.tight_layout()
+
+				image_buffer = io.BytesIO()
+
+				figure.savefig(
+					image_buffer,
+					format="png",
+					dpi=150,
+				)
+
+				plt.close(
+					figure
+				)
+
+				image_buffer.seek(
+					0
+				)
+
+				zip_file.writestr(
+					(
+						f"{chart_number:02d}_"
+						f"{feature_name}_vs_ideal_factor.png"
+					),
+					image_buffer.getvalue(),
+				)
+
+				summary_rows.append({
+					"feature": feature_name,
+					"trade_count": len(
+						plot_df
+					),
+					"pearson_correlation": pearson,
+					"spearman_correlation": spearman,
+					"linear_slope": (
+						float(
+							slope
+						)
+						if slope is not None
+						else None
+					),
+					"linear_intercept": (
+						float(
+							intercept
+						)
+						if intercept is not None
+						else None
+					),
+					"r_squared": r_squared,
+				})
+
+			best_csv = best_df.to_csv(
+				index=False
+			)
+
+			summary_csv = pd.DataFrame(
+				summary_rows
+			).to_csv(
+				index=False
+			)
+
+			zip_file.writestr(
+				"best_factor_by_trade.csv",
+				best_csv,
+			)
+
+			zip_file.writestr(
+				"feature_relationship_summary.csv",
+				summary_csv,
+			)
+
+			metadata = {
+				"research_group_id":
+					research_group_id,
+				"tested_factors":
+					tested_factors,
+				"raw_record_count":
+					len(
+						df
+					),
+				"comparable_trade_count":
+					int(
+						comparison_df[
+							"trade_id"
+						].nunique()
+					),
+				"plotted_trade_count":
+					int(
+						best_df[
+							"trade_id"
+						].nunique()
+					),
+				"minimum_pnl_margin":
+					minimum_pnl_margin,
+				"pnl_tie_tolerance":
+					pnl_tie_tolerance,
+				"require_all_factors":
+					require_all_factors,
+			}
+
+			zip_file.writestr(
+				"analysis_metadata.json",
+				json.dumps(
+					metadata,
+					indent=2,
+					sort_keys=True,
+				),
+			)
+
+		zip_buffer.seek(
+			0
+		)
+
+		return zip_buffer
+
+
+	def list_factor_research_groups(
+		self,
+	) -> dict[str, Any]:
+		"""
+		Return a summary of every research group stored in the
+		factor-research JSONL file.
+		"""
+		research_path = (
+			BACKTEST_FACTOR_RESEARCH_LOG_PATH
+		)
+
+		if not os.path.exists(
+			research_path
+		):
+			return {
+				"ok": True,
+				"research_file_exists": False,
+				"group_count": 0,
+				"record_count": 0,
+				"invalid_line_count": 0,
+				"groups": [],
+			}
+
+		group_summaries: dict[
+			str,
+			dict[str, Any],
+		] = {}
+
+		record_count = 0
+		invalid_line_count = 0
+
+		with BACKTEST_FACTOR_RESEARCH_FILE_LOCK:
+			with open(
+				research_path,
+				"r",
+				encoding="utf-8",
+			) as research_file:
+				for line_number, line in enumerate(
+					research_file,
+					start=1,
+				):
+					line = line.strip()
+
+					if not line:
+						continue
+
+					try:
+						record = json.loads(
+							line
+						)
+
+					except json.JSONDecodeError:
+						invalid_line_count += 1
+
+						logger.warning(
+							"Skipping invalid factor-research "
+							"JSONL row while listing groups: "
+							"line=%s",
+							line_number,
+						)
+
+						continue
+
+					research_group_id = str(
+						record.get(
+							"research_group_id",
+							"",
+						)
+					).strip()
+
+					if not research_group_id:
+						invalid_line_count += 1
+
+						logger.warning(
+							"Skipping factor-research row with "
+							"no research_group_id: line=%s",
+							line_number,
+						)
+
+						continue
+
+					record_count += 1
+
+					if (
+						research_group_id
+						not in group_summaries
+					):
+						group_summaries[
+							research_group_id
+						] = {
+							"research_group_id":
+								research_group_id,
+							"record_count": 0,
+							"trade_ids": set(),
+							"strategies": set(),
+							"anchor_timeframes": set(),
+							"exit_strategies": set(),
+							"liquidation_factors": set(),
+							"atr_periods": set(),
+							"atr_multipliers": set(),
+							"position_sizes": set(),
+							"backtest_starts": set(),
+							"backtest_ends": set(),
+							"liquidate_before_market_close":
+								set(),
+							"entry_times": [],
+							"exit_times": [],
+							"tickers": set(),
+							"sides": set(),
+							"exit_reasons": set(),
+						}
+
+					summary = group_summaries[
+						research_group_id
+					]
+
+					summary["record_count"] += 1
+
+					trade_id = record.get(
+						"trade_id"
+					)
+
+					if trade_id:
+						summary["trade_ids"].add(
+							str(
+								trade_id
+							)
+						)
+
+					strategy_name = record.get(
+						"strategy_name"
+					)
+
+					if strategy_name:
+						summary["strategies"].add(
+							str(
+								strategy_name
+							)
+						)
+
+					anchor_timeframe = record.get(
+						"anchor_timeframe"
+					)
+
+					if anchor_timeframe:
+						summary[
+							"anchor_timeframes"
+						].add(
+							str(
+								anchor_timeframe
+							)
+						)
+
+					exit_strategy = record.get(
+						"exit_strategy"
+					)
+
+					if exit_strategy is not None:
+						summary[
+							"exit_strategies"
+						].add(
+							int(
+								exit_strategy
+							)
+						)
+
+					liquidation_factor = record.get(
+						"loss_liquidation_atr_factor"
+					)
+
+					if liquidation_factor is not None:
+						try:
+							summary[
+								"liquidation_factors"
+							].add(
+								float(
+									liquidation_factor
+								)
+							)
+
+						except (
+							TypeError,
+							ValueError,
+						):
+							pass
+
+					atr_period = record.get(
+						"ATR_period"
+					)
+
+					if atr_period is not None:
+						try:
+							summary[
+								"atr_periods"
+							].add(
+								int(
+									atr_period
+								)
+							)
+
+						except (
+							TypeError,
+							ValueError,
+						):
+							pass
+
+					atr_multiplier = record.get(
+						"ATR_multiplier"
+					)
+
+					if atr_multiplier is not None:
+						try:
+							summary[
+								"atr_multipliers"
+							].add(
+								float(
+									atr_multiplier
+								)
+							)
+
+						except (
+							TypeError,
+							ValueError,
+						):
+							pass
+
+					position_size = record.get(
+						"position_size"
+					)
+
+					if position_size is not None:
+						try:
+							summary[
+								"position_sizes"
+							].add(
+								float(
+									position_size
+								)
+							)
+
+						except (
+							TypeError,
+							ValueError,
+						):
+							pass
+
+					backtest_start = record.get(
+						"start"
+					)
+
+					if backtest_start:
+						summary[
+							"backtest_starts"
+						].add(
+							str(
+								backtest_start
+							)
+						)
+
+					backtest_end = record.get(
+						"end"
+					)
+
+					if backtest_end:
+						summary[
+							"backtest_ends"
+						].add(
+							str(
+								backtest_end
+							)
+						)
+
+					market_close_liquidation = (
+						record.get(
+							"liquidate_before_market_close"
+						)
+					)
+
+					if (
+						market_close_liquidation
+						is not None
+					):
+						summary[
+							"liquidate_before_market_close"
+						].add(
+							bool(
+								market_close_liquidation
+							)
+						)
+
+					entry_time = record.get(
+						"entry_time"
+					)
+
+					if entry_time:
+						try:
+							summary[
+								"entry_times"
+							].append(
+								pd.Timestamp(
+									entry_time
+								)
+							)
+
+						except Exception:
+							pass
+
+					exit_time = record.get(
+						"exit_time"
+					)
+
+					if exit_time:
+						try:
+							summary[
+								"exit_times"
+							].append(
+								pd.Timestamp(
+									exit_time
+								)
+							)
+
+						except Exception:
+							pass
+
+					ticker = record.get(
+						"ticker"
+					)
+
+					if ticker:
+						summary["tickers"].add(
+							str(
+								ticker
+							).upper().strip()
+						)
+
+					side = record.get(
+						"side"
+					)
+
+					if side:
+						summary["sides"].add(
+							str(
+								side
+							).lower().strip()
+						)
+
+					exit_reason = record.get(
+						"exit_reason"
+					)
+
+					if exit_reason:
+						summary[
+							"exit_reasons"
+						].add(
+							str(
+								exit_reason
+							)
+						)
+
+		groups = []
+
+		for research_group_id, summary in (
+			group_summaries.items()
+		):
+			entry_times = summary.pop(
+				"entry_times"
+			)
+
+			exit_times = summary.pop(
+				"exit_times"
+			)
+
+			trade_ids = summary.pop(
+				"trade_ids"
+			)
+
+			summary["unique_trade_count"] = len(
+				trade_ids
+			)
+
+			summary["earliest_entry_time"] = (
+				min(
+					entry_times
+				).isoformat()
+				if entry_times
+				else None
+			)
+
+			summary["latest_entry_time"] = (
+				max(
+					entry_times
+				).isoformat()
+				if entry_times
+				else None
+			)
+
+			summary["earliest_exit_time"] = (
+				min(
+					exit_times
+				).isoformat()
+				if exit_times
+				else None
+			)
+
+			summary["latest_exit_time"] = (
+				max(
+					exit_times
+				).isoformat()
+				if exit_times
+				else None
+			)
+
+			for set_field in [
+				"strategies",
+				"anchor_timeframes",
+				"exit_strategies",
+				"liquidation_factors",
+				"atr_periods",
+				"atr_multipliers",
+				"position_sizes",
+				"backtest_starts",
+				"backtest_ends",
+				"liquidate_before_market_close",
+				"tickers",
+				"sides",
+				"exit_reasons",
+			]:
+				summary[set_field] = sorted(
+					summary[set_field]
+				)
+
+			groups.append(
+				summary
+			)
+
+		groups.sort(
+			key=lambda group: (
+				group.get(
+					"latest_entry_time"
+				)
+				or "",
+				group[
+					"research_group_id"
+				],
+			),
+			reverse=True,
+		)
+
+		return {
+			"ok": True,
+			"research_file_exists": True,
+			"group_count": len(
+				groups
+			),
+			"record_count": record_count,
+			"invalid_line_count":
+				invalid_line_count,
+			"groups": groups,
+		}
 
