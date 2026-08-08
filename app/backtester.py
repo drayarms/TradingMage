@@ -17,6 +17,7 @@ import json
 import os
 import zipfile
 import threading
+import numpy as np
 
 logger = logging.getLogger("tv-webhook")
 
@@ -517,7 +518,12 @@ class BackTester:
 
 		anchor_ATR = self.trade_records_instance.dataframe_to_atr_dict(anchor_df,period=ATR_period)
 
-		anchor_entry_features = (self._build_anchor_entry_features(anchor_df=anchor_df,anchor_tf=anchor_tf,atr_period=ATR_period,))	
+		#anchor_entry_features = (self._build_anchor_entry_features(anchor_df=anchor_df,anchor_tf=anchor_tf,atr_period=ATR_period,))	
+		anchor_entry_features = {}
+
+		if record_factor_research:
+			#anchor_entry_features = self._build_anchor_entry_features(anchor_df=anchor_df,anchor_tf=anchor_tf,atr_period=ATR_period,)
+			anchor_entry_features = self._build_anchor_entry_features(anchor_df=anchor_df,anchor_tf=anchor_tf,anchor_atr=anchor_ATR)
 
 		anchor_ohlc = self._dataframe_to_ohlc_rows(anchor_df,start_dt,end_dt,)
 
@@ -2332,34 +2338,21 @@ class BackTester:
 						),
 				}				
 
-			entry_signal_time = event.get(
-				"dt"
-			) or event.get(
-				"received_dt"
-			)
+			#entry_signal_time = event.get(
+				#"dt"
+			#) or event.get(
+				#"received_dt"
+			#)
 
-			entry_features = (
-				self._get_entry_features(
-					state,
-					event,
-				)
-			)
+			entry_signal_time = None
+			entry_features = {}
+			trade_id = None
 
-			trade_id = (
-				self._build_research_trade_id(
-					strategy_name=event.get(
-						"strategy_name",
-						"",
-					),
-					ticker=ticker,
-					side=position_side,
-					entry_signal_time=(
-						entry_signal_time
-					),
-				)
-			)
+			if state.record_factor_research:
+				entry_signal_time = (event.get("dt") or event.get("received_dt"))
+				entry_features = self._get_entry_features(state,event)
 
-
+				trade_id = self._build_research_trade_id(strategy_name=event.get("strategy_name",""),ticker=ticker,side=position_side,entry_signal_time=entry_signal_time)
 
 			state.positions[ticker] = SimPosition(
 				ticker=ticker,
@@ -2368,13 +2361,8 @@ class BackTester:
 				num_shares=qty,
 				high_water_price=price,
 				low_water_price=price,
-
-				entry_time=event[
-					"received_dt"
-				],
-				entry_signal_time=(
-					entry_signal_time
-				),
+				entry_time=event["received_dt"],
+				entry_signal_time=entry_signal_time,
 				entry_price=price,
 				entry_quantity=qty,
 				entry_features=entry_features,
@@ -4359,12 +4347,18 @@ class BackTester:
 		)
 
 
+	#def _build_anchor_entry_features(
+		#self,
+		#anchor_df: pd.DataFrame,
+		#anchor_tf: str,
+		#atr_period: int,
+	#) -> dict[str, list[dict[str, Any]]]:
 	def _build_anchor_entry_features(
 		self,
 		anchor_df: pd.DataFrame,
 		anchor_tf: str,
-		atr_period: int,
-	) -> dict[str, list[dict[str, Any]]]:
+		anchor_atr: dict[str, dict[Any, float]],
+	) -> dict[str, list[dict[str, Any]]]:	
 		"""
 		Precompute OHLCV-derived entry features for every completed anchor bar.
 
@@ -4436,28 +4430,79 @@ class BackTester:
 			low = group["low"].astype(float)
 			close = group["close"].astype(float)
 
-			previous_close = close.shift(1)
+			#previous_close = close.shift(1)
 
-			true_range = pd.concat(
-				[
-					high - low,
-					(high - previous_close).abs(),
-					(low - previous_close).abs(),
-				],
-				axis=1,
-			).max(
-				axis=1
+			#true_range = pd.concat(
+				#[
+					#high - low,
+					#(high - previous_close).abs(),
+					#(low - previous_close).abs(),
+				#],
+				#axis=1,
+			#).max(
+				#axis=1
+			#)
+
+			#atr = true_range.rolling(
+				#window=atr_period,
+				#min_periods=atr_period,
+			#).mean()
+
+			#atr_mean_20 = atr.rolling(
+				#window=20,
+				#min_periods=10,
+			#).mean()
+
+
+			ticker_atr = (
+				anchor_atr.get(
+					ticker,
+					{},
+				)
 			)
 
-			atr = true_range.rolling(
-				window=atr_period,
-				min_periods=atr_period,
-			).mean()
+			atr = pd.Series(
+				index=group.index,
+				dtype=float,
+			)
 
-			atr_mean_20 = atr.rolling(
-				window=20,
-				min_periods=10,
-			).mean()
+			for timestamp, atr_value in ticker_atr.items():
+				atr_timestamp = pd.Timestamp(
+					timestamp
+				)
+
+				if atr_timestamp.tzinfo is None:
+					atr_timestamp = (
+						atr_timestamp.tz_localize(
+							self.tvw_helpers.eastern_tz
+						)
+					)
+				else:
+					atr_timestamp = (
+						atr_timestamp.tz_convert(
+							self.tvw_helpers.eastern_tz
+						)
+					)
+
+				if atr_timestamp in atr.index:
+					atr.loc[
+						atr_timestamp
+					] = float(
+						atr_value
+					)
+
+
+			atr_mean_20 = (
+				atr
+				.rolling(
+					window=20,
+					min_periods=10,
+				)
+				.mean()
+			)
+
+
+
 
 			returns = close.pct_change()
 

@@ -743,9 +743,67 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 
 
 
-
-
 		entry_is_blocked_b = (
+			strategies_instance
+			.live_trailing_stop_entry_is_blocked(
+				owner_name="strategy4b_1h_anchor",
+				ticker=symbol,
+				alpaca_api=ALPACA_APIS[
+					"strategy4b_1h_anchor"
+				],
+			)
+		)
+		entries_closed_for_day_b = (
+			strategies_instance
+			.live_trailing_stop_entries_closed_for_day(
+				owner_name="strategy4b_1h_anchor",
+				now_et=now_et,
+			)
+		)	
+
+		if entries_closed_for_day_b:
+			logger.info(
+				"Strategy 4b entry skipped because trailing-stop "
+				"entries are closed for the day: "
+				"owner=%r ticker=%r now_et=%s",
+				"strategy4b_1h_anchor",
+				symbol,
+				now_et,
+			)
+		strategies_instance.exit_strategy4(
+			"strategy4b_1h_anchor",
+			"1h",
+			TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR,
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy4b_1h_anchor"],
+			None,None,None,None,None,
+		)
+
+		if (entry_is_blocked_b or entries_closed_for_day_b):
+			submitted_order_b = None
+		else:
+			submitted_order_b = (
+				strategies_instance.entry_strategy4(
+					"strategy4b_1h_anchor",
+					"1h",
+					False,
+					now_et,
+					signal,
+					prices,
+					symbol,
+					tf,
+					NUM_SHARES2,
+					ALPACA_APIS["strategy4b_1h_anchor"],
+					None,None,None,None,None,
+				)
+			)
+
+		"""entry_is_blocked_b = (
 			strategies_instance
 			.live_trailing_stop_entry_is_blocked(
 				owner_name="strategy4b_1h_anchor",
@@ -775,7 +833,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)			
 
 		if (entry_is_blocked_b or entries_closed_for_day_b):
-			submitted_order = None
+			submitted_order_b = None
 		else:
 			strategies_instance.exit_strategy4(
 				"strategy4b_1h_anchor",
@@ -823,7 +881,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 						entry_decision_time=now_et,
 					)
 
-					trailing_stop_exit_wake_event.set()
+					trailing_stop_exit_wake_event.set()"""
 
 
 		#strategies_instance.exit_strategy1(
