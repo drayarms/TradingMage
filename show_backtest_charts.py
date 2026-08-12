@@ -55,7 +55,20 @@ def show_charts_sequentially(
 		)
 
 
+#if __name__ == "__main__":
+	#show_charts_sequentially(
+		#"backtest_charts"
+	#)
+
 if __name__ == "__main__":
+	import sys
+
+	chart_directory = (
+		sys.argv[1]
+		if len(sys.argv) > 1
+		else "backtest_charts"
+	)
+
 	show_charts_sequentially(
-		"backtest_charts"
+		chart_directory
 	)

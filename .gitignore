@@ -3,11 +3,14 @@ app/config.py
 TV alt codes
 
 aws_creds.cvs
+local_endpoints.txt
 
 /old/
 /prompts/
 /blank/
 /Tests/
+/local_backtest_output/
+/playground/
 
 
 ############################################
@@ -90,6 +93,7 @@ aws_creds.*
 .env
 *.pem
 *.key
+.env.local-backtest
 
 
 # Observability backend

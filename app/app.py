@@ -761,7 +761,79 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			)
 		)	
 
-		if entries_closed_for_day_b:
+		strategies_instance.exit_strategy4(
+			"strategy4b_1h_anchor",
+			"1h",
+			TRAILING_STOP_EXIT_LOSS_LIQUIDATION_ATR_FACTOR,
+			False,
+			now_et,
+			signal,
+			prices,
+			symbol,
+			tf,
+			ALPACA_APIS["strategy4b_1h_anchor"],None,None,None,None,None,
+		)	
+		
+		if (
+			entry_is_blocked_b
+			or entries_closed_for_day_b
+		):
+			submitted_order_b = None
+		else:
+			submitted_order_b = (
+				strategies_instance.entry_strategy4(
+					"strategy4b_1h_anchor",
+					"1h",
+					False,
+					now_et,
+					signal,
+					prices,
+					symbol,
+					tf,
+					NUM_SHARES2,
+					ALPACA_APIS[
+						"strategy4b_1h_anchor"
+					],
+					None,
+					None,
+					None,
+					None,
+					None,
+				)
+			)
+
+			if submitted_order_b is not None:
+				entry_order_id_b = str(
+					submitted_order_b.get(
+						"order_id",
+						"",
+					)
+					or ""
+				).strip()
+
+				if not entry_order_id_b:
+					logger.error(
+						"Strategy 4b entry returned no order ID; "
+						"position registration skipped: "
+						"owner=%r ticker=%r submitted_order=%r",
+						"strategy4b_1h_anchor",
+						symbol,
+						submitted_order_b,
+					)
+				else:
+					strategies_instance.register_live_position(
+						owner_name=(
+							"strategy4b_1h_anchor"
+						),
+						ticker=symbol,
+						anchor_tf="1h",
+						entry_order_id=entry_order_id_b,
+						entry_decision_time=now_et,
+					)
+
+					trailing_stop_exit_wake_event.set()						
+
+		"""if entries_closed_for_day_b:
 			logger.info(
 				"Strategy 4b entry skipped because trailing-stop "
 				"entries are closed for the day: "
@@ -801,7 +873,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 					ALPACA_APIS["strategy4b_1h_anchor"],
 					None,None,None,None,None,
 				)
-			)
+			)"""
 
 		"""entry_is_blocked_b = (
 			strategies_instance
@@ -1464,7 +1536,7 @@ def run_backtest(
 		curl "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"
 	Or
 		curl -s "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000" \
-> backtest.json	
+> local_backtest_output/backtest.json	
 	"""
 	try:
 		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
@@ -1583,7 +1655,7 @@ def plot_backtest(
 
 			ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
 			'curl -sS --fail "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
-			> backtest_charts.zip
+			> local_backtest_output/backtest_charts.zip
 
 			rm -rf backtest_charts
 			mkdir backtest_charts
@@ -1677,12 +1749,12 @@ def plot_backtest_factor_research(
 	echo "$RESEARCH_GROUP"
 	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
 	'curl -sS --fail-with-body "http://localhost:8000/backtest/run?strategy_name=strategy4_1h_anchor&start=2026-05-31T04:00:00-04:00&end=2026-08-04T20:00:00-04:00&position_size=6600&exit_strategy=4&loss_liquidation_atr_factor=0.6&liquidate_before_market_close=true&record_factor_research=true&research_group_id=strategy4_1h_20260531_20260804_v1"' \
-	> factor_0.6.json	
+	> local_backtest_output/factor_0.6.json	
 	Repeat for other factors
 	Then
 	ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
 	'curl -sS --fail-with-body "http://localhost:8000/backtest/factor-research/plot?research_group_id=strategy4_1h_20260531_20260804_v1&require_all_factors=true&pnl_tie_tolerance=0.01&minimum_pnl_margin=0.01"' \
-	> factor_research_charts.zip
+	> local_backtest_output/factor_research_charts.zip
 
 	rm -rf factor_research_charts
 	mkdir factor_research_charts
