@@ -1480,7 +1480,117 @@ class Strategies:
 		return order.get(tf, -1)
 
 
+
 	def _get_strategy4_anchor_alerts(
+		self,
+		ticker,
+		anchor_tf,
+		simulation,
+		backtester,
+		state,
+		max_scan=500,
+	):
+		"""
+		Return recent anchor-timeframe alerts in reverse chronological order.
+
+		The newest alert is returned first.
+
+		During live execution, read the newest alerts from Redis.
+
+		During simulation, read the same Redis stream but stop at the
+		current simulated event's stream ID. This reproduces the historical
+		context that was available at that point in time without allowing
+		future alerts into the simulation.
+		"""
+		sym = str(
+			ticker
+			or ""
+		).upper().strip()
+
+		tf = self.tvw_helpers.normalize_tf(
+			anchor_tf
+		)
+
+		if not sym or not tf:
+			return []
+
+		if simulation:
+			if (
+				state is None
+				or backtester is None
+			):
+				return []
+
+			current_event = state.latest_by_tf.get(
+				(
+					sym,
+					tf,
+				)
+			)
+
+			if current_event is None:
+				return []
+
+			current_stream_id = str(
+				current_event.get(
+					"stream_id",
+					"",
+				)
+				or ""
+			).strip()
+
+			if not current_stream_id:
+				return []
+
+			stream_key = self.tvw_helpers.stream_key(
+				tf,
+				sym,
+			)
+
+			try:
+				return self.r.xrevrange(
+					stream_key,
+					max=current_stream_id,
+					min="-",
+					count=max_scan,
+				)
+
+			except Exception:
+				logger.exception(
+					"Strategy 4 simulation failed reading "
+					"historical anchor alerts: "
+					"ticker=%r anchor_tf=%r "
+					"current_stream_id=%r",
+					sym,
+					tf,
+					current_stream_id,
+				)
+
+				return []
+
+		stream_key = self.tvw_helpers.stream_key(
+			tf,
+			sym,
+		)
+
+		try:
+			return self.r.xrevrange(
+				stream_key,
+				count=max_scan,
+			)
+
+		except Exception:
+			logger.exception(
+				"Strategy 4 failed reading anchor alerts: "
+				"ticker=%r anchor_tf=%r",
+				sym,
+				tf,
+			)
+
+			return []
+
+
+	def _get_strategy4_anchor_alerts_DISCARD_THIS_VERSION_AFTER_STABILITY_IS_ACHIEVED(
 		self,
 		ticker,
 		anchor_tf,
