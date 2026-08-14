@@ -509,12 +509,13 @@ class BackTester:
 				f"Alpaca returned no {config['anchor_tf']} price data"
 			)
 
-		_1min_close_prices = (
-			self.trade_records_instance.dataframe_column_to_dict(
-				_1m_df,
-				"close"
-			)
-		)
+		_1min_open_prices = (self.trade_records_instance.dataframe_column_to_dict(_1m_df,"open"))
+
+		_1min_high_prices = (self.trade_records_instance.dataframe_column_to_dict(_1m_df,"high"))
+
+		_1min_low_prices = (self.trade_records_instance.dataframe_column_to_dict(_1m_df,"low"))
+
+		_1min_close_prices = (self.trade_records_instance.dataframe_column_to_dict(_1m_df,"close"))		
 
 		anchor_ATR = self.trade_records_instance.dataframe_to_atr_dict(anchor_df,period=ATR_period)
 
@@ -546,12 +547,15 @@ class BackTester:
 			)
 
 		state.market_data = {
+			"open_1m": _1min_open_prices,
+			"high_1m": _1min_high_prices,
+			"low_1m": _1min_low_prices,
 			"close_1m": _1min_close_prices,
 			"anchor_atr": anchor_ATR,
 			"anchor_ohlc": anchor_ohlc,
-			"anchor_entry_features":anchor_entry_features,
+			"anchor_entry_features": anchor_entry_features,
 			"market_close_liquidation_times":market_close_liquidation_times,
-		}	
+		}		
 
 		if position_size is None:
 			position_size = float(config["default_position_size"])
@@ -1072,26 +1076,38 @@ class BackTester:
 
 		timeline = []
 
+		#for ticker, ticker_prices in state.market_data.get(
+			#"close_1m",
+			#{},
+		#).items():
+			#for timestamp, close_price in ticker_prices.items():
+
 		for ticker, ticker_prices in state.market_data.get(
 			"close_1m",
 			{},
 		).items():
+
+			open_prices = (state.market_data.get("open_1m", {}).get(ticker, {}))
+
+			high_prices = (state.market_data.get("high_1m", {}).get(ticker, {}))
+
+			low_prices = (state.market_data.get("low_1m", {}).get(ticker, {}))
+
 			for timestamp, close_price in ticker_prices.items():
+				open_price = open_prices.get(timestamp)
+				high_price = high_prices.get(timestamp)
+				low_price = low_prices.get(timestamp)
+
+				if (open_price is None or high_price is None or low_price is None):
+					continue			
 				source_bar_dt = pd.Timestamp(timestamp)
 
 				if source_bar_dt.tzinfo is None:
-					source_bar_dt = source_bar_dt.tz_localize(
-						self.tvw_helpers.eastern_tz
-					)
+					source_bar_dt = source_bar_dt.tz_localize(self.tvw_helpers.eastern_tz)
 				else:
-					source_bar_dt = source_bar_dt.tz_convert(
-						self.tvw_helpers.eastern_tz
-					)
+					source_bar_dt = source_bar_dt.tz_convert(self.tvw_helpers.eastern_tz)
 
-				available_dt = (
-					source_bar_dt
-					+ pd.Timedelta(minutes=1)
-				).to_pydatetime()
+				available_dt = (source_bar_dt + pd.Timedelta(minutes=1)).to_pydatetime()
 
 				if not start_dt <= available_dt <= end_dt:
 					continue
@@ -1107,17 +1123,32 @@ class BackTester:
 				timeline.append({
 					"kind": "market_bar",
 					"dt": available_dt,
+					#"payload": {
+						#"ticker": ticker,
+						#"dt": available_dt,
+						#"source_bar_time": source_bar_dt.to_pydatetime(),
+						#"close": float(close_price),
+						#"snapshot_due": (
+							#available_dt.minute
+							#% self.PNL_SNAPSHOT_INTERVAL_MINUTES
+							#== 0
+						#),
+					#},
 					"payload": {
 						"ticker": ticker,
 						"dt": available_dt,
-						"source_bar_time": source_bar_dt.to_pydatetime(),
+						"source_bar_time":
+							source_bar_dt.to_pydatetime(),
+						"open": float(open_price),
+						"high": float(high_price),
+						"low": float(low_price),
 						"close": float(close_price),
 						"snapshot_due": (
 							available_dt.minute
 							% self.PNL_SNAPSHOT_INTERVAL_MINUTES
 							== 0
 						),
-					},
+					},					
 				})
 
 		for event in signal_events:
@@ -1160,6 +1191,21 @@ class BackTester:
 				row["payload"].get("stream_id", ""),
 			),
 		)
+
+
+	def _get_intrabar_price_path(
+		self,
+		market_event: dict[str, Any],
+	) -> list[float]:
+		open_price = float(market_event["open"])
+		high_price = float(market_event["high"])
+		low_price = float(market_event["low"])
+		close_price = float(market_event["close"])
+
+		if close_price >= open_price:
+			return [open_price,low_price, high_price, close_price]
+
+		return [open_price, high_price, low_price, close_price]
 
 
 	def _process_price_tracked_timeline(
@@ -1485,6 +1531,111 @@ class BackTester:
 						continue
 					if start_dt <= event["received_dt"] <= end_dt:
 						events.append(event)
+
+		# received_dt reproduces live arrival order. Redis stream_id is used only
+		# as a deterministic tie-breaker when two events have the same timestamp.
+		return sorted(events, key=lambda e: (e["received_dt"], e["stream_id"]))
+
+
+	def TEST_load_signal_events(
+		self,
+		strategy_name: str,
+		symbols: list[str],
+		timeframes: set[str],
+		start_dt: datetime,
+		end_dt: datetime,
+	) -> list[dict[str, Any]]:
+		"""Load Redis stream alerts and order them by when they were received."""
+		import time as time_module
+
+		events = []
+
+		logger.info(
+			"[BACKTEST_SIGNALS] begin "
+			"strategy=%s symbols=%d timeframes=%r "
+			"start=%s end=%s",
+			strategy_name,
+			len(symbols),
+			sorted(timeframes),
+			start_dt,
+			end_dt,
+		)
+
+		total_raw_entries = 0
+
+		for symbol in symbols:
+			for tf in timeframes:
+				stream_key = self.tvw_helpers.stream_key(
+					tf,
+					symbol,
+				)
+
+				started = time_module.monotonic()
+
+				rows = self.r.xrange(
+					stream_key,
+					min="-",
+					max="+",
+				)
+
+				elapsed = (
+					time_module.monotonic()
+					- started
+				)
+
+				row_count = len(
+					rows
+				)
+
+				total_raw_entries += (
+					row_count
+				)
+
+				logger.info(
+					"[BACKTEST_SIGNALS] Redis stream read "
+					"key=%s rows=%d seconds=%.3f "
+					"total_rows=%d",
+					stream_key,
+					row_count,
+					elapsed,
+					total_raw_entries,
+				)
+
+				for stream_id, fields in rows:
+					event = self._build_event(
+						strategy_name,
+						stream_id,
+						fields,
+						symbol,
+						tf,
+					)
+
+					if event is None:
+						continue
+
+					if (
+						start_dt
+						<= event["received_dt"]
+						<= end_dt
+					):
+						events.append(
+							event
+						)
+
+		logger.info(
+			"[BACKTEST_SIGNALS] finished "
+			"raw_rows=%d selected_events=%d",
+			total_raw_entries,
+			len(events),
+		)
+
+		return sorted(
+			events,
+			key=lambda e: (
+				e["received_dt"],
+				e["stream_id"],
+			),
+		)						
 
 		# received_dt reproduces live arrival order. Redis stream_id is used only
 		# as a deterministic tie-breaker when two events have the same timestamp.
@@ -2564,7 +2715,7 @@ class BackTester:
 					),
 				)
 
-				return True
+				#return True
 
 		#
 		# 2. One-time expansion after sufficient profit.
@@ -2824,7 +2975,7 @@ class BackTester:
 					exit_reason="trailing_stop",
 				)
 
-				return True
+				#return True
 
 		elif position.side == "short":
 			position.low_water_price = min(
@@ -2890,7 +3041,7 @@ class BackTester:
 					exit_reason="trailing_stop",
 				)
 
-				return True
+				#return True
 
 		return False
 
@@ -4227,6 +4378,37 @@ class BackTester:
 
 
 	def _process_atr_liquidation_market_bar(
+		self,
+		state: SimState,
+		market_event: dict[str, Any],
+	) -> bool:
+		ticker = market_event["ticker"]
+		bar_dt = market_event["dt"]
+
+		price_path = self._get_intrabar_price_path(
+			market_event
+		)
+
+		for market_price in price_path:
+			if market_price <= 0:
+				continue
+
+			state.last_price_by_ticker[
+				ticker
+			] = market_price
+
+			if self._check_atr_cost_basis_liquidation(
+				state=state,
+				ticker=ticker,
+				bar_dt=bar_dt,
+				market_price=market_price,
+			):
+				return True
+
+		return False
+
+
+	def _process_atr_liquidation_market_bar_DELETE_THIS_VERSION_AFTER_VALIDATION(
 		self,
 		state: SimState,
 		market_event: dict[str, Any],
@@ -9560,3 +9742,4 @@ class BackTester:
 			folds_df,
 			summary,
 		)
+
