@@ -1373,7 +1373,7 @@ class BackTester:
 		market_price = event["price"]
 		num_shares = position_size / market_price
 
-		self.strategies_instance.entry_strategy1(
+		self.strategies_instance.reverse_entry_strategy1(
 			strategy_name, config["entry_tf"], config["intermediary_tf"],
 			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
 			num_shares, None, state, config, event, market_price, self,
@@ -1760,7 +1760,7 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
-				self.strategies_instance.exit_strategy1(
+				self.strategies_instance.reverse_exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
 					config["intermediary_tf"],
@@ -1797,7 +1797,7 @@ class BackTester:
 					self,
 				)
 
-		self.strategies_instance.entry_strategy1(
+		self.strategies_instance.reverse_entry_strategy1(
 			strategy_name,
 			config["entry_tf"],
 			config["intermediary_tf"],
@@ -1831,7 +1831,7 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
-				self.strategies_instance.exit_strategy1(
+				self.strategies_instance.reverse_exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
 					config["intermediary_tf"],
@@ -1948,7 +1948,7 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
-				self.strategies_instance.exit_strategy1(
+				self.strategies_instance.reverse_exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
 					config["intermediary_tf"],

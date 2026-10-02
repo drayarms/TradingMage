@@ -595,7 +595,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			#ALPACA_APIS["real_money"],
 		#)		
 
-		strategies_instance.exit_strategy1(
+		strategies_instance.reverse_exit_strategy1(
 			"strategy1_15m_anchor",
 			{"1m"},
 			"5m",
@@ -610,7 +610,7 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 			None, None, None, None,	None,			
 		)
 
-		strategies_instance.entry_strategy1(
+		strategies_instance.reverse_entry_strategy1(
 			"strategy1_15m_anchor",
 			"1m",
 			"5m",

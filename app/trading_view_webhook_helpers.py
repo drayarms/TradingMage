@@ -326,6 +326,23 @@ class TradingViewWebhookHelpers:
 			return "sell"
 		return s
 
+
+	def opp_signal(self, sig: str) -> str:
+		"""
+		Normalized strings like "buy+" and "sell+" to just "sell" and "buy" respectively.
+		Parameters:
+			sig (str): Signal: Potential values -> "buy", "sell", "buy+", "sell+".
+		Returns:
+			s (str): Normalized opp string, "buy" or "sell".
+		"""
+		s = (sig or "").strip().lower()
+		if s.startswith("buy"):
+			return "sell"
+		if s.startswith("sell"):
+			return "buy"
+		return s		
+
+
 	def h(self, s: str) -> str:
 		return hashlib.sha256((s or "").encode()).hexdigest()[:12]
 
