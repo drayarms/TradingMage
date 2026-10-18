@@ -1,4 +1,5 @@
 import logging
+from golden_cross_dip_recovery import evaluate_entry, bearish_entry_placeholder, bearish_exit_placeholder
 import time
 from datetime import datetime
 import math
@@ -6,16 +7,36 @@ from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
+from pattern_analyzer import PatternAnalyzer
+from signal_history import RedisSignalHistory, SimSignalHistory
+
 logger = logging.getLogger("tv-webhook")
 
 class Strategies:
+	@staticmethod
+	def evaluate_golden_cross_dip_recovery(price, base_amount, snapshot, current_exposure, pending_buy_exposure, settings):
+		return evaluate_entry(price, base_amount, snapshot, current_exposure, pending_buy_exposure, settings)
+
+	bearish_dip_recovery_entry = staticmethod(bearish_entry_placeholder)
+	bearish_dip_recovery_exit = staticmethod(bearish_exit_placeholder)
+
 	def __init__(self, trading_view_webhook_helpers, trade_records):
 		self.tvw_helpers = trading_view_webhook_helpers
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.trade_records = trade_records
 		self.SMALLEST_SHARE_SIZE = 0.25
 		self.order_monitor_executor = ThreadPoolExecutor(max_workers=20)
+		self.redis_signal_history = RedisSignalHistory(trading_view_webhook_helpers)
+		self.pattern_analyzer = PatternAnalyzer(trading_view_webhook_helpers)
 		
+
+	def _signal_history(self, simulation=False, state=None):
+		if simulation:
+			if state is None:
+				raise ValueError("Simulation signal history requires SimState")
+			return SimSignalHistory(self.tvw_helpers, state)
+
+		return self.redis_signal_history
 
 	def is_tf_relative_to_last_higher_tf(
 		self,
@@ -27,254 +48,33 @@ class Strategies:
 		relation="opposite",
 		simulation=False,
 		backtester=None,
-		state=None
+		state=None,
 	):
-		"""
-		Evaluates the relationship between the current signal's timeframe and the
-		most recent signal from a higher timeframe for a given ticker.
-
-		This function determines whether the current signal side (buy/sell) is either:
-			- opposite to the most recent higher timeframe signal, or
-			- the same as the most recent higher timeframe signal
-
-		Signal normalization:
-			- "buy" and "buy+" are treated as "buy"
-			- "sell" and "sell+" are treated as "sell"
-
-		Parameters:
-			ticker (str):
-				The ticker symbol (e.g., "AAPL").
-
-			signal (str):
-				The incoming signal (e.g., "buy", "buy+", "sell", "sell+").
-
-			timeframe (str):
-				The timeframe of the incoming signal (e.g., "1m", "5m", "1h").
-
-			current_tf (str):
-				The required timeframe for this check to apply (e.g., "1h").
-
-			higher_tf (str):
-				The higher timeframe to compare against (e.g., "4h").
-
-			relation (str, optional):
-				The relationship to evaluate:
-					- "opposite" → returns True if sides differ
-					- "same" → returns True if sides match
-				Default is "opposite".
-
-			simulation (Boolean): True if mode is simualtion and False if live.
-			backtester (Backtester): Instance of class Backtester.
-			state 
-
-		Returns:
-			bool:
-				True if the specified relationship condition is met, False otherwise.
-
-		Behavior:
-			- Returns False if:
-				- timeframe does not match current_tf
-				- signal cannot be normalized to buy/sell
-				- no higher timeframe signal exists
-				- higher timeframe signal is invalid
-			- Otherwise evaluates the relationship between the two signals.
-
-		Example:
-			- current_tf="1h", higher_tf="4h", relation="opposite"
-			  → True if latest 1h signal is opposite of latest 4h signal
-		"""
-		tf = self.tvw_helpers.normalize_tf(timeframe)
-		current_tf_norm = self.tvw_helpers.normalize_tf(current_tf)
-
-		if tf != current_tf_norm:
-			return False
-
-		sym = str(ticker or "").upper().strip()
-		current_side = self.tvw_helpers.normalize_signal(signal)
-
-		if current_side not in {"buy", "sell"}:
-			return False
-
-		current_alert = None
-		if simulation:
-			current_alert = backtester.get_nth_last_alert(state, sym, tf, 1)
-		else:
-			current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
-
-		if current_alert is None:
-			return False
-
-		_, current_fields = current_alert
-
-		if not self.is_confirmation_signal(current_fields):
-			if not simulation:
-				logger.info(
-					"tf-relative check skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
-					tf,
-					sym,
-					current_fields.get("signal"),
-					current_fields.get("signal_role"),
-				)
-			return False
-
-		latest_higher_signal = None
-
-		if simulation:
-			latest_higher_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				sym,
-				higher_tf,
-				max_scan=500,
-			)
-		else:
-			latest_higher_signal = self.get_latest_confirmation_directional_signal(
-				sym,
-				higher_tf,
-				max_scan=500,
-			)		
-
-		if latest_higher_signal is None:
-			return False
-
-		last_side = latest_higher_signal["side"]
-
-		if relation == "opposite":
-			return current_side != last_side
-
-		if relation == "same":
-			return current_side == last_side
-
-		return False
+		return self.pattern_analyzer.is_tf_relative_to_last_higher_tf(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			signal=signal,
+			timeframe=timeframe,
+			current_tf=current_tf,
+			higher_tf=higher_tf,
+			relation=relation,
+		)
 
 
-	def get_latest_valid_same_side_signal(self, ticker, side, higher_tf, max_scan=500):
-		"""
-		Return the OHLCV context for the most recent signal on the specified higher
-		timeframe whose normalized side matches the side under consideration.
-
-		Signal normalization:
-			- "buy" and "buy+" are treated as "buy"
-			- "sell" and "sell+" are treated as "sell"
-
-		Validity constraint:
-			A candidate same-side signal is considered valid only if there is no more
-			recent signal on that same higher timeframe with the opposite normalized side
-			between the candidate and now.
-
-		How it works:
-			- Reads recent entries from the Redis stream for the given ticker and
-			  higher timeframe.
-			- Scans backward from newest to oldest.
-			- If the first relevant higher-timeframe signal encountered is opposite-side,
-			  returns None because any older same-side signal is invalidated.
-			- If the first relevant higher-timeframe signal encountered is same-side,
-			  returns its OHLCV context.
-
-		Parameters:
-			ticker (str):
-				The ticker symbol, e.g. "AAPL".
-
-			side (str):
-				The side under consideration, e.g. "buy", "buy+", "sell", or "sell+".
-
-			higher_tf (str):
-				The higher timeframe to inspect, e.g. "15m", "1h", or "4h".
-
-			max_scan (int, optional):
-				The maximum number of recent stream entries to inspect.
-				Default is 500.
-
-		Returns:
-			Optional[dict]:
-				A dictionary containing the matched higher-timeframe signal context if a
-				valid same-side signal is found, otherwise None.
-
-				Returned fields:
-					- id
-					- ticker
-					- timeframe
-					- signal
-					- normalized_signal
-					- bar_close_time_eastern
-					- open
-					- high
-					- low
-					- close
-					- volume
-					- price
-		"""
-		sym = str(ticker or "").upper().strip()
-		target_side = self.tvw_helpers.normalize_signal(side)
-		tf = self.tvw_helpers.normalize_tf(higher_tf)
-
-		if target_side not in {"buy", "sell"}:
-			logger.info(
-				"Invalid side passed to get_latest_valid_same_side_signal: %r",
-				side,
-			)
-			return None
-
-		if not tf:
-			logger.info(
-				"Invalid higher_tf passed to get_latest_valid_same_side_signal: %r",
-				higher_tf,
-			)
-			return None
-
-		opposite_side = "sell" if target_side == "buy" else "buy"
-		stream_key = self.tvw_helpers.stream_key(tf, sym)
-
-		try:
-			entries = self.r.xrevrange(stream_key, count=max_scan)
-		except Exception:
-			logger.exception("Failed reading %r stream for %r", tf, sym)
-			return None
-
-		if not entries:
-			logger.info("No %r entries found for %r", tf, sym)
-			return None
-
-		for entry_id, fields in entries:
-			if not self.is_confirmation_signal(fields):
-				continue	
-						
-			entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-
-			if entry_side not in {"buy", "sell"}:
-				continue
-
-			# If the first relevant higher-timeframe signal encountered going backward
-			# is the opposite side, then any older same-side candidate is invalid.
-			if entry_side == opposite_side:
-				logger.info(
-					"No valid %r %r context for %r because newer opposite-side signal exists: %r",
-					tf,
-					target_side,
-					sym,
-					entry_id,
-				)
-				return None
-
-			# First relevant signal encountered is same-side, so it is the most recent valid one.
-			if entry_side == target_side:
-				bar_close_time_eastern = fields.get("bar_close_time_eastern")
-
-				return {
-					"id": entry_id,
-					"ticker": fields.get("symbol") or sym,
-					"timeframe": self.tvw_helpers.normalize_tf(fields.get("timeframe") or tf),
-					"signal": fields.get("signal"),
-					"normalized_signal": entry_side,
-					"bar_close_time_eastern": bar_close_time_eastern,
-					"open": self.tvw_helpers.safe_float(fields.get("open")),
-					"high": self.tvw_helpers.safe_float(fields.get("high")),
-					"low": self.tvw_helpers.safe_float(fields.get("low")),
-					"close": self.tvw_helpers.safe_float(fields.get("close")),
-					"volume": self.tvw_helpers.safe_float(fields.get("volume")),
-					"price": self.tvw_helpers.safe_float(fields.get("price")),
-				}
-
-		return None
+	def get_latest_valid_same_side_signal(
+		self,
+		ticker,
+		side,
+		higher_tf,
+		max_scan=500,
+	):
+		return self.pattern_analyzer.get_latest_valid_same_side_signal(
+			history=self.redis_signal_history,
+			ticker=ticker,
+			side=side,
+			higher_tf=higher_tf,
+			max_scan=max_scan,
+		)
 
 
 	def lower_tf_confirms_mid_tf_opposite_of_higher_tf(
@@ -287,160 +87,17 @@ class Strategies:
 		higher_tf,
 		simulation,
 		backtester,
-		state
+		state,
 	):
-		"""
-		Returns True if:
-			- the current timeframe is one of the allowed lower timeframes
-			- the current signal side matches the most recent signal side on mid_tf
-			- the most recent signal side on mid_tf is opposite of the most recent
-			  signal side on higher_tf
-
-		Signal normalization:
-			- "buy" and "buy+" are treated as "buy"
-			- "sell" and "sell+" are treated as "sell"
-
-		Parameters:
-			ticker (str):
-				The ticker symbol, e.g. "AAPL".
-
-			signal (str):
-				The current incoming signal, e.g. "buy", "buy+", "sell", or "sell+".
-
-			timeframe (str):
-				The timeframe of the incoming signal.
-
-			valid_lower_tfs (Iterable[str]):
-				The set or list of lower timeframes allowed for this confirmation check,
-				e.g. {"1m", "5m", "15m"}.
-
-			mid_tf (str):
-				The intermediate timeframe whose latest signal must match the current
-				signal, e.g. "1h".
-
-			higher_tf (str):
-				The higher timeframe whose latest signal must be opposite of mid_tf,
-				e.g. "4h".
-
-			simulation (Boolean): True if mode is simualtion and False if live.
-			backtester (Backtester): Instance of class Backtester.
-			state 				
-
-		Returns:
-			bool:
-				True if:
-					- normalized current timeframe is in valid_lower_tfs
-					- normalized current signal matches the latest mid_tf signal
-					- latest mid_tf signal is opposite of latest higher_tf signal
-
-				False otherwise.
-
-		Example:
-			- valid_lower_tfs={"1m", "5m", "15m"}, mid_tf="1h", higher_tf="4h"
-			  returns True when:
-				- current signal is on 1m, 5m, or 15m
-				- current signal matches the latest 1h signal
-				- latest 1h signal is opposite of latest 4h signal
-		"""
-		tf = self.tvw_helpers.normalize_tf(timeframe)
-		allowed_lower_tfs = {
-			self.tvw_helpers.normalize_tf(item) for item in (valid_lower_tfs or [])
-		}
-		mid_tf_norm = self.tvw_helpers.normalize_tf(mid_tf)
-		higher_tf_norm = self.tvw_helpers.normalize_tf(higher_tf)
-
-		if tf not in allowed_lower_tfs:
-			return False
-
-		sym = str(ticker or "").upper().strip()
-		current_side = self.tvw_helpers.normalize_signal(signal)
-
-		if current_side not in {"buy", "sell"}:
-			return False
-
-		current_alert = None
-
-		if simulation:
-			current_alert = backtester.get_nth_last_alert(state, sym, tf, 1)
-		else:
-			current_alert = self.tvw_helpers.get_nth_last_alert(sym, tf, 1)
-
-		if current_alert is None:
-			return False
-
-		_, current_fields = current_alert
-
-		if not self.is_confirmation_signal(current_fields):
-			if not simulation:
-				logger.info(
-					"lower-tf confirms skipped: current %r signal for %r is not confirmation: signal=%r signal_role=%r",
-					tf,
-					sym,
-					current_fields.get("signal"),
-					current_fields.get("signal_role"),
-				)
-			return False
-
-		last_mid_signal = None
-
-		if simulation:
-			last_mid_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				sym,
-				mid_tf_norm,
-				max_scan=500,
-			)
-		else:
-			last_mid_signal = self.get_latest_confirmation_directional_signal(
-				sym,
-				mid_tf_norm,
-				max_scan=500,
-			)
-
-		if last_mid_signal is None:
-			return False
-
-		last_higher_signal = None
-
-		if simulation:
-			last_higher_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				sym,
-				higher_tf_norm,
-				max_scan=500,
-			)
-		else:
-			last_higher_signal = self.get_latest_confirmation_directional_signal(
-				sym,
-				higher_tf_norm,
-				max_scan=500,
-			)		
-
-		if last_higher_signal is None:
-			return False
-
-		last_mid_side = last_mid_signal["side"]
-		last_higher_side = last_higher_signal["side"]
-
-		is_true = (
-			(current_side == last_mid_side) and
-			(last_mid_side != last_higher_side)
-		)		
-
-		if not simulation:
-			logger.info(
-				"lower-tf confirms %r vs %r: ticker=%r tf=%r current=%r last_mid=%r last_higher=%r result=%r",
-				mid_tf_norm,
-				higher_tf_norm,
-				sym,
-				tf,
-				current_side,
-				last_mid_side,
-				last_higher_side,
-				is_true,
-			)
-
-		return is_true
+		return self.pattern_analyzer.lower_tf_confirms_mid_tf_opposite_of_higher_tf(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			signal=signal,
+			timeframe=timeframe,
+			valid_lower_tfs=valid_lower_tfs,
+			mid_tf=mid_tf,
+			higher_tf=higher_tf,
+		)
 
 
 	def has_opposite_signal_since_last_valid_same_side_higher_tf(
@@ -453,229 +110,17 @@ class Strategies:
 		max_scan_anchor_tf=500,
 		simulation=False,
 		backtester=None,
-		state=None
+		state=None,
 	):
-		"""
-		Return True if there exists an opposite-side signal on opposite_tf that occurred
-		after the most recent valid same-side signal on anchor_tf for the given ticker
-		and incoming signal side.
-
-		Signal normalization:
-			- "buy" and "buy+" are treated as "buy"
-			- "sell" and "sell+" are treated as "sell"
-
-		Definitions:
-			- Anchor signal:
-				The most recent valid same-side signal on anchor_tf whose normalized side
-				matches the incoming signal side, as determined by
-				get_latest_valid_same_side_signal(...).
-
-			- Opposite-side signal:
-				A signal on opposite_tf whose normalized side is opposite to the incoming
-				signal side.
-
-		Behavior:
-			- If the incoming signal cannot be normalized to buy/sell, return False.
-			- If no valid same-side anchor signal exists on anchor_tf, return False.
-			- If the anchor signal lacks a parseable bar_close_time_eastern, return False.
-			- Scan recent opposite_tf alerts for the ticker.
-			- Return True if any opposite-side opposite_tf signal has
-			  bar_close_time_eastern strictly later than the anchor signal time.
-			- Otherwise return False.
-
-		Parameters:
-			ticker (str):
-				The ticker symbol, e.g. "AAPL".
-
-			signal (str):
-				The current incoming signal, e.g. "buy", "buy+", "sell", or "sell+".
-
-			opposite_tf (str):
-				The timeframe to scan for opposite-side signals, e.g. "1h".
-
-			anchor_tf (str):
-				The higher timeframe used to find the most recent valid same-side anchor
-				signal, e.g. "4h".
-
-			max_scan_anchor_tf (int, optional):
-				The maximum number of recent anchor_tf entries to inspect when locating the
-				anchor signal. Default is 500.
-
-			max_scan_opposite_tf (int, optional):
-				The maximum number of recent opposite_tf entries to inspect.
-				Default is 1000.
-
-			simulation (Boolean): True if mode is simualtion and False if live.
-			backtester (Backtester): Instance of class Backtester.
-			state 				
-
-		Returns:
-			bool:
-				True if an opposite-side signal on opposite_tf exists after the anchor
-				same-side signal on anchor_tf; False otherwise.
-
-		Example:
-			- opposite_tf="1h", anchor_tf="4h"
-			  returns True if an opposite-side 1h signal exists after the most recent
-			  valid same-side 4h signal.
-		"""
-		sym = str(ticker or "").upper().strip()
-		target_side = self.tvw_helpers.normalize_signal(signal)
-		opposite_tf_norm = self.tvw_helpers.normalize_tf(opposite_tf)
-		anchor_tf_norm = self.tvw_helpers.normalize_tf(anchor_tf)
-
-		if target_side not in {"buy", "sell"}:
-			if not simulation:
-				logger.info(
-					"Invalid signal passed to has_opposite_signal_since_last_valid_same_side_higher_tf: %r",
-					signal,
-				)
-			return False
-
-		if not opposite_tf_norm or not anchor_tf_norm:
-			if not simulation:
-				logger.info(
-					"Invalid timeframe configuration in has_opposite_signal_since_last_valid_same_side_higher_tf: opposite_tf=%r anchor_tf=%r",
-					opposite_tf,
-					anchor_tf,
-				)
-			return False
-
-		latest_anchor_signal = None
-
-		if simulation:
-			latest_anchor_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				sym,
-				anchor_tf_norm,
-				max_scan=max_scan_anchor_tf,
-			)
-		else:
-			latest_anchor_signal = self.get_latest_confirmation_directional_signal(
-				sym,
-				anchor_tf_norm,
-				max_scan=max_scan_anchor_tf,
-			)		
-
-		if not latest_anchor_signal:
-			if not simulation:
-				logger.info("No confirmation %r anchor found for %r", anchor_tf_norm, sym)
-			return False
-
-		if latest_anchor_signal["side"] != target_side:
-			if not simulation:
-				logger.info(
-					"Latest confirmation %r anchor for %r is not same-side: target_side=%r anchor_side=%r",
-					anchor_tf_norm,
-					sym,
-					target_side,
-					latest_anchor_signal["side"],
-				)
-			return False
-
-		anchor_time_str = latest_anchor_signal["fields"].get(
-			"bar_close_time_eastern"
-		)		
-
-		try:
-			anchor_time = datetime.fromisoformat(anchor_time_str)
-		except Exception:
-			if not simulation:
-				logger.exception(
-					"Failed parsing anchor %r time for %r: %r",
-					anchor_tf_norm,
-					sym,
-					anchor_time_str,
-				)
-			return False
-
-		opposite_side = "sell" if target_side == "buy" else "buy"
-
-		if simulation:
-			opposite_events = state.all_events_by_ticker_tf.get((sym, opposite_tf_norm), [])
-
-			scanned = 0
-
-			for event in reversed(opposite_events):
-				if scanned >= max_scan_opposite_tf:
-					break
-
-				scanned += 1
-
-				if event.get("signal_role") != "confirmation":
-					continue
-
-				entry_side = event.get("side")
-				if entry_side != opposite_side:
-					continue
-
-				entry_time = event.get("dt")
-				if entry_time is None:
-					continue
-
-				if entry_time > anchor_time:
-					return True
-
-			return False
-
-
-		else:
-
-			stream_key = self.tvw_helpers.stream_key(opposite_tf_norm, sym)
-
-			try:
-				entries = self.r.xrevrange(stream_key, count=max_scan_opposite_tf)
-			except Exception:
-				if not simulation:
-					logger.exception("Failed reading %r stream for %r", opposite_tf_norm, sym)
-				return False
-
-			if not entries:
-				if not simulation:
-					logger.info("No %r entries found for %r", opposite_tf_norm, sym)
-				return False
-
-			for entry_id, fields in entries:
-
-				if not self.is_confirmation_signal(fields):
-					continue
-
-				entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-				if entry_side != opposite_side:
-					continue
-
-				entry_time_str = fields.get("bar_close_time_eastern")
-				if not entry_time_str:
-					continue
-
-				try:
-					entry_time = datetime.fromisoformat(entry_time_str)
-				except Exception:
-					if not simulation:
-						logger.exception(
-							"Failed parsing %r signal time for %r entry_id=%r value=%r",
-							opposite_tf_norm,
-							sym,
-							entry_id,
-							entry_time_str,
-						)
-					continue
-
-				if entry_time > anchor_time:
-					if not simulation:
-						logger.info(
-							"Found opposite-side %r signal after anchor %r for %r: opposite_side=%r entry_id=%r entry_time=%r anchor_time=%r",
-							opposite_tf_norm,
-							anchor_tf_norm,
-							sym,
-							opposite_side,
-							entry_id,
-							entry_time_str,
-							anchor_time_str,
-						)
-					return True
-
-			return False
+		return self.pattern_analyzer.has_opposite_signal_since_last_valid_same_side_higher_tf(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			signal=signal,
+			opposite_tf=opposite_tf,
+			anchor_tf=anchor_tf,
+			max_scan_opposite_tf=max_scan_opposite_tf,
+			max_scan_anchor_tf=max_scan_anchor_tf,
+		)
 
 
 	def get_signal_based_progressive_entry_size(
@@ -690,318 +135,36 @@ class Strategies:
 		max_scan_anchor_tf=500,
 		simulation=False,
 		backtester=None,
-		state=None
+		state=None,
 	):
-		"""
-		Determines progressive entry sizing based on the ordinal position of the
-		current qualifying entry signal since the latest valid same-side anchor
-		timeframe signal.
-
-		Unlike position-based progressive sizing, this method does not infer the
-		next entry step from current Alpaca exposure or Redis bookkeeping state.
-		Instead, it reconstructs the sequence directly from historical signals.
-
-		Core concept:
-			- Every qualifying same-side entry timeframe signal after the latest
-			  valid same-side anchor signal contributes to the progressive sequence.
-			- The current signal's ordinal position within that sequence determines
-			  the position size using progressive halving logic.
-
-		Sizing rule:
-			qualifying_signal_count = 1 -> size = base_num_shares
-			qualifying_signal_count = 2 -> size = base_num_shares / 2
-			qualifying_signal_count = 3 -> size = base_num_shares / 4
-			qualifying_signal_count = 4 -> size = base_num_shares / 8
-			...
-
-		Qualification requirements:
-			A signal qualifies if:
-				- it belongs to the specified entry timeframe
-				- its normalized side matches the requested side
-				- it occurred after the latest valid same-side anchor signal
-
-			Signal normalization:
-				- "buy" and "buy+" are treated as "buy"
-				- "sell" and "sell+" are treated as "sell"
-
-			Anchor behavior:
-				The anchor signal is determined using
-				get_latest_valid_same_side_signal(), meaning:
-					- the anchor must match the requested side
-					- any newer opposite-side anchor invalidates older anchors
-
-			Short position handling:
-				Because Alpaca does not support fractional short shares,
-				short execution quantities are floored to whole integers.
-
-			Parameters:
-				ticker (str):
-					Ticker symbol, e.g. "AAPL".
-
-				side (str):
-					Desired trade direction signal:
-						"buy", "buy+", "sell", or "sell+".
-
-				entry_tf (str):
-					The entry timeframe being evaluated,
-					e.g. "1m", "5m", or "15m".
-
-				anchor_tf (str):
-					The higher timeframe anchor used to establish the
-					current directional regime.
-
-				base_num_shares (float):
-					The original unscaled entry size.
-
-				smallest_share_size (float):
-					Minimum allowable execution quantity.
-
-				max_scan_entry_tf (int, optional):
-					Maximum number of entry timeframe signals to inspect.
-					Default is 1000.
-
-				max_scan_anchor_tf (int, optional):
-					Maximum number of anchor timeframe signals to inspect.
-					Default is 500.
-
-				simulation (Boolean): True if mode is simualtion and False if live.
-				backtester (Backtester): Instance of class Backtester.
-				state 					
-
-			Returns:
-				float:
-					The computed progressive execution quantity.
-
-					Returns 0.0 if:
-						- no valid anchor exists
-						- the signal side is invalid
-						- the computed size falls below smallest_share_size
-						- no qualifying signals are found
-						- required timestamps cannot be parsed
-
-			Example:
-				If:
-					base_num_shares = 10
-
-				and the qualifying entry signals since the current anchor are:
-					1st qualifying signal -> 10 shares
-					2nd qualifying signal -> 5 shares
-					3rd qualifying signal -> 2.5 shares
-					4th qualifying signal -> 1.25 shares
-
-				then the current signal's ordinal position determines
-				the execution quantity.
-		"""	
-		sym = str(ticker or "").upper().strip()
-		target_side = self.tvw_helpers.normalize_signal(side)
-		entry_tf_norm = self.tvw_helpers.normalize_tf(entry_tf)
-		anchor_tf_norm = self.tvw_helpers.normalize_tf(anchor_tf)
-
-		if target_side not in {"buy", "sell"}:
-			return 0.0
-
-		try:
-			base_num_shares = float(base_num_shares)
-		except Exception:
-			return 0.0
-
-		if base_num_shares <= 0:
-			return 0.0
-
-		anchor_signal = None
-
-		if simulation:
-			anchor_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				sym,
-				anchor_tf_norm,
-				max_scan=max_scan_anchor_tf,
-			)
-		else:
-			anchor_signal = self.get_latest_confirmation_directional_signal(
-				sym,
-				anchor_tf_norm,
-				max_scan=max_scan_anchor_tf,
-			)
-
-		if not anchor_signal:
-			return 0.0
-
-		if anchor_signal["side"] != target_side:
-			return 0.0
-
-		anchor_time_str = anchor_signal["fields"].get("bar_close_time_eastern")
-		if not anchor_time_str:
-			return 0.0
-
-		try:
-			anchor_time = datetime.fromisoformat(anchor_time_str)
-		except Exception:
-			if not simulation:
-				logger.exception("Failed parsing anchor time for signal-based sizing: %r", anchor_time_str)
-			return 0.0
-
-
-		if simulation:
-		    entries = reversed(
-		        state.all_events_by_ticker_tf.get((sym, entry_tf_norm), [])
-		    )
-
-		    qualifying_count = 0
-		    scanned = 0
-
-		    for event in entries:
-		        if scanned >= max_scan_entry_tf:
-		            break
-		        scanned += 1
-
-		        if event.get("signal_role") != "confirmation":
-		            continue
-
-		        if event.get("side") != target_side:
-		            continue
-
-		        entry_time = event.get("dt")
-		        if entry_time is None:
-		            continue
-
-		        if entry_time < anchor_time:
-		            break
-
-		        qualifying_count += 1
-
-		else:
-
-			stream_key = self.tvw_helpers.stream_key(entry_tf_norm, sym)
-
-			try:
-				entries = self.r.xrevrange(stream_key, count=max_scan_entry_tf)
-			except Exception:
-				if not simulation:
-					logger.exception("Failed reading %r stream for signal-based sizing: %r", entry_tf_norm, sym)
-				return 0.0
-
-			qualifying_count = 0
-
-			for entry_id, fields in entries:
-
-				if not self.is_confirmation_signal(fields):
-					continue
-
-				entry_side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-
-				if entry_side not in {"buy", "sell"}:
-					continue
-
-				entry_time_str = fields.get("bar_close_time_eastern")
-				if not entry_time_str:
-					continue
-
-				try:
-					entry_time = datetime.fromisoformat(entry_time_str)
-				except Exception:
-					if not simulation:
-						logger.exception(
-							"Failed parsing entry signal time for %r entry_id=%r value=%r",
-							sym,
-							entry_id,
-							entry_time_str,
-						)
-					continue
-
-				if entry_time < anchor_time:
-					break		
-
-				if entry_side != target_side: # Skip over opposite side entry tf signals. We only want same sides.
-					continue					
-
-				# At this point, signal is qualifying because it is same side to anchor and occurred later than anchor
-				qualifying_count += 1
-
-		if qualifying_count < 1:
-			return 0.0
-
-		execution_qty = base_num_shares / (2 ** (qualifying_count - 1))
-
-		if target_side == "sell":
-			execution_qty = math.floor(execution_qty)
-
-		if execution_qty < smallest_share_size:
-			return 0.0
-
-		if not simulation:
-			logger.info(
-				"signal-based progressive sizing: ticker=%r side=%r entry_tf=%r anchor_tf=%r qualifying_count=%r execution_qty=%r",
-				sym,
-				target_side,
-				entry_tf_norm,
-				anchor_tf_norm,
-				qualifying_count,
-				execution_qty,
-			)
-
-		return execution_qty
-
-
-	def is_latest_anchor_opposite_of_open_position(self, ticker, anchor_tf, alpaca_position_qty, simulation, backtester, state):
-		"""
-		Return True if the latest anchor timeframe signal is opposite
-		of the currently open Alpaca position side.
-		
-		Parameters:
-			ticker (str):Ticker symbol, e.g. "AAPL".
-			anchor_tf (str): The higher timeframe anchor used to establish the current directional regime.
-			alpaca_position_qty (float):
-			simulation (Boolean): True if mode is simualtion and False if live.
-			backtester (Backtester): Instance of class Backtester.
-			state 					
-		"""
-		try:
-			alpaca_position_qty = float(alpaca_position_qty or 0.0)
-		except Exception:
-			return False
-
-		if alpaca_position_qty == 0:
-			return False
-
-		position_side = "long" if alpaca_position_qty > 0 else "short"
-		expected_anchor_side = "buy" if position_side == "long" else "sell"
-		opposite_anchor_side = "sell" if expected_anchor_side == "buy" else "buy"
-
-		latest_anchor_signal = None
-
-		if simulation:
-			latest_anchor_signal = backtester.get_latest_confirmation_directional_signal(
-				state,
-				ticker,
-				anchor_tf,
-				max_scan=500,
-			)
-		else:
-			latest_anchor_signal = self.get_latest_confirmation_directional_signal(
-				ticker,
-				anchor_tf,
-				max_scan=500,
-			)
-
-		if latest_anchor_signal is None:
-			return False
-
-		last_anchor_signal = latest_anchor_signal["side"]
-
-		is_true = last_anchor_signal == opposite_anchor_side
-
-		if not simulation:
-			logger.info(
-				"anchor-position exit check: ticker=%r anchor_tf=%r position_side=%r latest_anchor_signal=%r result=%r",
-				ticker,
-				anchor_tf,
-				position_side,
-				last_anchor_signal,
-				is_true,
-			)
-
-		return is_true			
+		return self.pattern_analyzer.get_signal_based_progressive_entry_size(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			side=side,
+			entry_tf=entry_tf,
+			anchor_tf=anchor_tf,
+			base_num_shares=base_num_shares,
+			smallest_share_size=smallest_share_size,
+			max_scan_entry_tf=max_scan_entry_tf,
+			max_scan_anchor_tf=max_scan_anchor_tf,
+		)
+
+
+	def is_latest_anchor_opposite_of_open_position(
+		self,
+		ticker,
+		anchor_tf,
+		alpaca_position_qty,
+		simulation,
+		backtester,
+		state,
+	):
+		return self.pattern_analyzer.is_latest_anchor_opposite_of_open_position(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			anchor_tf=anchor_tf,
+			alpaca_position_qty=alpaca_position_qty,
+		)
 
 
 	def is_latest_anchor_same_as_open_position(self, ticker, anchor_tf, alpaca_position_qty, simulation, backtester, state):
@@ -1309,236 +472,55 @@ class Strategies:
 					logger.exception("Failed clearing pending exit guard in background: key=%r", pending_exit_key)
 
 
-	def get_latest_directional_signal(self, ticker, timeframe, signal_role, max_scan=100):
-		"""
-		Retrieve the most recent directional trading signal from a Redis stream, filtered by signal role.
-
-		Scans the stream in reverse chronological order and returns the latest
-		directional signal entry whose normalized signal is either "buy" or "sell".
-
-		Exit signals such as "bullish_exit" / "bearish_exit", unknown values,
-		and non-directional events are ignored.
-
-		This helper is primarily used by exit logic to determine whether an
-		intermediary timeframe exit signal should liquidate a long or short
-		position.
-
-		Parameters:
-			ticker (str):
-				Ticker symbol to inspect.
-
-			timeframe (str):
-				Timeframe stream to inspect (ex: "5m", "15m", "1h").
-
-			signal_role (str):
-				confirmation or contrarian
-
-			max_scan (int):
-				Maximum number of recent stream entries to scan backwards.
-				Default is 100.
-
-		Returns:
-			dict | None:
-				Returns a dictionary containing:
-					{
-						"id": <redis stream entry id>,
-						"side": "buy" | "sell",
-						"fields": <raw redis stream fields>,
-					}
-
-				Returns None if no directional signal is found.
-		"""
-		sym = str(ticker or "").upper().strip()
-		tf = self.tvw_helpers.normalize_tf(timeframe)
-		expected_signal_role = str(signal_role or "").strip().lower()
-		stream_key = self.tvw_helpers.stream_key(tf, sym)
-
-		try:
-			entries = self.r.xrevrange(stream_key, count=max_scan)
-		except Exception:
-			logger.exception(
-				"Failed reading latest directional signal: ticker=%r tf=%r signal_role=%r",
-				sym,
-				tf,
-				expected_signal_role,
-			)
-			return None
-
-		for entry_id, fields in entries:
-			entry_signal_role = str(fields.get("signal_role") or "").strip().lower()
-
-			if expected_signal_role and entry_signal_role != expected_signal_role:
-				continue
-
-			side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-
-			if side in {"buy", "sell"}:
-				return {
-					"id": entry_id,
-					"side": side,
-					"signal_role": entry_signal_role,
-					"fields": fields,
-				}
-
-		return None		
+	def get_latest_directional_signal(
+		self,
+		ticker,
+		timeframe,
+		signal_role,
+		max_scan=100,
+	):
+		return self.redis_signal_history.get_latest_directional_signal(
+			ticker=ticker,
+			timeframe=timeframe,
+			signal_role=signal_role,
+			max_scan=max_scan,
+		)
 
 
 	def is_confirmation_signal(self, fields):
-		"""
-		Determine whether a Redis stream/state entry represents
-		a confirmation signal.
-
-		Checks the "signal_role" field and returns True only when
-		the normalized role equals "confirmation".
-
-		Parameters:
-			fields (dict):
-				Redis stream/state fields associated with a TradingView alert.
-
-		Returns:
-			bool:
-				True if the signal_role is "confirmation",
-				otherwise False.
-		"""		
-		return str(fields.get("signal_role") or "").strip().lower() == "confirmation"
+		return self.pattern_analyzer.is_confirmation_signal(fields)
 
 
-	def latest_tf_signal_is_confirmation(self, ticker, timeframe, simulation, backtester, state):
-		"""
-		Check whether the latest alert for a timeframe is a
-		confirmation signal.
-
-		Retrieves the most recent Redis stream entry for the specified
-		ticker/timeframe and evaluates whether its signal_role is
-		"confirmation".
-
-		This helper is primarily used by strategy validation logic to
-		quickly determine whether the latest timeframe context is based
-		on confirmation signals rather than contrarian or unknown signals.
-
-		Parameters:
-			ticker (str):
-				Ticker symbol to inspect.
-
-			timeframe (str):
-				Timeframe stream to inspect (ex: "1m", "5m", "15m", "1h").
-
-			simulation (Boolean): True if mode is simualtion and False if live.
-			backtester (Backtester): Instance of class Backtester.
-			state
-
-		Returns:
-			bool:
-				True if the latest alert exists and is a confirmation signal.
-				False otherwise.
-		"""		
-		last_alert = None
-
-		if simulation:
-			last_alert = backtester.get_nth_last_alert(state, ticker, timeframe, 1)
-		else:
-			last_alert = self.tvw_helpers.get_nth_last_alert(ticker, timeframe, 1)
-
-		if last_alert is None:
-			return False
-
-		_, fields = last_alert
-		return self.is_confirmation_signal(fields)
+	def latest_tf_signal_is_confirmation(
+		self,
+		ticker,
+		timeframe,
+		simulation,
+		backtester,
+		state,
+	):
+		return self.pattern_analyzer.latest_tf_signal_is_confirmation(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			timeframe=timeframe,
+		)
 			
 
-	def get_latest_confirmation_directional_signal(self, ticker, timeframe, max_scan=500):
-		"""
-		Retrieve the most recent confirmation-based directional signal
-		from a Redis stream.
-
-		Scans the specified timeframe stream in reverse chronological order
-		and returns the latest directional signal whose:
-
-			1. signal_role == "confirmation"
-			2. normalized signal is either "buy" or "sell"
-
-		Non-confirmation signals such as:
-			- contrarian
-			- unknown
-			- exit signals
-			- malformed signals
-
-		are ignored.
-
-		This helper is primarily used by strategy logic to ensure that
-		entry/exit decisions are based only on confirmation regime signals,
-		even if newer contrarian or unknown signals exist in the stream.
-
-		Parameters:
-			ticker (str):
-				Ticker symbol to inspect.
-
-			timeframe (str):
-				Timeframe stream to inspect (ex: "1m", "5m", "15m", "1h").
-
-			max_scan (int):
-				Maximum number of recent Redis stream entries to scan
-				backwards before giving up.
-				Default is 500.
-
-		Returns:
-			dict | None:
-				Returns a dictionary containing:
-
-					{
-						"id": <redis stream entry id>,
-						"side": "buy" | "sell",
-						"fields": <raw redis stream fields>,
-					}
-
-				Returns None if no qualifying confirmation directional
-				signal is found.
-		"""		
-		sym = str(ticker or "").upper().strip()
-		tf = self.tvw_helpers.normalize_tf(timeframe)
-		stream_key = self.tvw_helpers.stream_key(tf, sym)
-
-		try:
-			entries = self.r.xrevrange(stream_key, count=max_scan)
-		except Exception:
-			#logger.exception(
-				#"Failed reading latest confirmation directional signal: ticker=%r tf=%r",
-				#sym,
-				#tf,
-			#)
-			return None
-
-		for entry_id, fields in entries:
-			signal_role = str(fields.get("signal_role") or "").strip().lower()
-			if signal_role != "confirmation":
-				continue
-
-			side = self.tvw_helpers.normalize_signal(fields.get("signal"))
-			if side in {"buy", "sell"}:
-				return {
-					"id": entry_id,
-					"side": side,
-					"fields": fields,
-				}
-
-		return None			
+	def get_latest_confirmation_directional_signal(
+		self,
+		ticker,
+		timeframe,
+		max_scan=500,
+	):
+		return self.redis_signal_history.get_latest_confirmation_directional_signal(
+			ticker=ticker,
+			timeframe=timeframe,
+			max_scan=max_scan,
+		)
 
 
-	def _tf_rank(self, timeframe: str) -> int:
-		tf = self.tvw_helpers.normalize_tf(timeframe)
-		order = {
-			"1m": 1,
-			"3m": 2,
-			"5m": 3,
-			"15m": 4,
-			"30m": 5,
-			"45m": 6,
-			"1h": 7,
-			"2h": 8,
-			"4h": 9,
-			"1d": 10,
-		}
-		return order.get(tf, -1)
+	def _tf_rank(self, timeframe):
+		return self.pattern_analyzer.tf_rank(timeframe)
 
 
 
@@ -1551,104 +533,12 @@ class Strategies:
 		state,
 		max_scan=500,
 	):
-		"""
-		Return recent anchor-timeframe alerts in reverse chronological order.
-
-		The newest alert is returned first.
-
-		During live execution, read the newest alerts from Redis.
-
-		During simulation, read the same Redis stream but stop at the
-		current simulated event's stream ID. This reproduces the historical
-		context that was available at that point in time without allowing
-		future alerts into the simulation.
-		"""
-		sym = str(
-			ticker
-			or ""
-		).upper().strip()
-
-		tf = self.tvw_helpers.normalize_tf(
-			anchor_tf
+		return self.pattern_analyzer.get_strategy4_anchor_alerts(
+			history=self._signal_history(simulation, state),
+			ticker=ticker,
+			anchor_tf=anchor_tf,
+			max_scan=max_scan,
 		)
-
-		if not sym or not tf:
-			return []
-
-		if simulation:
-			if (
-				state is None
-				or backtester is None
-			):
-				return []
-
-			current_event = state.latest_by_tf.get(
-				(
-					sym,
-					tf,
-				)
-			)
-
-			if current_event is None:
-				return []
-
-			current_stream_id = str(
-				current_event.get(
-					"stream_id",
-					"",
-				)
-				or ""
-			).strip()
-
-			if not current_stream_id:
-				return []
-
-			stream_key = self.tvw_helpers.stream_key(
-				tf,
-				sym,
-			)
-
-			try:
-				return self.r.xrevrange(
-					stream_key,
-					max=current_stream_id,
-					min="-",
-					count=max_scan,
-				)
-
-			except Exception:
-				logger.exception(
-					"Strategy 4 simulation failed reading "
-					"historical anchor alerts: "
-					"ticker=%r anchor_tf=%r "
-					"current_stream_id=%r",
-					sym,
-					tf,
-					current_stream_id,
-				)
-
-				return []
-
-		stream_key = self.tvw_helpers.stream_key(
-			tf,
-			sym,
-		)
-
-		try:
-			return self.r.xrevrange(
-				stream_key,
-				count=max_scan,
-			)
-
-		except Exception:
-			logger.exception(
-				"Strategy 4 failed reading anchor alerts: "
-				"ticker=%r anchor_tf=%r",
-				sym,
-				tf,
-			)
-
-			return []
 
 
 	def _get_strategy4_anchor_alerts_DISCARD_THIS_VERSION_AFTER_STABILITY_IS_ACHIEVED(
@@ -1742,176 +632,25 @@ class Strategies:
 			return []
 
 
-	def _is_strategy4_confirmation(
-		self,
-		fields,
-		expected_side,
-	):
-		"""
-		Return whether an alert is a confirmation signal of the requested side.
-
-		Normalized buy and buy-plus alerts are treated as buy. Normalized sell and
-		sell-plus alerts are treated as sell. Alerts whose signal role is not
-		confirmation are rejected.
-
-		Parameters:
-			fields (dict):
-				Raw TradingView alert fields.
-
-			expected_side (str):
-				Required normalized confirmation side: buy or sell.
-
-		Returns:
-			bool:
-				True when the alert is a confirmation alert matching the requested
-				normalized side.
-		"""
-		if not self.is_confirmation_signal(
-			fields
-		):
-			return False
-
-		return (
-			self.tvw_helpers.normalize_signal(
-				fields.get(
-					"signal"
-				)
-			)
-			== expected_side
+	def _is_strategy4_confirmation(self, fields, expected_side):
+		return self.pattern_analyzer.is_strategy4_confirmation(
+			fields,
+			expected_side,
 		)
 
 
-	def _strategy4_trend_entry_is_valid(
-		self,
-		alerts,
-		entry_side,
-	):
-		"""
-		Determine whether the current confirmation qualifies as a trend entry.
-
-		Long trend entry:
-			- The current alert is a confirmation buy.
-			- A prior bullish_exit exists.
-			- No bearish_exit occurred between that bullish_exit and the current
-			  confirmation buy.
-
-		Short trend entry:
-			- The current alert is a confirmation sell.
-			- A prior bearish_exit exists.
-			- No bullish_exit occurred between that bearish_exit and the current
-			  confirmation sell.
-
-		The first item in alerts is expected to be the current alert and is therefore
-		excluded from the historical scan.
-
-		Parameters:
-			alerts (list[tuple]):
-				Anchor alerts ordered newest to oldest.
-
-			entry_side (str):
-				Requested position side: long or short.
-
-		Returns:
-			bool:
-				True when the trend-entry condition is satisfied.
-		"""
-		if entry_side == "long":
-			required_previous_exit = "bullish_exit"
-			invalidating_exit = "bearish_exit"
-		elif entry_side == "short":
-			required_previous_exit = "bearish_exit"
-			invalidating_exit = "bullish_exit"
-		else:
-			return False
-
-		for _, fields in alerts[1:]:
-			historical_signal = str(
-				fields.get(
-					"signal"
-				)
-				or ""
-			).strip().lower()
-
-			if historical_signal == invalidating_exit:
-				return False
-
-			if historical_signal == required_previous_exit:
-				return True
-
-		return False
+	def _strategy4_trend_entry_is_valid(self, alerts, entry_side):
+		return self.pattern_analyzer.strategy4_trend_entry_is_valid(
+			alerts,
+			entry_side,
+		)
 
 
-	def _strategy4_range_entry_is_valid(
-		self,
-		alerts,
-		entry_side,
-	):
-		"""
-		Determine whether the current exit signal qualifies as a range entry.
-
-		Short range entry:
-			- The current alert is bullish_exit.
-			- Locate the most recent earlier confirmation sell.
-			- Exactly one bearish_exit must exist between that confirmation sell
-			  and the current bullish_exit.
-			- Consequently, the second-most-recent bearish_exit, when one exists,
-			  must precede that confirmation sell.
-
-		Long range entry:
-			- The current alert is bearish_exit.
-			- Locate the most recent earlier confirmation buy.
-			- Exactly one bullish_exit must exist between that confirmation buy
-			  and the current bearish_exit.
-			- Consequently, the second-most-recent bullish_exit, when one exists,
-			  must precede that confirmation buy.
-
-		The first item in alerts is expected to be the current exit alert and is
-		excluded from the historical scan.
-
-		Parameters:
-			alerts (list[tuple]):
-				Anchor alerts ordered newest to oldest.
-
-			entry_side (str):
-				Requested position side: long or short.
-
-		Returns:
-			bool:
-				True when exactly one required exit exists after the relevant
-				confirmation alert.
-		"""
-		if entry_side == "short":
-			confirmation_side = "sell"
-			required_exit = "bearish_exit"
-		elif entry_side == "long":
-			confirmation_side = "buy"
-			required_exit = "bullish_exit"
-		else:
-			return False
-
-		matching_exit_count = 0
-
-		for _, fields in alerts[1:]:
-			historical_signal = str(
-				fields.get(
-					"signal"
-				)
-				or ""
-			).strip().lower()
-
-			if historical_signal == required_exit:
-				matching_exit_count += 1
-
-				if matching_exit_count > 1:
-					return False
-
-			if self._is_strategy4_confirmation(
-				fields,
-				confirmation_side,
-			):
-				return matching_exit_count == 1
-
-		return False
+	def _strategy4_range_entry_is_valid(self, alerts, entry_side):
+		return self.pattern_analyzer.strategy4_range_entry_is_valid(
+			alerts,
+			entry_side,
+		)
 
 
 
@@ -1924,117 +663,12 @@ class Strategies:
 		backtester,
 		state,
 	):
-		"""
-		Return the Strategy 4 position side triggered by the current anchor alert.
-
-		Confirmation buy and sell alerts are evaluated using the trend-entry rules.
-		Bearish and bullish exit alerts are evaluated using the range-entry rules.
-
-		Parameters:
-			ticker (str):
-				Ticker being evaluated.
-
-			anchor_tf (str):
-				Strategy 4 anchor timeframe.
-
-			signal (str):
-				Current TradingView signal.
-
-			simulation (bool):
-				True during a backtest and False during live execution.
-
-			backtester (BackTester | None):
-				BackTester instance used in simulation mode.
-
-			state (SimState | None):
-				In-memory simulation state.
-
-		Returns:
-			str | None:
-				long, short, or None when no Strategy 4 entry is triggered.
-		"""
-		alerts = self._get_strategy4_anchor_alerts(
+		return self.pattern_analyzer.get_strategy4_entry_side(
+			history=self._signal_history(simulation, state),
 			ticker=ticker,
 			anchor_tf=anchor_tf,
-			simulation=simulation,
-			backtester=backtester,
-			state=state,
-			max_scan=500,
+			signal=signal,
 		)
-
-		if not alerts:
-			return None
-
-		_, current_fields = alerts[0]
-
-		current_signal = str(
-			signal
-			or ""
-		).strip().lower()
-
-		stored_current_signal = str(
-			current_fields.get(
-				"signal"
-			)
-			or ""
-		).strip().lower()
-
-
-		if current_signal != stored_current_signal:
-			return None
-
-		normalized_side = self.tvw_helpers.normalize_signal(
-			current_signal
-		)
-		
-		if (
-			normalized_side == "buy"
-			and self._is_strategy4_confirmation(
-				current_fields,
-				"buy",
-			)
-		):
-			if self._strategy4_trend_entry_is_valid(
-				alerts,
-				"long",
-			):
-				return "long"
-
-			return None
-
-		if (
-			normalized_side == "sell"
-			and self._is_strategy4_confirmation(
-				current_fields,
-				"sell",
-			)
-		):
-			if self._strategy4_trend_entry_is_valid(
-				alerts,
-				"short",
-			):
-				return "short"
-
-			return None
-		
-		"""
-		if current_signal == "bullish_exit":
-			if self._strategy4_range_entry_is_valid(
-				alerts,
-				"short",
-			):
-				return "short"
-
-			return None
-
-		if current_signal == "bearish_exit":
-			if self._strategy4_range_entry_is_valid(
-				alerts,
-				"long",
-			):
-				return "long"
-		"""
-		return None
 
 											
 	def entry_strategy1(self, strategy_name, entry_tf, intermediary_tf, anchor_tf, simulation, date, signal, prices, ticker, timeframe, NUM_SHARES, alpaca_api, state, config, event, price, backtester):
@@ -2884,6 +1518,7 @@ class Strategies:
 		)
 
 		exit_signal_matches_open_position = False
+		exit_signal_matches_open_position = False
 		latest_intermediary_direction = None
 
 		if is_intermediary_tf_exit_signal:
@@ -2906,6 +1541,20 @@ class Strategies:
 			if latest_directional_alert:
 				latest_intermediary_direction = latest_directional_alert["side"]
 
+				exit_signal_matches_open_position = (
+					(
+						position_side == "long"
+						and latest_intermediary_direction == "buy"
+						and signal == "bullish_exit"
+					)
+					or
+					(
+						position_side == "short"
+						and latest_intermediary_direction == "sell"
+						and signal == "bearish_exit"
+					)
+				)
+
 				exit_signal_does_not_matches_open_position = ( #** Maybe use the matches for this one 
 					(
 						position_side == "short" 
@@ -2925,6 +1574,7 @@ class Strategies:
 			or lower_tf_confirms_intermediary_opposite_of_anchor 
 			or anchor_same_as_open_position 
 			or exit_signal_does_not_matches_open_position
+			#or exit_signal_matches_open_position
 		)
 
 		logger.info(

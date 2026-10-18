@@ -7,7 +7,7 @@ set -euo pipefail
 # LOCAL PATHS
 # ============================================================
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Documents/GitHub/TradingMage}"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 APP_DIR="${APP_DIR:-$PROJECT_DIR/app}"
 
@@ -71,7 +71,11 @@ LOCAL_APP_PORT="${LOCAL_APP_PORT:-8000}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/local_backtest_output}"
 
+BACKTEST_CHARTS_DIR="${BACKTEST_CHARTS_DIR:-$PROJECT_DIR/backtest_charts}"
+
 RESEARCH_LOG="${RESEARCH_LOG:-$OUTPUT_DIR/backtest_factor_research.jsonl}"
+
+EXIT_RESEARCH_LOG="${EXIT_RESEARCH_LOG:-$APP_DIR/logs/backtest_exit_research.jsonl}"
 
 UVICORN_LOG="${UVICORN_LOG:-$OUTPUT_DIR/local_backtest_uvicorn.log}"
 
@@ -93,7 +97,25 @@ Usage:
 	./run_local_endpoint.sh ENDPOINT [name=value ...]
 
 
+Golden-cross investment strategy examples:
+
+	./run_local_endpoint.sh run \
+		strategy_name=golden_cross_dip_recovery_4h \
+		start=2026-06-01T04:00:00-04:00 end=2026-10-01T20:00:00-04:00 \
+		position_size=6600 slow_weight=0.5 cross_weight=0.5 max_exposure_multiple=3
+
+	./run_local_endpoint.sh plot \
+		strategy_name=golden_cross_dip_recovery_4h \
+		start=2026-06-01T04:00:00-04:00 end=2026-10-01T20:00:00-04:00 \
+		position_size=6600 indicators=true entries_and_exits=true \
+		lux_algo_symbols=false alpha_vantage_symbols=false
+
+	Do not supply exit_strategy or intraday liquidation flags for this strategy.
+
 Available endpoint aliases:
+
+	regime-analysis
+		GET /backtest/regime-analysis
 
 	run
 		GET /backtest/run
@@ -226,6 +248,17 @@ DON'T AUTOMATICALLY EXTRACT ZIP
 
 ============================================================
 
+Regime analysis (weekly read-only signal diagnostics):
+
+	./run_local_endpoint.sh regime-analysis \
+		start=2026-05-31T04:00:00-04:00 \
+		end=2026-09-25T20:00:00-04:00 \
+		timeframes=1m,5m,15m,1h,4h \
+		forward_horizons_minutes=15,30,60,120,240 \
+		whipsaw_windows_minutes=30,60,120,240 \
+		bucket=week \
+		ATR_period=14
+
 Everything after ENDPOINT must use:
 
 	name=value
@@ -287,6 +320,15 @@ case "$ENDPOINT_INPUT" in
 		;;
 
 
+	regime-analysis)
+
+		HTTP_METHOD="GET"
+		ENDPOINT="/backtest/regime-analysis"
+		OUTPUT_TYPE="json"
+		DEFAULT_OUTPUT_FILE="$OUTPUT_DIR/regime_analysis.json"
+		;;
+
+
 	plot)
 
 		HTTP_METHOD="GET"
@@ -337,6 +379,19 @@ case "$ENDPOINT_INPUT" in
 		DEFAULT_OUTPUT_FILE="$OUTPUT_DIR/factor_research_delete.json"
 
 		;;
+
+
+	exit-research-analyze)
+
+		HTTP_METHOD="GET"
+
+		ENDPOINT="/backtest/exit-research/analyze"
+
+		OUTPUT_TYPE="json"
+
+		DEFAULT_OUTPUT_FILE="$OUTPUT_DIR/exit_research_analysis.json"
+
+		;;		
 
 
 	/*)
@@ -507,6 +562,7 @@ set +a
 # ============================================================
 
 export TRAILING_STOP_EXIT_ENABLED="false"
+export GOLDEN_CROSS_LIVE_ORDERS_ENABLED="false"
 
 # ============================================================
 # LOCAL RESEARCH FILE
@@ -516,6 +572,8 @@ export TRAILING_STOP_EXIT_ENABLED="false"
 # ============================================================
 
 export TV_BACKTEST_FACTOR_RESEARCH_LOG="$RESEARCH_LOG"
+
+export TV_BACKTEST_EXIT_RESEARCH_LOG="$EXIT_RESEARCH_LOG"
 
 export TV_BACKTEST_DIAGNOSTIC_LOG="$OUTPUT_DIR/backtest_trade_diagnostics.csv"
 
@@ -969,12 +1027,56 @@ mkdir -p "$(dirname "$OUTPUT_FILE")"
 rm -f "$OUTPUT_FILE"
 
 
+
+
+# ============================================================
+# BACKTEST PROGRESS MONITOR
+#
+# BackTester writes newline-delimited __BACKTEST_PROGRESS__ markers into
+# UVICORN_LOG. Poll that log without failing when no marker exists yet, extract
+# only the newest timestamp, and replace the current terminal row.
+# ============================================================
+
+monitor_backtest_progress() {
+	local last_progress=""
+	local latest_progress=""
+
+	while true; do
+		latest_progress="$(
+			awk '
+				/__BACKTEST_PROGRESS__/ {
+					line = $0
+					sub(/^.*__BACKTEST_PROGRESS__/, "", line)
+					latest = line
+				}
+				END {
+					if (latest != "") {
+						print latest
+					}
+				}
+			' "$UVICORN_LOG" 2>/dev/null || true
+		)"
+
+		if [[ -n "$latest_progress" && "$latest_progress" != "$last_progress" ]]; then
+			printf '\r\033[K%s' "$latest_progress"
+			last_progress="$latest_progress"
+		fi
+
+		sleep 0.25
+	done
+}
+
 # ============================================================
 # CALL FASTAPI ENDPOINT
 # ============================================================
 
-set +e
+PROGRESS_MONITOR_PID=""
+if [[ "$ENDPOINT_INPUT" == "run" || "$ENDPOINT_INPUT" == "plot" ]]; then
+	monitor_backtest_progress &
+	PROGRESS_MONITOR_PID=$!
+fi
 
+set +e
 
 HTTP_CODE="$(
 	curl \
@@ -985,9 +1087,13 @@ HTTP_CODE="$(
 		"$URL"
 )"
 
-
 CURL_STATUS=$?
 
+if [[ -n "$PROGRESS_MONITOR_PID" ]]; then
+	kill "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+	wait "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+	printf '\r\033[K'
+fi
 
 set -e
 
@@ -1081,7 +1187,7 @@ if [[ "$OUTPUT_TYPE" == "json" ]]; then
 
 		cat "$OUTPUT_FILE"
 
-	elif [[ "$ENDPOINT_INPUT" == "run" ]]; then
+	elif [[ "$ENDPOINT_INPUT" == "run" || "$ENDPOINT_INPUT" == "regime-analysis" ]]; then
 
 		echo "Valid JSON response received."
 		echo
@@ -1145,17 +1251,28 @@ elif [[ "$OUTPUT_TYPE" == "zip" ]]; then
 		echo
 
 
-		if [[ \
-			"$ENDPOINT_INPUT" == "plot" \
-			|| "$ENDPOINT_INPUT" == "research-plot" \
-		]]; then
+		if [[ "$ENDPOINT_INPUT" == "plot" ]]; then
+
+			# Rebuild the canonical chart directory from this run only. This
+			# prevents stale PNGs from an earlier control/experimental run from
+			# being displayed alongside the newly generated charts.
+			rm -rf "$BACKTEST_CHARTS_DIR"
+			mkdir -p "$BACKTEST_CHARTS_DIR"
+
+			find "$OUTPUT_DIRECTORY" -maxdepth 1 -type f -name '*.png' -exec cp {} "$BACKTEST_CHARTS_DIR/" \;
 
 			echo
-			echo "Opening backtest charts..."
+			echo "Fresh backtest charts copied to:"
+			echo
+			echo "    $BACKTEST_CHARTS_DIR"
 			echo
 
 			cd "$PROJECT_DIR"
+			python3 show_backtest_charts.py "$BACKTEST_CHARTS_DIR"
 
+		elif [[ "$ENDPOINT_INPUT" == "research-plot" ]]; then
+
+			cd "$PROJECT_DIR"
 			python3 show_backtest_charts.py "$OUTPUT_DIRECTORY"
 
 		fi

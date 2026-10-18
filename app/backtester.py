@@ -1,14 +1,22 @@
 import io
+import copy
+from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
+from golden_cross_simulation import run_simulation
 import logging
 import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone, timedelta
 import pandas as pd
+
+from backtest_research import BacktestResearch
+from alpha_vantage_news import AlphaVantageNewsClient
+from trade_regime_analyzer import TradeRegimeAnalyzer
 from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.lines import Line2D
 import zipfile
 
 import csv
@@ -104,6 +112,15 @@ class BackTester:
 			"exit_strategy": 1,
 			"warmup_sessions": 2,
 		},
+		"reverse_strategy1_15m_anchor": {
+			"entry_tf": "1m",
+			"intermediary_tf": "5m",
+			"anchor_tf": "15m",
+			"lower_timeframes": {"1m"},
+			"default_position_size": 2000.0,
+			"exit_strategy": 1,
+			"warmup_sessions": 2,
+		},		
 		"strategy1_1h_anchor": {
 			"entry_tf": "5m",
 			"intermediary_tf": "15m",
@@ -194,7 +211,7 @@ class BackTester:
 	BACKTEST_DIAGNOSTIC_MAX_DAYS = 3
 	PNL_SNAPSHOT_INTERVAL_MINUTES = 5
 
-	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance):
+	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance, alpha_vantage_key: Optional[str] = None):
 		"""
 		Create a BackTester.
 
@@ -206,6 +223,8 @@ class BackTester:
 		self.strategies_instance = strategies_instance
 		self.trade_records_instance = trade_records_instance
 		self.r = trading_view_webhook_helpers.require_redis()
+		self.research = BacktestResearch(self)
+		self.alpha_vantage_news = AlphaVantageNewsClient(api_key=alpha_vantage_key)
 		self.smallest_share_size = 0.25
 		self.diagnostic_logging_enabled = False
 		self.recording_enabled = True
@@ -230,6 +249,25 @@ class BackTester:
 		run_exit_strategy: bool = True,
 		record_factor_research: bool = False,
 		research_group_id: Optional[str] = None,		
+		include_news_sentiment: bool = False,
+		cross_point_to_current_moment_weight: float = 0.2,
+		cross_point_time_decay_candles: int = 20,
+		confirmatory_fast_average_exit_atr_multiple: Optional[float] = None,
+		bullish_exit_above_fast_average_atr_multiple: float = 1.0,
+		bearish_exit_confirmation_window_candles: int = 0,
+		profit_protection_enabled: bool = False,
+		profit_activation_atr_multiple: float = 3.0,
+		profit_trailing_atr_multiple: float = 3.0,
+		fast_average_exit_atr_multiple: Optional[float] = None,
+		require_entry_confirmation: bool = False,
+		slow_average_to_price_weight: float = 0.1,
+		cross_point_to_price_weight: float = 0.7,
+		max_exposure_multiple: float = 3.0,
+		invalidation_atr_multiple: float = 1.0,
+		fast_moving_average_type: str = "ema",
+		fast_moving_average_period: int = 9,
+		slow_moving_average_type: str = "sma",
+		slow_moving_average_period: int = 200,
 	) -> dict[str, Any]:
 		"""
 		Run a chronological simulation with an optional unreported warm-up period.
@@ -256,6 +294,16 @@ class BackTester:
 			Dictionary containing only the requested reporting window, while preserving
 			open positions and signal context created during warm-up.
 		"""
+		if strategy_name == STRATEGY_NAME:
+			if liquidate_before_market_close or exit_strategy is not None or not run_exit_strategy or record_factor_research or loss_liquidation_atr_factor is not None or profit_expansion_atr_factor is not None:
+				raise ValueError("golden_cross_dip_recovery_4h uses its configured exits; legacy liquidation, exit overrides, entry-only mode and liquidation-factor research are incompatible")
+			if warmup_sessions not in (None, 0):
+				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
+			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
+				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple)
+			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings, include_news_sentiment)
+
 		if not isinstance(
 			record_factor_research,
 			bool,
@@ -738,6 +786,25 @@ class BackTester:
 		if record_factor_research:
 			research_records_written = self._append_factor_research_records(state.completed_trade_records)	
 
+		signal_events = [
+			self._serialize_signal_event(event)
+			for event in report_events
+		]
+
+		news_sentiment_events = []
+		if include_news_sentiment:
+			for symbol in symbols:
+				news_sentiment_events.extend(
+					self.alpha_vantage_news.get_news_sentiment(
+						ticker=symbol,
+						start_dt=start_dt,
+						end_dt=end_dt,
+					)
+				)
+			news_sentiment_events.sort(
+				key=lambda row: row["published_at"]
+			)
+
 		return {
 			"strategy_name": strategy_name,
 			"exit_strategy": config["selected_exit_strategy"],
@@ -784,6 +851,9 @@ class BackTester:
 			"tickers": symbols,
 			"warmup_signal_count": len(warmup_events),
 			"signal_count": len(report_events),
+			"signal_events": signal_events,
+			"include_news_sentiment": include_news_sentiment,
+			"news_sentiment_events": news_sentiment_events,
 			"trade_count": sum(
 				1
 				for trade_event in state.trade_events
@@ -818,6 +888,116 @@ class BackTester:
 			"completed_trade_records":
 				state.completed_trade_records,						
 		}
+
+	def _serialize_signal_event(self, event: dict[str, Any]) -> dict[str, Any]:
+		"""Return the plot/research-safe subset of a TradingView signal event."""
+		return {
+			"ticker": event.get("ticker"),
+			"timeframe": event.get("timeframe"),
+			"time": event.get("time"),
+			"received_time": event.get("received_time"),
+			"signal": event.get("signal"),
+			"side": event.get("side"),
+			"signal_role": event.get("signal_role"),
+			"price": event.get("price"),
+		}
+
+
+	def _load_regime_signal_events(self, symbols, timeframes, start_dt, end_dt):
+		"""Page Redis history without requiring an alert price for raw research.
+
+		Scan retained IDs rather than guessing an ID range: received_at is an
+		application timestamp and need not equal the Redis stream ID timestamp.
+		Only matching events are retained in memory. Redis is never modified.
+		"""
+		events = []
+		quality = {"raw_stream_entries_scanned": 0, "invalid_timestamp_or_schema_events": 0}
+		for symbol in symbols:
+			for tf in sorted(timeframes):
+				stream_key = self.tvw_helpers.stream_key(tf, symbol)
+				minimum = "-"
+				while True:
+					page = self.r.xrange(stream_key, min=minimum, max="+", count=2000)
+					if not page:
+						break
+					for stream_id, fields in page:
+						quality["raw_stream_entries_scanned"] += 1
+						decode = lambda value: value.decode() if isinstance(value, bytes) else value
+						fields = {decode(k): decode(v) for k,v in fields.items()}
+						event = self._build_event("regime_analysis", decode(stream_id), fields, symbol, tf,
+							require_market_price=False)
+						if event is None:
+							quality["invalid_timestamp_or_schema_events"] += 1
+						elif start_dt <= event["received_dt"] <= end_dt:
+							events.append(event)
+					last_id = page[-1][0]
+					if isinstance(last_id, bytes):
+						last_id = last_id.decode()
+					minimum = f"({last_id}"
+		return sorted(events, key=lambda e: (e["received_dt"], e["stream_id"])), quality
+
+
+	def run_regime_analysis(
+		self, alpaca_api, start, end, tickers=None,
+		timeframes=("1m", "5m", "15m", "1h", "4h"),
+		forward_horizons_minutes=(15, 30, 60, 120, 240),
+		whipsaw_windows_minutes=(30, 60, 120, 240),
+		bucket="week", ATR_period=14, context_max_age_minutes=240,
+		propagation_window_minutes=180, price_tolerance_seconds=90,
+	):
+		"""Load existing Redis/Alpaca history for read-only PatternAnalyzer research.
+
+		Does not call run(), open positions, submit orders, or write research logs.
+		All state is local to this request, safe alongside other backtest requests.
+		"""
+		from pattern_analyzer import PatternAnalyzer
+
+		start_dt, end_dt = self._parse_input_dt(start), self._parse_input_dt(end)
+		selected = list(dict.fromkeys(self.tvw_helpers.normalize_tf(tf) for tf in timeframes))
+		analyzer = PatternAnalyzer(self.tvw_helpers)
+		options = dict(timeframes=selected,
+			forward_horizons_minutes=forward_horizons_minutes,
+			whipsaw_windows_minutes=whipsaw_windows_minutes,
+			bucket=bucket, ATR_period=ATR_period,
+			context_max_age_minutes=context_max_age_minutes,
+			propagation_window_minutes=propagation_window_minutes,
+			price_tolerance_seconds=price_tolerance_seconds)
+		# Validate all inputs before making potentially expensive source requests.
+		analyzer.analyze_signal_regimes([], {}, start_dt, end_dt, **options)
+		symbols = self._normalize_tickers(tickers) or self._discover_tickers(set(selected))
+		if not symbols:
+			raise ValueError("No Redis signal streams found for the selected timeframes")
+		warmup_start = start_dt - timedelta(days=max(7, math.ceil(context_max_age_minutes/1440)+2))
+		logger.info("Regime analysis: loading %s symbols, %s through %s", len(symbols), warmup_start, end_dt)
+		events, load_quality = self._load_regime_signal_events(symbols, set(selected), warmup_start, end_dt)
+		active_symbols = sorted({e["ticker"] for e in events
+			if start_dt <= e["received_dt"] <= end_dt and e.get("side") in {"buy", "sell"}})
+		if not active_symbols:
+			raise ValueError("No directional Redis signals found in the requested period")
+		# Reuse the actual, un-interpolated 1m price source used by simulations.
+		# ATR lookback is in calendar days with space for non-trading days.
+		price_start = start_dt - timedelta(days=max(7, math.ceil(ATR_period/390*7/5)+3))
+		df = self.trade_records_instance.get_df(alpaca_api, active_symbols,
+			self.trade_records_instance._1min_time_frame, pd.Timestamp(price_start), pd.Timestamp(end_dt))
+		if df.empty:
+			raise ValueError("Alpaca returned no 1-minute OHLC data for regime analysis")
+		market_data = {f"{column}_1m": self.trade_records_instance.dataframe_column_to_dict(df, column)
+			for column in ("open", "high", "low", "close")}
+		market_data["session_closes"] = {dt.date().isoformat(): (dt + timedelta(minutes=1)).isoformat()
+			for dt in self._get_market_close_liquidation_times(
+				alpaca_api=alpaca_api, start_dt=price_start, end_dt=end_dt)}
+		if not market_data["session_closes"]:
+			raise ValueError("Alpaca returned no market calendar sessions for the requested period")
+		logger.info("Regime analysis: measuring %s events against %s bars", len(events), len(df))
+		report = analyzer.analyze_signal_regimes(events, market_data, start_dt, end_dt, **options)
+		report["metadata"].update(requested_tickers=symbols, active_tickers=active_symbols,
+			warmup_start=warmup_start.isoformat(), price_start=price_start.isoformat(),
+			price_source="existing TradeRecords.get_df / Alpaca raw 1-minute OHLC")
+		report["data_quality"].update(load_quality)
+		report["data_quality"]["loaded_events_including_warmup"] = len(events)
+		report["data_quality"]["requested_symbols_without_directional_signals"] = sorted(set(symbols)-set(active_symbols))
+		logger.info("Regime analysis complete: %s weekly rows", len(report["weekly"]))
+		return report
 
 	def _get_warmup_start_dt(
 		self,
@@ -878,6 +1058,8 @@ class BackTester:
 		"""
 		if strategy_name.startswith("strategy1_"):
 			self._process_strategy1_event(strategy_name, state, config, event, position_size)
+		elif strategy_name.startswith("reverse_strategy1_"):
+			self._process_reverse_strategy1_event(strategy_name, state, config, event, position_size)			
 		elif strategy_name.startswith("strategy2_"):
 			self._process_strategy2_event(strategy_name, state, config, event, position_size)
 		elif strategy_name.startswith("strategy4_"):
@@ -1351,6 +1533,8 @@ class BackTester:
 
 		if strategy_name.startswith("strategy1_"):
 			self._process_strategy1_entry_only(strategy_name, state, config, event, position_size)
+		if strategy_name.startswith("reverse_strategy1_"):
+			self._process_reverse_strategy1_entry_only(strategy_name, state, config, event, position_size)			
 		elif strategy_name.startswith("strategy2_"):
 			self._process_strategy2_entry_only(strategy_name, state, config, event, position_size)
 		elif strategy_name.startswith("strategy4_"):
@@ -1373,11 +1557,32 @@ class BackTester:
 		market_price = event["price"]
 		num_shares = position_size / market_price
 
-		self.strategies_instance.reverse_entry_strategy1(
+		self.strategies_instance.entry_strategy1(
 			strategy_name, config["entry_tf"], config["intermediary_tf"],
 			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
 			num_shares, None, state, config, event, market_price, self,
 		)
+
+	def _process_reverse_strategy1_entry_only(
+		self,
+		strategy_name: str,
+		state: SimState,
+		config: dict[str, Any],
+		event: dict[str, Any],
+		position_size: float,
+	) -> None:
+		now_et = event["dt"]
+		signal = event["side"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		num_shares = position_size / market_price
+
+		self.strategies_instance.reverse_entry_strategy1(
+			strategy_name, config["entry_tf"], config["intermediary_tf"],
+			config["anchor_tf"], True, now_et, signal, None, symbol, tf,
+			num_shares, None, state, config, event, market_price, self,
+		)		
 
 	def _process_strategy2_entry_only(
 		self,
@@ -1641,7 +1846,7 @@ class BackTester:
 		# as a deterministic tie-breaker when two events have the same timestamp.
 		return sorted(events, key=lambda e: (e["received_dt"], e["stream_id"]))
 
-	def _build_event(self, strategy_name: str, stream_id: str, fields: dict[str, Any], fallback_symbol: str, fallback_tf: str) -> Optional[dict[str, Any]]:
+	def _build_event(self, strategy_name: str, stream_id: str, fields: dict[str, Any], fallback_symbol: str, fallback_tf: str, require_market_price: bool = True) -> Optional[dict[str, Any]]:
 		"""Convert a raw Redis stream entry into a normalized signal event dictionary."""
 		bar_close_str = fields.get("bar_close_time_eastern")
 		received_str = fields.get("received_at")
@@ -1676,7 +1881,7 @@ class BackTester:
 		tf = self.tvw_helpers.normalize_tf(fields.get("timeframe") or fallback_tf)
 		close_price = self.tvw_helpers.safe_float(fields.get("close"))
 		market_price = close_price or self.tvw_helpers.safe_float(fields.get("price"))
-		if market_price is None or market_price <= 0:
+		if require_market_price and (market_price is None or market_price <= 0):
 			return None
 
 		return {
@@ -1760,7 +1965,7 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
-				self.strategies_instance.reverse_exit_strategy1(
+				self.strategies_instance.exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
 					config["intermediary_tf"],
@@ -1778,6 +1983,118 @@ class BackTester:
 					market_price,
 					self,
 				)
+
+			elif config["selected_exit_strategy"] == -1:
+				self.strategies_instance.reverse_exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)				
+
+			elif config["selected_exit_strategy"] == 2:
+				self.strategies_instance.exit_strategy2(
+					strategy_name,
+					config["entry_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+		self.strategies_instance.entry_strategy1(
+			strategy_name,
+			config["entry_tf"],
+			config["intermediary_tf"],
+			config["anchor_tf"],
+			True,
+			now_et,
+			signal,
+			None,
+			symbol,
+			tf,
+			num_shares,
+			None,
+			state,
+			config,
+			event,
+			market_price,
+			self,
+		)
+
+
+	def _process_reverse_strategy1_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
+		"""Apply Strategy 1 using the configured signal-driven exit strategy."""
+		now_et = event["dt"]
+		signal = event["side"]
+		symbol = event["ticker"]
+		tf = event["timeframe"]
+		market_price = event["price"]
+		num_shares = position_size / market_price
+		event["exit_strategy"] = config["selected_exit_strategy"]
+		event["anchor_tf"] = config["anchor_tf"]
+		event["entry_validation_only"] = config["entry_validation_only"]
+
+		if config["run_exit_strategy"]:
+			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == -1:
+				self.strategies_instance.reverse_exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)				
 
 			elif config["selected_exit_strategy"] == 2:
 				self.strategies_instance.exit_strategy2(
@@ -1817,6 +2134,7 @@ class BackTester:
 			self,
 		)
 
+
 	def _process_strategy2_event(self, strategy_name, state: SimState, config: dict[str, Any], event: dict[str, Any], position_size: float) -> None:
 		"""Apply Strategy 2 using the configured signal-driven exit strategy."""
 		now_et = event["dt"]
@@ -1831,6 +2149,26 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == -1:
 				self.strategies_instance.reverse_exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
@@ -1948,6 +2286,26 @@ class BackTester:
 
 		if config["run_exit_strategy"]:
 			if config["selected_exit_strategy"] == 1:
+				self.strategies_instance.exit_strategy1(
+					strategy_name,
+					config["lower_timeframes"],
+					config["intermediary_tf"],
+					config["anchor_tf"],
+					True,
+					now_et,
+					signal,
+					None,
+					symbol,
+					tf,
+					None,
+					state,
+					config,
+					event,
+					market_price,
+					self,
+				)
+
+			elif config["selected_exit_strategy"] == -1:
 				self.strategies_instance.reverse_exit_strategy1(
 					strategy_name,
 					config["lower_timeframes"],
@@ -3140,7 +3498,16 @@ class BackTester:
 		ticker: str,
 		bars: list[dict[str, Any]],
 		entries: list[dict[str, Any]],
+		exits: Optional[list[dict[str, Any]]],
 		anchor_timeframe: str,
+		signal_events: Optional[list[dict[str, Any]]] = None,
+		news_sentiment_events: Optional[list[dict[str, Any]]] = None,
+		entries_and_exits: bool = True,
+		lux_algo_symbols: bool = True,
+		alpha_vantage_symbols: bool = False,
+		indicators: bool = False,
+		indicator_rows: Optional[list[dict[str, Any]]] = None,
+		indicator_settings: Optional[dict[str, Any]] = None,
 	) -> None:
 		"""Plot anchor-timeframe candlesticks and simulated entry markers."""
 		if not bars:
@@ -3207,7 +3574,7 @@ class BackTester:
 		long_label_added = False
 		short_label_added = False
 
-		for entry in entries:
+		for entry in entries if entries_and_exits else []:
 			entry_dt = datetime.fromisoformat(
 				entry["time"]
 			)
@@ -3234,7 +3601,7 @@ class BackTester:
 					entry_price,
 					marker="^",
 					s=90,
-					color="blue",
+					color="#7B2CBF",
 					edgecolors="black",
 					linewidths=0.5,
 					zorder=5,
@@ -3255,7 +3622,7 @@ class BackTester:
 					entry_price,
 					marker="v",
 					s=90,
-					color="orange",
+					color="#00A6A6",
 					edgecolors="black",
 					linewidths=0.5,
 					zorder=5,
@@ -3265,7 +3632,7 @@ class BackTester:
 				short_label_added = True
 
 			ax.annotate(
-				f"${entry_price:,.2f}",
+				f"Entry ${abs(entry_price * float(entry['num_shares'])):,.2f}",
 				(
 					nearest_bar_index,
 					entry_price,
@@ -3274,6 +3641,119 @@ class BackTester:
 				textcoords="offset points",
 				ha="center",
 				fontsize=8,
+			)
+
+
+		# Simulated exits are part of the entries_and_exits category.
+		for exit_event in exits if entries_and_exits else []:
+			try:
+				exit_dt = datetime.fromisoformat(str(exit_event["time"]).replace("Z", "+00:00"))
+				nearest_bar_index = min(
+					range(len(bar_times)),
+					key=lambda index: abs(bar_times[index] - exit_dt),
+				)
+			except Exception:
+				continue
+			exit_price = float(exit_event.get("price") or bars[nearest_bar_index]["close"])
+			ax.scatter(
+				nearest_bar_index,
+				exit_price,
+				marker="s",
+				s=70,
+				facecolors="#FF00CC",
+				edgecolors="#FF00CC",
+				linewidths=1.2,
+				zorder=5,
+			)
+			ax.annotate(
+				"EXIT",
+				(nearest_bar_index, exit_price),
+				xytext=(0, 9),
+				textcoords="offset points",
+				ha="center",
+				fontsize=7,
+			)
+
+		# TradingView signals: show the raw Lux/TradingView context independently
+		# from simulated entries so chart inspection does not conflate the two.
+		for signal_event in (signal_events or []) if lux_algo_symbols else []:
+			try:
+				signal_dt = datetime.fromisoformat(str(signal_event["time"]).replace("Z", "+00:00"))
+				nearest_bar_index = min(
+					range(len(bar_times)),
+					key=lambda index: abs(bar_times[index] - signal_dt),
+				)
+			except Exception:
+				continue
+
+			side = str(signal_event.get("side") or "").lower()
+			signal_name = str(signal_event.get("signal") or side or "signal")
+			price = signal_event.get("price")
+			if price is None:
+				price = bars[nearest_bar_index]["close"]
+			marker = "^" if side == "buy" else "v" if side == "sell" else "x"
+			marker_color = "green" if side == "buy" else "red" if side == "sell" else "gray"
+			is_exit_signal = signal_name.lower() in {'bullish_exit', 'bearish_exit'}
+			if is_exit_signal:
+				marker = 'X'
+				marker_color = '#FF8C00' if signal_name.lower() == 'bearish_exit' else '#0080FF'
+			ax.scatter(
+				nearest_bar_index,
+				float(price),
+				marker=marker,
+				s=28,
+				color=marker_color,
+				alpha=1.0 if is_exit_signal else 0.45,
+				zorder=3,
+			)
+			ax.annotate(
+				f"TV {signal_event.get('timeframe') or ''} {signal_name}",
+				(nearest_bar_index, float(price)),
+				xytext=(3, 3),
+				textcoords="offset points",
+				fontsize=6,
+				alpha=0.65,
+			)
+
+		# Alpha Vantage news sentiment: all events are anchored to the market price
+		# at the nearest bar. Marker shape distinguishes sentiment; marker size scales
+		# with ticker relevance. These are observational only.
+		for news_event in (news_sentiment_events or []) if alpha_vantage_symbols else []:
+			try:
+				news_dt = datetime.fromisoformat(str(news_event["published_at"]).replace("Z", "+00:00"))
+				nearest_bar_index = min(
+					range(len(bar_times)),
+					key=lambda index: abs(bar_times[index] - news_dt),
+				)
+			except Exception:
+				continue
+			score = float(news_event.get("ticker_sentiment_score") or 0.0)
+			relevance = float(news_event.get("relevance_score") or 0.0)
+			bar = bars[nearest_bar_index]
+			y_value = float(bar["close"])
+			if score > 0:
+				marker = "P"
+				marker_color = "green"
+			elif score < 0:
+				marker = "X"
+				marker_color = "red"
+			else:
+				marker = "o"
+				marker_color = "gray"
+			ax.scatter(
+				nearest_bar_index,
+				y_value,
+				marker=marker,
+				s=35 + min(max(relevance, 0.0), 1.0) * 90,
+				color=marker_color,
+				zorder=6,
+			)
+			ax.annotate(
+				f"NEWS {score:+.2f}",
+				(nearest_bar_index, y_value),
+				xytext=(3, 3),
+				textcoords="offset points",
+				fontsize=6,
 			)
 
 		tick_interval = max(
@@ -3318,9 +3798,47 @@ class BackTester:
 			alpha=0.25,
 		)
 
-		if entries:
+		# Comprehensive chart key. Use proxy artists so the legend remains complete
+		# even when a particular chart has no example of one of these event types.
+		indicator_handles = []
+		if indicators and indicator_rows:
+			settings = indicator_settings or {}
+			rows_by_time = {pd.Timestamp(row["time"]): row for row in indicator_rows}
+			for name, kind, period, color, width in (
+				("fast_moving_average", settings.get("fast_type", "ema"), settings.get("fast_period", 9), "#1F77B4", 1.3),
+				("slow_moving_average", settings.get("slow_type", "sma"), settings.get("slow_period", 200), "#FF8C00", 1.8),
+			):
+				values = [(rows_by_time.get(pd.Timestamp(t)) or {}).get(name) for t in bar_times]
+				line, = ax.plot(x_positions, [float("nan") if v is None else v for v in values], color=color, linestyle="-", linewidth=width, label=f"{name} ({kind.upper()}{period})", zorder=4)
+				indicator_handles.append(line)
+		legend_handles = list(indicator_handles)
+		if entries_and_exits:
+			legend_handles.extend([
+				Line2D([0], [0], marker="^", linestyle="None", markersize=8, markerfacecolor="#7B2CBF", markeredgecolor="black", label="Long entry"),
+				Line2D([0], [0], marker="v", linestyle="None", markersize=8, markerfacecolor="#00A6A6", markeredgecolor="black", label="Short entry"),
+				Line2D([0], [0], marker="s", linestyle="None", markersize=7, markerfacecolor="#FF00CC", markeredgecolor="#FF00CC", label="Strategy exit"),
+			])
+		if lux_algo_symbols:
+			legend_handles.extend([
+				Line2D([0], [0], marker="^", linestyle="None", markersize=6, color="green", alpha=0.45, label="TradingView buy signal (TV)"),
+				Line2D([0], [0], marker="v", linestyle="None", markersize=6, color="red", alpha=0.45, label="TradingView sell signal (TV)"),
+				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="#FF8C00", label="TradingView bearish exit (TV)"),
+				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="#0080FF", label="TradingView bullish exit (TV)"),
+				Line2D([0], [0], marker="x", linestyle="None", markersize=6, color="gray", alpha=0.45, label="TradingView other signal (TV)"),
+			])
+		if alpha_vantage_symbols:
+			legend_handles.extend([
+				Line2D([0], [0], marker="P", linestyle="None", markersize=7, color="green", label="Alpha Vantage positive news (NEWS)"),
+				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="red", label="Alpha Vantage negative news (NEWS)"),
+				Line2D([0], [0], marker="o", linestyle="None", markersize=7, color="gray", label="Alpha Vantage neutral news (NEWS)"),
+			])
+
+		if legend_handles:
 			ax.legend(
-				loc="best"
+				handles=legend_handles,
+				loc="best",
+				fontsize=7,
+				framealpha=0.9,
 			)
 
 
@@ -3418,7 +3936,16 @@ class BackTester:
 		ticker: str,
 		bars: list[dict[str, Any]],
 		entries: list[dict[str, Any]],
+		exits: Optional[list[dict[str, Any]]],
 		anchor_timeframe: str,
+		signal_events: Optional[list[dict[str, Any]]] = None,
+		news_sentiment_events: Optional[list[dict[str, Any]]] = None,
+		entries_and_exits: bool = True,
+		lux_algo_symbols: bool = True,
+		alpha_vantage_symbols: bool = False,
+		indicators: bool = False,
+		indicator_rows: Optional[list[dict[str, Any]]] = None,
+		indicator_settings: Optional[dict[str, Any]] = None,
 	) -> io.BytesIO:
 		"""Render one ticker's candlestick chart as one PNG image."""
 		fig, ax = plt.subplots(
@@ -3430,7 +3957,14 @@ class BackTester:
 			ticker=ticker,
 			bars=bars,
 			entries=entries,
+			exits=exits,
 			anchor_timeframe=anchor_timeframe,
+			signal_events=signal_events,
+			news_sentiment_events=news_sentiment_events,
+			entries_and_exits=entries_and_exits,
+			lux_algo_symbols=lux_algo_symbols,
+			alpha_vantage_symbols=alpha_vantage_symbols,
+			indicators=indicators, indicator_rows=indicator_rows, indicator_settings=indicator_settings,
 		)
 
 		fig.tight_layout()
@@ -3457,11 +3991,23 @@ class BackTester:
 		self,
 		result: dict[str, Any],
 		title: Optional[str] = None,
+		entries_and_exits: bool = True,
+		lux_algo_symbols: bool = True,
+		alpha_vantage_symbols: bool = False,
+		indicators: bool = False,
+		lux_algo_timeframes: Optional[dict[str, bool]] = None,
 	) -> io.BytesIO:
 		"""
 		Build a ZIP containing an optional overall PnL chart followed by one
 		candlestick PNG for each ticker with an entry or validated entry condition.
 		"""
+		# Per-timeframe values override the broad switch; omitted values inherit it.
+		overrides = lux_algo_timeframes or {}
+		signal_events = [
+			event for event in (result.get("signal_events") or [])
+			if overrides.get(str(event.get("timeframe") or "").lower(), lux_algo_symbols)
+		]
+		lux_algo_symbols = lux_algo_symbols or any(overrides.values())
 		trade_events = result.get(
 			"trade_events"
 		) or []
@@ -3476,11 +4022,34 @@ class BackTester:
 			}
 		]
 
+		exit_events = [
+			event
+			for event in trade_events
+			if event.get("event_type") == "close"
+		]
+
 		traded_tickers = sorted({
 			event["ticker"]
-			for event in entry_events
-			if event.get("ticker")
+			for event in (entry_events + exit_events)
+			if entries_and_exits and event.get("ticker")
 		})
+
+		# When observational overlays are present, render their tickers even if the
+		# strategy never opened a position. This is important for diagnosing why
+		# an otherwise interesting signal/news sequence did not become an entry.
+		overlay_tickers = {
+			event.get("ticker")
+			for event in signal_events
+			if lux_algo_symbols and event.get("ticker")
+		}
+		overlay_tickers.update({
+			event.get("ticker")
+			for event in (result.get("news_sentiment_events") or [])
+			if alpha_vantage_symbols and event.get("ticker")
+		})
+		if indicators:
+			overlay_tickers.update((result.get("indicator_series") or {}).keys())
+		traded_tickers = sorted(set(traded_tickers) | overlay_tickers)
 
 		anchor_bars = result.get(
 			"anchor_bars"
@@ -3489,6 +4058,8 @@ class BackTester:
 		anchor_timeframe = result.get(
 			"anchor_timeframe"
 		) or "anchor"
+
+		news_sentiment_events = result.get("news_sentiment_events") or []
 
 		zip_buffer = io.BytesIO()
 
@@ -3522,6 +4093,12 @@ class BackTester:
 					if event.get("ticker") == ticker
 				]
 
+				ticker_exits = [
+					event
+					for event in exit_events
+					if event.get("ticker") == ticker
+				]
+
 				ticker_image = (
 					self._build_ticker_candlestick_image(
 						ticker=ticker,
@@ -3530,7 +4107,16 @@ class BackTester:
 							[],
 						),
 						entries=ticker_entries,
+						exits=ticker_exits,
 						anchor_timeframe=anchor_timeframe,
+						signal_events=[event for event in signal_events if event.get("ticker") == ticker],
+						news_sentiment_events=[event for event in news_sentiment_events if event.get("ticker") == ticker],
+						entries_and_exits=entries_and_exits,
+						lux_algo_symbols=lux_algo_symbols,
+						alpha_vantage_symbols=alpha_vantage_symbols,
+						indicators=indicators,
+						indicator_rows=(result.get("indicator_series") or {}).get(ticker, []),
+						indicator_settings=result.get("strategy_settings") or {},
 					)
 				)
 

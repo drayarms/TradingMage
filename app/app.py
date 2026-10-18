@@ -4,6 +4,9 @@ Date Created: Feb 12, 2026
 """
 
 import os
+from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
+from golden_cross_history import GoldenCrossHistory
+from golden_cross_execution import GoldenCrossExecutor
 import logging
 import sys
 from typing import Optional
@@ -47,6 +50,7 @@ TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]
 #APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
+ALPHA_VANTAGE_KEY = os.environ["ALPHA_VANTAGE_KEY"]
 
 APCA_API_BASE_URL_STG1_15M = os.environ["APCA_API_BASE_URL_STG1_15M"]
 APCA_API_KEY_ID_STG1_15M = os.environ["APCA_API_KEY_ID_STG1_15M"]
@@ -159,7 +163,40 @@ app = FastAPI(title="TradingView Webhook")
 trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingViewWebhookHelpers(TV_WEBHOOK_SECRET, REDIS_URL)
 trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
-backtester_instance = backtester.BackTester(trading_view_webhook_helpers_instance, strategies_instance, trade_records_instance)
+# Select the investment strategy; preserve legacy code and broker credentials.
+ACTIVE_LIVE_STRATEGY = os.getenv("ACTIVE_LIVE_STRATEGY", STRATEGY_NAME)
+GOLDEN_CROSS_LIVE_ORDERS_ENABLED = os.getenv("GOLDEN_CROSS_LIVE_ORDERS_ENABLED", "false").lower() in {"true", "1", "yes"}
+golden_cross_settings = StrategySettings(
+	bullish_exit_above_fast_average_atr_multiple=float(os.getenv('GOLDEN_CROSS_BULLISH_EXIT_ABOVE_FAST_AVERAGE_ATR_MULTIPLE','1')),
+	cross_point_to_current_moment_weight=float(os.getenv('GOLDEN_CROSS_CROSS_POINT_TO_CURRENT_MOMENT_WEIGHT','0.2')),
+	cross_point_time_decay_candles=int(os.getenv('GOLDEN_CROSS_CROSS_POINT_TIME_DECAY_CANDLES','20')),
+	confirmatory_fast_average_exit_atr_multiple=float(os.getenv('GOLDEN_CROSS_CONFIRMATORY_FAST_AVERAGE_EXIT_ATR_MULTIPLE','2')),
+	fast_average_exit_atr_multiple=(float(os.environ["GOLDEN_CROSS_FAST_AVERAGE_EXIT_ATR_MULTIPLE"]) if os.getenv("GOLDEN_CROSS_FAST_AVERAGE_EXIT_ATR_MULTIPLE") else None),
+	slow_average_to_price_weight=float(os.getenv("GOLDEN_CROSS_SLOW_AVERAGE_TO_PRICE_WEIGHT", "0.1")),
+	cross_point_to_price_weight=float(os.getenv("GOLDEN_CROSS_CROSS_POINT_TO_PRICE_WEIGHT", "0.7")),
+	max_exposure_multiple=float(os.getenv("GOLDEN_CROSS_MAX_EXPOSURE_MULTIPLE", "3")),
+	invalidation_atr_multiple=float(os.getenv("GOLDEN_CROSS_INVALIDATION_ATR_MULTIPLE", "1")),
+	fast_type=os.getenv("GOLDEN_CROSS_FAST_MOVING_AVERAGE_TYPE", "ema"),
+	fast_period=int(os.getenv("GOLDEN_CROSS_FAST_MOVING_AVERAGE_PERIOD", "9")),
+	slow_type=os.getenv("GOLDEN_CROSS_SLOW_MOVING_AVERAGE_TYPE", "sma"),
+	slow_period=int(os.getenv("GOLDEN_CROSS_SLOW_MOVING_AVERAGE_PERIOD", "200")),
+	atr_period=int(os.getenv("GOLDEN_CROSS_ATR_PERIOD", "14")),
+)
+golden_cross_history = GoldenCrossHistory(MARKET_DATA_API, golden_cross_settings, trade_records_instance._4hr_time_frame)
+golden_cross_executor = GoldenCrossExecutor(
+	ALPACA_APIS["strategy4_1h_anchor"], trading_view_webhook_helpers_instance.require_redis(),
+	golden_cross_history, golden_cross_settings, POSITION_SIZE_1H,
+	enabled=GOLDEN_CROSS_LIVE_ORDERS_ENABLED,
+	engine=strategies_instance.evaluate_golden_cross_dip_recovery,
+)
+
+backtester_instance = backtester.BackTester(
+	trading_view_webhook_helpers_instance,
+	strategies_instance,
+	trade_records_instance,
+	alpha_vantage_key=ALPHA_VANTAGE_KEY,
+)
+backtest_research_instance = backtester_instance.research
 plot_instance = plot.Plot()
 
 
@@ -388,6 +425,13 @@ def run_live_trailing_stop_exit_monitor() -> None:
 		if trailing_stop_exit_stop_event.is_set():
 			break
 
+		if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME:
+			try:
+				golden_cross_executor.reconcile_exits()
+			except Exception:
+				logger.exception("Golden-cross exit reconciliation failed")
+			continue
+
 		for owner_name, account_config in (
 			LIVE_TRAILING_STOP_ACCOUNTS.items()
 		):
@@ -464,7 +508,7 @@ def _startup():
 
 	global trailing_stop_exit_thread
 
-	if TRAILING_STOP_EXIT_ENABLED:
+	if (GOLDEN_CROSS_LIVE_ORDERS_ENABLED if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME else TRAILING_STOP_EXIT_ENABLED):
 		trailing_stop_exit_thread = threading.Thread(
 			target=run_live_trailing_stop_exit_monitor,
 			name="live-trailing-stop-exit-monitor",
@@ -507,7 +551,7 @@ def _shutdown():
 			timeout=10
 		)
 	
-def process_trading_signal(symbol: str, tf: str, signal: str):
+def process_trading_signal(symbol: str, tf: str, signal: str, event: Optional[dict] = None):
 	"""
 	Runs strategy logic after the webhook has already been accepted.
 
@@ -515,6 +559,16 @@ def process_trading_signal(symbol: str, tf: str, signal: str):
 	the request/response path. Alpaca calls, market-price lookup, and strategy
 	execution happen here after the HTTP 200 response has been prepared.
 	"""
+	if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME:
+		try:
+			if event is None:
+				logger.warning("Golden-cross processing requires original event timestamps")
+				return
+			decision = golden_cross_executor.process(event)
+			logger.info("golden_cross_dip_recovery_4h %s %s: %s", symbol, signal, decision)
+		except Exception:
+			logger.exception("Golden-cross strategy processing failed: %s", symbol)
+		return
 	try:
 		now_et = trading_view_webhook_helpers_instance._now_et()
 
@@ -1221,7 +1275,9 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 
 	signal = None
 
-	if buy_plus == 1:
+	if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME and bullish_exit not in {None, 0.0}:
+		signal = "bullish_exit"
+	elif buy_plus == 1:
 		signal = "buy+"
 	elif buy == 1:
 		signal = "buy"
@@ -1351,6 +1407,9 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	bar_close_time_eastern = trading_view_webhook_helpers_instance.parse_iso_to_eastern(bar_close_time_raw)
 
 	stream_fields = {
+		"bearish_exit": trading_view_webhook_helpers_instance.to_str(bearish_exit),
+		"buy": trading_view_webhook_helpers_instance.to_str(buy),
+		"buy_plus": trading_view_webhook_helpers_instance.to_str(buy_plus),
 		"symbol": symbol,
 		"timeframe": tf,
 		"signal": signal,
@@ -1429,10 +1488,13 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 	)
 
 	background_tasks.add_task(
-		process_trading_signal,
-		symbol,
-		tf,
-		signal,
+		process_trading_signal, symbol, tf, signal,
+		{
+			"ticker": symbol, "timeframe": tf, "signal": signal,
+			"dt": bar_close_time_eastern, "received_dt": trading_view_webhook_helpers_instance.parse_iso_to_eastern(received_at),
+			"time": str(bar_close_time_eastern), "stream_id": stream_id,
+			"raw_fields": stream_fields,
+		},
 	)
 
 	return {
@@ -1522,7 +1584,34 @@ def run_backtest(
 			"Stable identifier shared by every liquidation-factor "
 			"run in the same research experiment"
 		),
+	),
+	include_news_sentiment: bool = Query(
+		default=False,
+		description=(
+			"Fetch historical Alpha Vantage ticker news sentiment for the "
+			"requested reporting window. Observational only; it does not "
+			"change strategy entries or exits."
+		),
 	),					
+	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
+	cross_point_time_decay_candles: int = Query(default=20, ge=1),
+	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
+	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
+	profit_protection_enabled: bool = Query(default=False),
+	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
+	profit_trailing_atr_multiple: float = Query(default=3.0, gt=0),
+	fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
+	require_entry_confirmation: bool = Query(default=False),
+	slow_average_to_price_weight: float = Query(default=0.1, ge=0, le=1),
+	cross_point_to_price_weight: float = Query(default=0.7, ge=0, le=1),
+	max_exposure_multiple: float = Query(default=3.0, gt=0),
+	invalidation_atr_multiple: float = Query(default=1.0, ge=0),
+	fast_moving_average_type: str = Query(default="ema"),
+	fast_moving_average_period: int = Query(default=9, ge=1),
+	slow_moving_average_type: str = Query(default="sma"),
+	slow_moving_average_period: int = Query(default=200, ge=1),
+
 ):
 	"""
 	Run an isolated Redis-signal backtest and return JSON results.
@@ -1556,7 +1645,23 @@ def run_backtest(
 			liquidate_before_market_close=liquidate_before_market_close,
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
-			research_group_id=research_group_id,			
+			research_group_id=research_group_id,
+			include_news_sentiment=include_news_sentiment,			
+			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
+			cross_point_time_decay_candles=cross_point_time_decay_candles,
+			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
+			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
+			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
+			profit_protection_enabled=profit_protection_enabled,
+			profit_activation_atr_multiple=profit_activation_atr_multiple,
+			profit_trailing_atr_multiple=profit_trailing_atr_multiple,
+			fast_average_exit_atr_multiple=fast_average_exit_atr_multiple,
+			require_entry_confirmation=require_entry_confirmation,
+			slow_average_to_price_weight=slow_average_to_price_weight, cross_point_to_price_weight=cross_point_to_price_weight,
+			max_exposure_multiple=max_exposure_multiple, invalidation_atr_multiple=invalidation_atr_multiple,
+			fast_moving_average_type=fast_moving_average_type, fast_moving_average_period=fast_moving_average_period,
+			slow_moving_average_type=slow_moving_average_type, slow_moving_average_period=slow_moving_average_period,
+
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=400, detail=str(exc))
@@ -1638,7 +1743,57 @@ def plot_backtest(
 			"Stable identifier shared by every liquidation-factor "
 			"run in the same research experiment"
 		),
-	),		
+	),
+	include_news_sentiment: bool = Query(
+		default=False,
+		description=(
+			"Backward-compatible alias for alpha_vantage_symbols. "
+			"When true, Alpha Vantage news is fetched and plotted."
+		),
+	),
+	entries_and_exits: bool = Query(
+		default=True,
+		description="Plot simulated strategy entry and exit markers.",
+	),
+	lux_algo_symbols: bool = Query(
+		default=True,
+		description="Plot Lux Algo / TradingView signal markers.",
+	),
+	alpha_vantage_symbols: bool = Query(
+		default=False,
+		description="Fetch and plot Alpha Vantage news-sentiment markers.",
+	),
+	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
+	cross_point_time_decay_candles: int = Query(default=20, ge=1),
+	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
+	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
+	profit_protection_enabled: bool = Query(default=False),
+	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
+	profit_trailing_atr_multiple: float = Query(default=3.0, gt=0),
+	fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
+	require_entry_confirmation: bool = Query(default=False),
+	slow_average_to_price_weight: float = Query(default=0.1, ge=0, le=1),
+	cross_point_to_price_weight: float = Query(default=0.7, ge=0, le=1),
+	max_exposure_multiple: float = Query(default=3.0, gt=0),
+	invalidation_atr_multiple: float = Query(default=1.0, ge=0),
+	fast_moving_average_type: str = Query(default="ema"),
+	fast_moving_average_period: int = Query(default=9, ge=1),
+	slow_moving_average_type: str = Query(default="sma"),
+	slow_moving_average_period: int = Query(default=200, ge=1),
+	indicators: bool = Query(default=False, description="Plot the strategy fast and slow 4H moving averages"),
+
+	lux_algo_symbols1m: Optional[bool] = Query(default=None, description="Override Lux Algo 1m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols3m: Optional[bool] = Query(default=None, description="Override Lux Algo 3m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols5m: Optional[bool] = Query(default=None, description="Override Lux Algo 5m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols15m: Optional[bool] = Query(default=None, description="Override Lux Algo 15m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols30m: Optional[bool] = Query(default=None, description="Override Lux Algo 30m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols45m: Optional[bool] = Query(default=None, description="Override Lux Algo 45m markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols1h: Optional[bool] = Query(default=None, description="Override Lux Algo 1h markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols2h: Optional[bool] = Query(default=None, description="Override Lux Algo 2h markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols4h: Optional[bool] = Query(default=None, description="Override Lux Algo 4h markers; omitted inherits lux_algo_symbols"),
+	lux_algo_symbols1d: Optional[bool] = Query(default=None, description="Override Lux Algo 1d markers; omitted inherits lux_algo_symbols"),
+
 ):
 	"""
 	Run an isolated Redis-signal backtest and stream separate chart PNGs as a ZIP archive.
@@ -1686,13 +1841,34 @@ def plot_backtest(
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
 			research_group_id=research_group_id,
+			include_news_sentiment=(include_news_sentiment or alpha_vantage_symbols),
+			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
+			cross_point_time_decay_candles=cross_point_time_decay_candles,
+			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
+			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
+			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
+			profit_protection_enabled=profit_protection_enabled,
+			profit_activation_atr_multiple=profit_activation_atr_multiple,
+			profit_trailing_atr_multiple=profit_trailing_atr_multiple,
+			fast_average_exit_atr_multiple=fast_average_exit_atr_multiple,
+			require_entry_confirmation=require_entry_confirmation,
+			slow_average_to_price_weight=slow_average_to_price_weight, cross_point_to_price_weight=cross_point_to_price_weight,
+			max_exposure_multiple=max_exposure_multiple, invalidation_atr_multiple=invalidation_atr_multiple,
+			fast_moving_average_type=fast_moving_average_type, fast_moving_average_period=fast_moving_average_period,
+			slow_moving_average_type=slow_moving_average_type, slow_moving_average_period=slow_moving_average_period,
+
 		)
 
 		#image_buffer = backtester_instance.plot_overall_pnl(result)
 		#return StreamingResponse(image_buffer, media_type="image/png")
 
 		zip_buffer = backtester_instance.build_backtest_chart_zip(
-			result
+			result,
+			entries_and_exits=entries_and_exits,
+			lux_algo_symbols=lux_algo_symbols,
+			alpha_vantage_symbols=(include_news_sentiment or alpha_vantage_symbols),
+			lux_algo_timeframes={tf: enabled for tf, enabled in {"1m": lux_algo_symbols1m, "3m": lux_algo_symbols3m, "5m": lux_algo_symbols5m, "15m": lux_algo_symbols15m, "30m": lux_algo_symbols30m, "45m": lux_algo_symbols45m, "1h": lux_algo_symbols1h, "2h": lux_algo_symbols2h, "4h": lux_algo_symbols4h, "1d": lux_algo_symbols1d}.items() if enabled is not None},
+			indicators=indicators,
 		)
 
 		return StreamingResponse(
@@ -1921,3 +2097,51 @@ def list_backtest_factor_research_groups():
 				"Listing backtest factor-research groups failed"
 			),
 		)		
+
+@app.get("/backtest/regime-analysis")
+def analyze_signal_regimes(
+	start: str = Query(..., min_length=1),
+	end: str = Query(..., min_length=1),
+	tickers: Optional[str] = Query(default=None, description="Optional comma-separated tickers; omitted discovers Redis streams"),
+	timeframes: str = Query(default="1m,5m,15m,1h,4h"),
+	forward_horizons_minutes: str = Query(default="15,30,60,120,240"),
+	whipsaw_windows_minutes: str = Query(default="30,60,120,240"),
+	bucket: str = Query(default="week"),
+	ATR_period: int = Query(default=14, ge=1, le=1000),
+	context_max_age_minutes: int = Query(default=240, ge=1, le=10080),
+	propagation_window_minutes: int = Query(default=180, ge=1, le=1440),
+	price_tolerance_seconds: int = Query(default=90, ge=1, le=300),
+):
+	"""Weekly raw-signal research, independent of entries and exits."""
+	try:
+		def csv_values(value, name):
+			parts = [part.strip() for part in value.split(",")]
+			if not parts or any(not part for part in parts):
+				raise ValueError(f"{name} must be a nonempty comma-separated list")
+			return parts
+
+		def minute_values(value, name):
+			try:
+				values = sorted(set(int(part) for part in csv_values(value, name)))
+			except ValueError as exc:
+				raise ValueError(f"{name} must contain positive integer minutes") from exc
+			if not values or min(values) < 1 or max(values) > 1440 or len(values) > 20:
+				raise ValueError(f"{name} must contain 1-20 integers between 1 and 1440")
+			return values
+
+		return backtester_instance.run_regime_analysis(
+			alpaca_api=MARKET_DATA_API, start=start, end=end,
+			tickers=csv_values(tickers, "tickers") if tickers is not None else None,
+			timeframes=csv_values(timeframes, "timeframes"),
+			forward_horizons_minutes=minute_values(forward_horizons_minutes, "forward_horizons_minutes"),
+			whipsaw_windows_minutes=minute_values(whipsaw_windows_minutes, "whipsaw_windows_minutes"),
+			bucket=bucket, ATR_period=ATR_period,
+			context_max_age_minutes=context_max_age_minutes,
+			propagation_window_minutes=propagation_window_minutes,
+			price_tolerance_seconds=price_tolerance_seconds,
+		)
+	except ValueError as exc:
+		raise HTTPException(status_code=400, detail=str(exc)) from exc
+	except Exception as exc:
+		logger.exception("Signal regime analysis failed")
+		raise HTTPException(status_code=500, detail="Signal regime analysis failed; inspect the Uvicorn log") from exc
