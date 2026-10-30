@@ -564,6 +564,10 @@ set +a
 export TRAILING_STOP_EXIT_ENABLED="false"
 export GOLDEN_CROSS_LIVE_ORDERS_ENABLED="false"
 
+# Emit flushed simulated-time markers for the terminal progress monitor.
+export TV_BACKTEST_PROGRESS="true"
+export PYTHONUNBUFFERED="1"
+
 # ============================================================
 # LOCAL RESEARCH FILE
 #
@@ -586,6 +590,10 @@ export TV_LIVE_DIAGNOSTIC_LOG="$OUTPUT_DIR/live_trade_diagnostics.csv"
 cleanup() {
 
 	EXIT_STATUS=$?
+	if [[ -n "${PROGRESS_MONITOR_PID:-}" ]]; then
+		kill "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+		wait "$PROGRESS_MONITOR_PID" 2>/dev/null || true
+	fi
 
 	echo
 	echo "Cleaning up..."
@@ -1038,32 +1046,37 @@ rm -f "$OUTPUT_FILE"
 # ============================================================
 
 monitor_backtest_progress() {
-	local last_progress=""
-	local latest_progress=""
+	# exec keeps the background PID attached to Python, so cleanup stops it too.
+	exec python3 - "$UVICORN_LOG" <<'PROGRESS_PY'
+import sys
+import time
+import signal
 
-	while true; do
-		latest_progress="$(
-			awk '
-				/__BACKTEST_PROGRESS__/ {
-					line = $0
-					sub(/^.*__BACKTEST_PROGRESS__/, "", line)
-					latest = line
-				}
-				END {
-					if (latest != "") {
-						print latest
-					}
-				}
-			' "$UVICORN_LOG" 2>/dev/null || true
-		)"
+running=True
+def stop(signum,frame):
+	global running
+	running=False
+signal.signal(signal.SIGTERM,stop)
 
-		if [[ -n "$latest_progress" && "$latest_progress" != "$last_progress" ]]; then
-			printf '\r\033[K%s' "$latest_progress"
-			last_progress="$latest_progress"
-		fi
-
-		sleep 0.25
-	done
+path=sys.argv[1]
+prefix='__BACKTEST_PROGRESS__'
+last=''
+pending=''
+with open(path,encoding='utf-8',errors='replace') as log:
+	while True:
+		pending+=log.read()
+		lines=pending.split('\n')
+		pending=lines.pop()
+		latest=None
+		for line in lines:
+			if prefix in line: latest=line.split(prefix,1)[1].strip()
+		if latest and latest!=last:
+			if sys.stdout.isatty(): print('\r\033[K'+latest,end='',flush=True)
+			else: print(latest,flush=True)
+			last=latest
+		if not running: break
+		time.sleep(0.25)
+PROGRESS_PY
 }
 
 # ============================================================
@@ -1071,7 +1084,8 @@ monitor_backtest_progress() {
 # ============================================================
 
 PROGRESS_MONITOR_PID=""
-if [[ "$ENDPOINT_INPUT" == "run" || "$ENDPOINT_INPUT" == "plot" ]]; then
+if [[ "$ENDPOINT" == "/backtest/run" || "$ENDPOINT" == "/backtest/plot" ]]; then
+	printf 'Waiting for backtest data...'
 	monitor_backtest_progress &
 	PROGRESS_MONITOR_PID=$!
 fi
@@ -1092,7 +1106,7 @@ CURL_STATUS=$?
 if [[ -n "$PROGRESS_MONITOR_PID" ]]; then
 	kill "$PROGRESS_MONITOR_PID" 2>/dev/null || true
 	wait "$PROGRESS_MONITOR_PID" 2>/dev/null || true
-	printf '\r\033[K'
+	printf '\n'
 fi
 
 set -e

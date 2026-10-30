@@ -167,6 +167,9 @@ strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instanc
 ACTIVE_LIVE_STRATEGY = os.getenv("ACTIVE_LIVE_STRATEGY", STRATEGY_NAME)
 GOLDEN_CROSS_LIVE_ORDERS_ENABLED = os.getenv("GOLDEN_CROSS_LIVE_ORDERS_ENABLED", "false").lower() in {"true", "1", "yes"}
 golden_cross_settings = StrategySettings(
+	cross_exit_method=os.getenv("CROSS_EXIT_METHOD", "price"),
+	strategy_mode=os.getenv("CROSS_STRATEGY_MODE", "golden_cross"),
+	bearish_exit_below_fast_average_atr_multiple=float(os.getenv("DEATH_CROSS_BEARISH_EXIT_BELOW_FAST_AVERAGE_ATR_MULTIPLE", "1")),
 	bullish_exit_above_fast_average_atr_multiple=float(os.getenv('GOLDEN_CROSS_BULLISH_EXIT_ABOVE_FAST_AVERAGE_ATR_MULTIPLE','1')),
 	cross_point_to_current_moment_weight=float(os.getenv('GOLDEN_CROSS_CROSS_POINT_TO_CURRENT_MOMENT_WEIGHT','0.2')),
 	cross_point_time_decay_candles=int(os.getenv('GOLDEN_CROSS_CROSS_POINT_TIME_DECAY_CANDLES','20')),
@@ -1275,8 +1278,10 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 
 	signal = None
 
-	if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME and bullish_exit not in {None, 0.0}:
+	if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME and golden_cross_settings.strategy_mode in {'golden_cross', 'both'} and bullish_exit not in {None, 0.0}:
 		signal = "bullish_exit"
+	elif ACTIVE_LIVE_STRATEGY == STRATEGY_NAME and golden_cross_settings.strategy_mode in {'death_cross', 'both'} and bearish_exit not in {None, 0.0}:
+		signal = 'bearish_exit'
 	elif buy_plus == 1:
 		signal = "buy+"
 	elif buy == 1:
@@ -1597,6 +1602,16 @@ def run_backtest(
 	cross_point_time_decay_candles: int = Query(default=20, ge=1),
 	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
 	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	strategy_mode: str = Query(default="golden_cross"),
+	entry_trigger: str = Query(default="buy_sell_signal"),
+	exit_on_confirmatory_candlestick: bool = Query(default=False),
+	exit_after_turning_point: bool = Query(default=False),
+	cross_exit_method: str = Query(default="price"),
+	fast_moving_average_reversed: bool = Query(default=True),
+	fast_moving_average_reversal_timeframe: str = Query(default="4h"),
+	bearish_exit_below_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	bollinger_period: int = Query(default=20, ge=1),
+	bollinger_std_dev: float = Query(default=2.0, gt=0),
 	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
 	profit_protection_enabled: bool = Query(default=False),
 	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
@@ -1651,6 +1666,16 @@ def run_backtest(
 			cross_point_time_decay_candles=cross_point_time_decay_candles,
 			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
 			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
+			strategy_mode=strategy_mode,
+			entry_trigger=entry_trigger,
+			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
+			exit_after_turning_point=exit_after_turning_point,
+			cross_exit_method=cross_exit_method,
+			fast_moving_average_reversed=fast_moving_average_reversed,
+			fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe,
+			bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple,
+			bollinger_period=bollinger_period,
+			bollinger_std_dev=bollinger_std_dev,
 			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
 			profit_protection_enabled=profit_protection_enabled,
 			profit_activation_atr_multiple=profit_activation_atr_multiple,
@@ -1767,6 +1792,16 @@ def plot_backtest(
 	cross_point_time_decay_candles: int = Query(default=20, ge=1),
 	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
 	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	strategy_mode: str = Query(default="golden_cross"),
+	entry_trigger: str = Query(default="buy_sell_signal"),
+	exit_on_confirmatory_candlestick: bool = Query(default=False),
+	exit_after_turning_point: bool = Query(default=False),
+	cross_exit_method: str = Query(default="price"),
+	fast_moving_average_reversed: bool = Query(default=True),
+	fast_moving_average_reversal_timeframe: str = Query(default="4h"),
+	bearish_exit_below_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
+	bollinger_period: int = Query(default=20, ge=1),
+	bollinger_std_dev: float = Query(default=2.0, gt=0),
 	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
 	profit_protection_enabled: bool = Query(default=False),
 	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
@@ -1781,7 +1816,7 @@ def plot_backtest(
 	fast_moving_average_period: int = Query(default=9, ge=1),
 	slow_moving_average_type: str = Query(default="sma"),
 	slow_moving_average_period: int = Query(default=200, ge=1),
-	indicators: bool = Query(default=False, description="Plot the strategy fast and slow 4H moving averages"),
+	indicators: bool = Query(default=False, description="Plot the 4H moving averages and pink Bollinger Bands"),
 
 	lux_algo_symbols1m: Optional[bool] = Query(default=None, description="Override Lux Algo 1m markers; omitted inherits lux_algo_symbols"),
 	lux_algo_symbols3m: Optional[bool] = Query(default=None, description="Override Lux Algo 3m markers; omitted inherits lux_algo_symbols"),
@@ -1846,6 +1881,16 @@ def plot_backtest(
 			cross_point_time_decay_candles=cross_point_time_decay_candles,
 			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
 			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
+			strategy_mode=strategy_mode,
+			entry_trigger=entry_trigger,
+			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
+			exit_after_turning_point=exit_after_turning_point,
+			cross_exit_method=cross_exit_method,
+			fast_moving_average_reversed=fast_moving_average_reversed,
+			fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe,
+			bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple,
+			bollinger_period=bollinger_period,
+			bollinger_std_dev=bollinger_std_dev,
 			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
 			profit_protection_enabled=profit_protection_enabled,
 			profit_activation_atr_multiple=profit_activation_atr_multiple,

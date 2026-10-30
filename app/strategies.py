@@ -1,5 +1,5 @@
 import logging
-from golden_cross_dip_recovery import evaluate_entry, bearish_entry_placeholder, bearish_exit_placeholder
+from golden_cross_dip_recovery import evaluate_entry, evaluate_short_entry, evaluate_short_signal_exit
 import time
 from datetime import datetime
 import math
@@ -17,8 +17,9 @@ class Strategies:
 	def evaluate_golden_cross_dip_recovery(price, base_amount, snapshot, current_exposure, pending_buy_exposure, settings):
 		return evaluate_entry(price, base_amount, snapshot, current_exposure, pending_buy_exposure, settings)
 
-	bearish_dip_recovery_entry = staticmethod(bearish_entry_placeholder)
-	bearish_dip_recovery_exit = staticmethod(bearish_exit_placeholder)
+	evaluate_death_cross_dip_recovery = staticmethod(evaluate_short_entry)
+	bearish_dip_recovery_entry = staticmethod(evaluate_short_entry)
+	bearish_dip_recovery_exit = staticmethod(evaluate_short_signal_exit)
 
 	def __init__(self, trading_view_webhook_helpers, trade_records):
 		self.tvw_helpers = trading_view_webhook_helpers

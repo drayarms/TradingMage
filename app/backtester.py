@@ -1,4 +1,5 @@
 import io
+from backtest_progress import BacktestProgress
 import copy
 from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
 from golden_cross_simulation import run_simulation
@@ -254,6 +255,16 @@ class BackTester:
 		cross_point_time_decay_candles: int = 20,
 		confirmatory_fast_average_exit_atr_multiple: Optional[float] = None,
 		bullish_exit_above_fast_average_atr_multiple: float = 1.0,
+		strategy_mode: str = "golden_cross",
+		entry_trigger: str = "buy_sell_signal",
+		exit_on_confirmatory_candlestick: bool = False,
+		exit_after_turning_point: bool = False,
+		cross_exit_method: str = "price",
+		fast_moving_average_reversed: bool = True,
+		fast_moving_average_reversal_timeframe: str = "4h",
+		bearish_exit_below_fast_average_atr_multiple: float = 1.0,
+		bollinger_period: int = 20,
+		bollinger_std_dev: float = 2.0,
 		bearish_exit_confirmation_window_candles: int = 0,
 		profit_protection_enabled: bool = False,
 		profit_activation_atr_multiple: float = 3.0,
@@ -301,7 +312,7 @@ class BackTester:
 				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
 			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
-			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple)
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
 			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings, include_news_sentiment)
 
 		if not isinstance(
@@ -1146,8 +1157,10 @@ class BackTester:
 		Process signal-driven strategies using exact signal times and sampled
 		market-price updates.
 		"""
+		progress=BacktestProgress()
 		for timeline_event in timeline:
 			event_dt = timeline_event["dt"]
+			progress.update(event_dt)
 			payload = timeline_event["payload"]
 
 			if timeline_event["kind"] == "market_bar":
@@ -1403,8 +1416,10 @@ class BackTester:
 		Process exit strategy 3 using every completed one-minute bar, while
 		recording PnL snapshots only at the configured reporting interval.
 		"""
+		progress=BacktestProgress()
 		for timeline_event in timeline:
 			event_dt = timeline_event["dt"]
+			progress.update(event_dt)
 			payload = timeline_event["payload"]
 
 			#if timeline_event["kind"] == "market_bar":
@@ -3508,6 +3523,7 @@ class BackTester:
 		indicators: bool = False,
 		indicator_rows: Optional[list[dict[str, Any]]] = None,
 		indicator_settings: Optional[dict[str, Any]] = None,
+		reversal_markers: Optional[list[dict[str, Any]]] = None,
 	) -> None:
 		"""Plot anchor-timeframe candlesticks and simulated entry markers."""
 		if not bars:
@@ -3807,10 +3823,35 @@ class BackTester:
 			for name, kind, period, color, width in (
 				("fast_moving_average", settings.get("fast_type", "ema"), settings.get("fast_period", 9), "#1F77B4", 1.3),
 				("slow_moving_average", settings.get("slow_type", "sma"), settings.get("slow_period", 200), "#FF8C00", 1.8),
+				("bollinger_upper", "BB", settings.get("bollinger_period", 20), "#FF69B4", 1.3),
+				("bollinger_lower", "BB", settings.get("bollinger_period", 20), "#FF69B4", 1.3),
+				*(([("dema5", "DEMA", 5, "#9467BD", 1.2)]) if settings.get("cross_exit_method") == "dema5" else []),
 			):
+				if name in {"bollinger_lower", "bollinger_upper", "dema5"} and not any(row.get(name) is not None for row in indicator_rows): continue
 				values = [(rows_by_time.get(pd.Timestamp(t)) or {}).get(name) for t in bar_times]
 				line, = ax.plot(x_positions, [float("nan") if v is None else v for v in values], color=color, linestyle="-", linewidth=width, label=f"{name} ({kind.upper()}{period})", zorder=4)
 				indicator_handles.append(line)
+		# Reversal markers sit on evaluation candles at their fast-MA values.
+		# confirmed_at remains the completion timestamp of that candle.
+		if indicators and (indicator_settings or {}).get('fast_moving_average_reversed', True):
+			times = pd.DatetimeIndex(bar_times)
+			for marker_row in reversal_markers or []:
+				when = pd.Timestamp(marker_row['time'])
+				if when < times[0] or when > times[-1]+pd.Timedelta(anchor_timeframe): continue
+				left = int(times.searchsorted(when, side='right'))-1
+				if left < len(times)-1:
+					x = left + (when-times[left])/(times[left+1]-times[left])
+				else:
+					x = left + (when-times[left])/pd.Timedelta(anchor_timeframe)
+				minimum = marker_row.get('turning_point_type', 'minimum' if marker_row['type'].startswith(('minimum', 'death_cross')) else 'maximum') == 'minimum'
+				label = ('Minimum' if minimum else 'Maximum') + ' fast MA reversal (' + marker_row.get('timeframe', '4h') + ')'
+				ax.scatter(float(x), float(marker_row['value']), marker='o', s=46, facecolors='black' if minimum else 'white', edgecolors='black', linewidths=1.2, zorder=7, label=label)
+			if reversal_markers:
+				tf = (indicator_settings or {}).get('fast_moving_average_reversal_timeframe','4h')
+				indicator_handles.extend([
+					Line2D([0],[0],marker='o',linestyle='None',markerfacecolor='black',markeredgecolor='black',label='Minimum fast MA reversal ('+tf+')'),
+					Line2D([0],[0],marker='o',linestyle='None',markerfacecolor='white',markeredgecolor='black',label='Maximum fast MA reversal ('+tf+')'),
+				])
 		legend_handles = list(indicator_handles)
 		if entries_and_exits:
 			legend_handles.extend([
@@ -3946,6 +3987,7 @@ class BackTester:
 		indicators: bool = False,
 		indicator_rows: Optional[list[dict[str, Any]]] = None,
 		indicator_settings: Optional[dict[str, Any]] = None,
+		reversal_markers: Optional[list[dict[str, Any]]] = None,
 	) -> io.BytesIO:
 		"""Render one ticker's candlestick chart as one PNG image."""
 		fig, ax = plt.subplots(
@@ -3964,7 +4006,7 @@ class BackTester:
 			entries_and_exits=entries_and_exits,
 			lux_algo_symbols=lux_algo_symbols,
 			alpha_vantage_symbols=alpha_vantage_symbols,
-			indicators=indicators, indicator_rows=indicator_rows, indicator_settings=indicator_settings,
+			indicators=indicators, indicator_rows=indicator_rows, indicator_settings=indicator_settings, reversal_markers=reversal_markers,
 		)
 
 		fig.tight_layout()
@@ -4001,6 +4043,8 @@ class BackTester:
 		Build a ZIP containing an optional overall PnL chart followed by one
 		candlestick PNG for each ticker with an entry or validated entry condition.
 		"""
+		progress=BacktestProgress()
+		progress.stage('Generating charts and ZIP...')
 		# Per-timeframe values override the broad switch; omitted values inherit it.
 		overrides = lux_algo_timeframes or {}
 		signal_events = [
@@ -4083,10 +4127,16 @@ class BackTester:
 					pnl_image.getvalue(),
 				)
 
+			for direction, directional_result in (result.get('direction_results') or {}).items():
+				if directional_result.get('overall_pnl_history'):
+					image = self._build_overall_pnl_image(result=dict(result, **directional_result), title=direction + ' performance')
+					zip_file.writestr('00_' + direction + '_pnl.png', image.getvalue())
+
 			for chart_number, ticker in enumerate(
 				traded_tickers,
 				start=1,
 			):
+				progress.stage(f'Generating chart: {ticker} ({chart_number}/{len(traded_tickers)})')
 				ticker_entries = [
 					event
 					for event in entry_events
@@ -4117,6 +4167,7 @@ class BackTester:
 						indicators=indicators,
 						indicator_rows=(result.get("indicator_series") or {}).get(ticker, []),
 						indicator_settings=result.get("strategy_settings") or {},
+						reversal_markers=(result.get("fast_moving_average_reversed") or {}).get(ticker, []),
 					)
 				)
 

@@ -1,9 +1,17 @@
-Replace the five included files in TradingMage/app and restart the endpoint runner.
+Copy the complete app files over their matching files in your current TradingMage project. This release builds on the revised exits/entry references and realtime progress releases from this conversation. Includes full files, not a patch.
 
-Corrected long exits: completed 4H death cross OR any 4H bullish_exit OR 1H bullish_exit whose signal price is strictly above latest completed 4H fast average + bullish_exit_above_fast_average_atr_multiple * latest completed 4H ATR. Default multiplier 1. Entire long position is closed. Equality does not trigger the 1H condition. Bearish exit signals alone no longer close long positions. Entry sizing, eligibility, buy/buy+ timeframe and death-cross behavior are unchanged.
+Both /backtest/run and /backtest/plot now accept:
+  entry_trigger=buy_sell_signal (default): existing1h buy/buy+ long and sell/sell+ short entry triggers.
+  entry_trigger=turning_point: confirmed4h minimum triggers evaluation for long; confirmed4h maximum triggers evaluation for short.
 
-Use bullish_exit_above_fast_average_atr_multiple=1 in run or plot commands instead of the former bearish parameter. Live environment name: GOLDEN_CROSS_BULLISH_EXIT_ABOVE_FAST_AVERAGE_ATR_MULTIPLE. Live submission remains disabled by default; authenticated execution remains untested.
+Append entry_trigger=turning_point to your existing ./run_local_endpoint.sh plot command. To return to previous behavior use entry_trigger=buy_sell_signal or omit it.
 
-Webhook selection gives bullish_exit priority for the active golden-cross strategy, including payloads with multiple signals. Other strategies and red/green buy/sell, orange bearish-exit, blue bullish-exit and magenta strategy-exit chart colors are preserved.
+Turningpoint entries execute at the evaluation candle completion timestamp, never its earlier plotted timestamp. Execution quotes use the same completed-minute simulated bid/ask machinery. Detection always uses4h regardless of fast_moving_average_reversal_timeframe, indicators, or fast_moving_average_reversed plotting flags.
 
-57 local tests pass plus Python compilation. Tests cover strict thresholds, raw exit flags, rejected bearish signals and completed death crosses. This package does not include a historical rerun.
+Strategy mode (golden_cross/death_cross/both), actual fast/slow regime gate, require_entry_confirmation, sizing and exposure cap all remain active. A marker is an opportunity, not a guaranteed fill. Matching markers can add to an existing position subject to these gates; opposite markers do not flip a position. No buy/sell entry or addition occurs in turningpoint mode. Raw buy/sell and exit signals still drive the existing exit rules, including confirmation-pair exits; a synthetic marker does not count as a buy/sell confirmation signal.
+
+Cross and signal exits are processed before marker entries at the same timestamp. A close prevents immediate same-timestamp re-entry. Duplicate marker entries are ignored. Trade records include entry_trigger and, for marker entries, turning_point_evaluated_at.
+
+Realtime progress is preserved. No short-extension gate, portfolio giveback guard, or emergency stop from the prior analysis has been introduced. Scope: backtest run/plot; live execution mode is not modified by this endpoint option.
+
+Validation:131 tests pass; production files compile. Tests cover default/validation, both endpoints, long/minimum and short/maximum entries, hidden or differently timed plots, confirmation timing, default signal suppression, duplicates, exit priority and existing entry gates. No external market-data backtest was run here.
