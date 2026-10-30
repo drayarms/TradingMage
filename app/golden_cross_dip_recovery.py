@@ -2,6 +2,7 @@
 from dataclasses import dataclass, asdict
 import math
 import pandas as pd
+from market_filters import annotate_market_conditions, entry_filter_reason, MARKET_FIELDS
 
 STRATEGY_NAME = 'golden_cross_dip_recovery_4h'
 
@@ -34,6 +35,8 @@ class StrategySettings:
 	bollinger_period: int = 20
 	bollinger_std_dev: float = 2.0
 
+	shade_ranging_area: bool = True
+	extreme_price_stretch_atr_multiple: float = 2.0
 	entry_trigger: str = 'buy_sell_signal'
 	exit_on_confirmatory_candlestick: bool = False
 	exit_after_turning_point: bool = False
@@ -42,6 +45,8 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not math.isfinite(self.extreme_price_stretch_atr_multiple) or self.extreme_price_stretch_atr_multiple <= 0:
+			raise ValueError('extreme_price_stretch_atr_multiple must be positive and finite')
 		if self.entry_trigger not in {'buy_sell_signal','turning_point'}:
 			raise ValueError('entry_trigger must be buy_sell_signal or turning_point')
 		from cross_strategy_indicators import REVERSAL_TIMEFRAMES
@@ -139,7 +144,7 @@ def build_indicator_frame(bars, settings, bar_duration=None):
 	frame['bollinger_upper'] = band_mid + settings.bollinger_std_dev * band_std
 	frame['bollinger_lower'] = band_mid - settings.bollinger_std_dev * band_std
 	frame['completed_at'] = frame.index+(bar_duration if bar_duration is not None else pd.Timedelta(hours=4))
-	return attach_entry_cross_references(frame)
+	return annotate_market_conditions(attach_entry_cross_references(frame), settings.extreme_price_stretch_atr_multiple)
 
 
 def attach_entry_cross_references(frame):
@@ -170,6 +175,8 @@ def snapshot_at(frame, as_of):
 	extra.update({name:(None if pd.isna(row[name]) else float(row[name])) for name in ('long_entry_cross_price','short_entry_cross_price','candles_since_long_entry_cross','candles_since_short_entry_cross') if name in row})
 	extra['dema5_golden_cross'] = bool(row.get('dema5_golden_cross', False))
 	extra['dema5_death_cross'] = bool(row.get('dema5_death_cross', False))
+	for name in MARKET_FIELDS:
+		if name in row: extra[name] = None if pd.isna(row[name]) else bool(row[name]) if name in MARKET_FIELDS[1:4] else float(row[name])
 	extra['golden_cross'] = bool(row.get('golden_cross', False))
 	return extra | {name: (None if pd.isna(row[name]) else float(row[name])) for name in ('close', 'fast_moving_average', 'previous_fast_moving_average', 'slow_moving_average', 'atr', 'golden_cross_price')} | {'completed_at': row.completed_at.isoformat(), 'death_cross': bool(row.get('death_cross',False)), 'completed_bar_number': len(eligible)-1, 'history_ready': bool(row.history_ready), 'candles_since_golden_cross': (None if pd.isna(row.get('candles_since_golden_cross')) else float(row['candles_since_golden_cross']))}
 
@@ -200,6 +207,9 @@ def evaluate_entry(price, base_amount, snapshot, current_exposure, pending_buy_e
 			result['reason'] = 'close_not_above_fast_average'; return result
 		if fast <= previous_fast:
 			result['reason'] = 'fast_average_not_rising'; return result
+	filter_reason = entry_filter_reason('long',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple)
+	if filter_reason:
+		result['reason'] = filter_reason; return result
 	f_slow = atr/(atr+abs(price-slow))
 	f_cross = atr/(atr+abs(price-cross_price))
 	if abs(price-cross_price) > atr:
@@ -271,6 +281,9 @@ def evaluate_short_entry(price, base_amount, snapshot, current_exposure, pending
 			result['reason'] = 'close_not_below_fast_average'; return result
 		if fast >= previous_fast:
 			result['reason'] = 'fast_average_not_falling'; return result
+	filter_reason = entry_filter_reason('short',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple)
+	if filter_reason:
+		result['reason'] = filter_reason; return result
 	f_slow = atr/(atr+abs(price-slow))
 	f_cross = atr/(atr+abs(price-cross_price))
 	if abs(price-cross_price) > atr:

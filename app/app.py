@@ -50,7 +50,6 @@ TV_WEBHOOK_SECRET = os.environ["TV_WEBHOOK_SECRET"]
 #APCA_API_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 TV_MAXLEN = int(os.getenv("TV_MAXLEN", "500"))
-ALPHA_VANTAGE_KEY = os.environ["ALPHA_VANTAGE_KEY"]
 
 APCA_API_BASE_URL_STG1_15M = os.environ["APCA_API_BASE_URL_STG1_15M"]
 APCA_API_KEY_ID_STG1_15M = os.environ["APCA_API_KEY_ID_STG1_15M"]
@@ -197,7 +196,6 @@ backtester_instance = backtester.BackTester(
 	trading_view_webhook_helpers_instance,
 	strategies_instance,
 	trade_records_instance,
-	alpha_vantage_key=ALPHA_VANTAGE_KEY,
 )
 backtest_research_instance = backtester_instance.research
 plot_instance = plot.Plot()
@@ -1590,19 +1588,13 @@ def run_backtest(
 			"run in the same research experiment"
 		),
 	),
-	include_news_sentiment: bool = Query(
-		default=False,
-		description=(
-			"Fetch historical Alpha Vantage ticker news sentiment for the "
-			"requested reporting window. Observational only; it does not "
-			"change strategy entries or exits."
-		),
-	),					
 	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
 	cross_point_time_decay_candles: int = Query(default=20, ge=1),
 	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
 	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
 	strategy_mode: str = Query(default="golden_cross"),
+	shade_ranging_area: bool = Query(default=True),
+	extreme_price_stretch_atr_multiple: float = Query(default=2.0, gt=0),
 	entry_trigger: str = Query(default="buy_sell_signal"),
 	exit_on_confirmatory_candlestick: bool = Query(default=False),
 	exit_after_turning_point: bool = Query(default=False),
@@ -1661,12 +1653,13 @@ def run_backtest(
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
 			research_group_id=research_group_id,
-			include_news_sentiment=include_news_sentiment,			
 			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
 			cross_point_time_decay_candles=cross_point_time_decay_candles,
 			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
 			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
 			strategy_mode=strategy_mode,
+			shade_ranging_area=shade_ranging_area,
+			extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple,
 			entry_trigger=entry_trigger,
 			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
 			exit_after_turning_point=exit_after_turning_point,
@@ -1769,13 +1762,6 @@ def plot_backtest(
 			"run in the same research experiment"
 		),
 	),
-	include_news_sentiment: bool = Query(
-		default=False,
-		description=(
-			"Backward-compatible alias for alpha_vantage_symbols. "
-			"When true, Alpha Vantage news is fetched and plotted."
-		),
-	),
 	entries_and_exits: bool = Query(
 		default=True,
 		description="Plot simulated strategy entry and exit markers.",
@@ -1784,15 +1770,13 @@ def plot_backtest(
 		default=True,
 		description="Plot Lux Algo / TradingView signal markers.",
 	),
-	alpha_vantage_symbols: bool = Query(
-		default=False,
-		description="Fetch and plot Alpha Vantage news-sentiment markers.",
-	),
 	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
 	cross_point_time_decay_candles: int = Query(default=20, ge=1),
 	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
 	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
 	strategy_mode: str = Query(default="golden_cross"),
+	shade_ranging_area: bool = Query(default=True),
+	extreme_price_stretch_atr_multiple: float = Query(default=2.0, gt=0),
 	entry_trigger: str = Query(default="buy_sell_signal"),
 	exit_on_confirmatory_candlestick: bool = Query(default=False),
 	exit_after_turning_point: bool = Query(default=False),
@@ -1876,12 +1860,13 @@ def plot_backtest(
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
 			research_group_id=research_group_id,
-			include_news_sentiment=(include_news_sentiment or alpha_vantage_symbols),
 			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
 			cross_point_time_decay_candles=cross_point_time_decay_candles,
 			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
 			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
 			strategy_mode=strategy_mode,
+			shade_ranging_area=shade_ranging_area,
+			extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple,
 			entry_trigger=entry_trigger,
 			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
 			exit_after_turning_point=exit_after_turning_point,
@@ -1911,7 +1896,6 @@ def plot_backtest(
 			result,
 			entries_and_exits=entries_and_exits,
 			lux_algo_symbols=lux_algo_symbols,
-			alpha_vantage_symbols=(include_news_sentiment or alpha_vantage_symbols),
 			lux_algo_timeframes={tf: enabled for tf, enabled in {"1m": lux_algo_symbols1m, "3m": lux_algo_symbols3m, "5m": lux_algo_symbols5m, "15m": lux_algo_symbols15m, "30m": lux_algo_symbols30m, "45m": lux_algo_symbols45m, "1h": lux_algo_symbols1h, "2h": lux_algo_symbols2h, "4h": lux_algo_symbols4h, "1d": lux_algo_symbols1d}.items() if enabled is not None},
 			indicators=indicators,
 		)

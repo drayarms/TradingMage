@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+bash ./run_local_endpoint.sh plot \
+  strategy_name=golden_cross_dip_recovery_4h \
+  strategy_mode=both \
+  entry_trigger=buy_sell_signal \
+  cross_exit_method=fast_moving_average \
+  fast_moving_average_reversed=true \
+  fast_moving_average_reversal_timeframe=4h \
+  start=2026-05-30T04:00:00-04:00 \
+  end=2026-08-04T20:00:00-04:00 \
+  position_size=6600 \
+  exit_after_turning_point=true \
+  exit_on_confirmatory_candlestick=true \
+  shade_ranging_area=true \
+  extreme_price_stretch_atr_multiple=2 \
+  slow_average_to_price_weight=0.1 \
+  cross_point_to_price_weight=0.6 \
+  cross_point_to_current_moment_weight=0.3 \
+  require_entry_confirmation=true \
+  bullish_exit_above_fast_average_atr_multiple=1 \
+  bearish_exit_below_fast_average_atr_multiple=0.75 \
+  bollinger_period=20 \
+  bollinger_std_dev=2 \
+  lux_algo_symbols=false \
+  lux_algo_symbols1m=false \
+  lux_algo_symbols5m=false \
+  lux_algo_symbols15m=false \
+  lux_algo_symbols1h=true \
+  lux_algo_symbols4h=true \
+  indicators=true

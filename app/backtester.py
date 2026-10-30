@@ -1,5 +1,6 @@
 import io
 from backtest_progress import BacktestProgress
+from market_filters import draw_market_shading
 import copy
 from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
 from golden_cross_simulation import run_simulation
@@ -11,7 +12,6 @@ from datetime import datetime, time, timezone, timedelta
 import pandas as pd
 
 from backtest_research import BacktestResearch
-from alpha_vantage_news import AlphaVantageNewsClient
 from trade_regime_analyzer import TradeRegimeAnalyzer
 from typing import Any, Optional
 
@@ -212,7 +212,7 @@ class BackTester:
 	BACKTEST_DIAGNOSTIC_MAX_DAYS = 3
 	PNL_SNAPSHOT_INTERVAL_MINUTES = 5
 
-	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance, alpha_vantage_key: Optional[str] = None):
+	def __init__(self, trading_view_webhook_helpers, strategies_instance, trade_records_instance):
 		"""
 		Create a BackTester.
 
@@ -225,7 +225,6 @@ class BackTester:
 		self.trade_records_instance = trade_records_instance
 		self.r = trading_view_webhook_helpers.require_redis()
 		self.research = BacktestResearch(self)
-		self.alpha_vantage_news = AlphaVantageNewsClient(api_key=alpha_vantage_key)
 		self.smallest_share_size = 0.25
 		self.diagnostic_logging_enabled = False
 		self.recording_enabled = True
@@ -250,12 +249,13 @@ class BackTester:
 		run_exit_strategy: bool = True,
 		record_factor_research: bool = False,
 		research_group_id: Optional[str] = None,		
-		include_news_sentiment: bool = False,
 		cross_point_to_current_moment_weight: float = 0.2,
 		cross_point_time_decay_candles: int = 20,
 		confirmatory_fast_average_exit_atr_multiple: Optional[float] = None,
 		bullish_exit_above_fast_average_atr_multiple: float = 1.0,
 		strategy_mode: str = "golden_cross",
+		shade_ranging_area: bool = True,
+		extreme_price_stretch_atr_multiple: float = 2.0,
 		entry_trigger: str = "buy_sell_signal",
 		exit_on_confirmatory_candlestick: bool = False,
 		exit_after_turning_point: bool = False,
@@ -312,8 +312,8 @@ class BackTester:
 				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
 			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
-			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
-			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings, include_news_sentiment)
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
+			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings)
 
 		if not isinstance(
 			record_factor_research,
@@ -802,19 +802,6 @@ class BackTester:
 			for event in report_events
 		]
 
-		news_sentiment_events = []
-		if include_news_sentiment:
-			for symbol in symbols:
-				news_sentiment_events.extend(
-					self.alpha_vantage_news.get_news_sentiment(
-						ticker=symbol,
-						start_dt=start_dt,
-						end_dt=end_dt,
-					)
-				)
-			news_sentiment_events.sort(
-				key=lambda row: row["published_at"]
-			)
 
 		return {
 			"strategy_name": strategy_name,
@@ -863,8 +850,6 @@ class BackTester:
 			"warmup_signal_count": len(warmup_events),
 			"signal_count": len(report_events),
 			"signal_events": signal_events,
-			"include_news_sentiment": include_news_sentiment,
-			"news_sentiment_events": news_sentiment_events,
 			"trade_count": sum(
 				1
 				for trade_event in state.trade_events
@@ -3516,10 +3501,8 @@ class BackTester:
 		exits: Optional[list[dict[str, Any]]],
 		anchor_timeframe: str,
 		signal_events: Optional[list[dict[str, Any]]] = None,
-		news_sentiment_events: Optional[list[dict[str, Any]]] = None,
 		entries_and_exits: bool = True,
 		lux_algo_symbols: bool = True,
-		alpha_vantage_symbols: bool = False,
 		indicators: bool = False,
 		indicator_rows: Optional[list[dict[str, Any]]] = None,
 		indicator_settings: Optional[dict[str, Any]] = None,
@@ -3731,46 +3714,6 @@ class BackTester:
 				alpha=0.65,
 			)
 
-		# Alpha Vantage news sentiment: all events are anchored to the market price
-		# at the nearest bar. Marker shape distinguishes sentiment; marker size scales
-		# with ticker relevance. These are observational only.
-		for news_event in (news_sentiment_events or []) if alpha_vantage_symbols else []:
-			try:
-				news_dt = datetime.fromisoformat(str(news_event["published_at"]).replace("Z", "+00:00"))
-				nearest_bar_index = min(
-					range(len(bar_times)),
-					key=lambda index: abs(bar_times[index] - news_dt),
-				)
-			except Exception:
-				continue
-			score = float(news_event.get("ticker_sentiment_score") or 0.0)
-			relevance = float(news_event.get("relevance_score") or 0.0)
-			bar = bars[nearest_bar_index]
-			y_value = float(bar["close"])
-			if score > 0:
-				marker = "P"
-				marker_color = "green"
-			elif score < 0:
-				marker = "X"
-				marker_color = "red"
-			else:
-				marker = "o"
-				marker_color = "gray"
-			ax.scatter(
-				nearest_bar_index,
-				y_value,
-				marker=marker,
-				s=35 + min(max(relevance, 0.0), 1.0) * 90,
-				color=marker_color,
-				zorder=6,
-			)
-			ax.annotate(
-				f"NEWS {score:+.2f}",
-				(nearest_bar_index, y_value),
-				xytext=(3, 3),
-				textcoords="offset points",
-				fontsize=6,
-			)
 
 		tick_interval = max(
 			1,
@@ -3819,6 +3762,7 @@ class BackTester:
 		indicator_handles = []
 		if indicators and indicator_rows:
 			settings = indicator_settings or {}
+			indicator_handles.extend(draw_market_shading(ax,bar_times,indicator_rows,settings.get("shade_ranging_area",True)))
 			rows_by_time = {pd.Timestamp(row["time"]): row for row in indicator_rows}
 			for name, kind, period, color, width in (
 				("fast_moving_average", settings.get("fast_type", "ema"), settings.get("fast_period", 9), "#1F77B4", 1.3),
@@ -3866,12 +3810,6 @@ class BackTester:
 				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="#FF8C00", label="TradingView bearish exit (TV)"),
 				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="#0080FF", label="TradingView bullish exit (TV)"),
 				Line2D([0], [0], marker="x", linestyle="None", markersize=6, color="gray", alpha=0.45, label="TradingView other signal (TV)"),
-			])
-		if alpha_vantage_symbols:
-			legend_handles.extend([
-				Line2D([0], [0], marker="P", linestyle="None", markersize=7, color="green", label="Alpha Vantage positive news (NEWS)"),
-				Line2D([0], [0], marker="X", linestyle="None", markersize=7, color="red", label="Alpha Vantage negative news (NEWS)"),
-				Line2D([0], [0], marker="o", linestyle="None", markersize=7, color="gray", label="Alpha Vantage neutral news (NEWS)"),
 			])
 
 		if legend_handles:
@@ -3980,10 +3918,8 @@ class BackTester:
 		exits: Optional[list[dict[str, Any]]],
 		anchor_timeframe: str,
 		signal_events: Optional[list[dict[str, Any]]] = None,
-		news_sentiment_events: Optional[list[dict[str, Any]]] = None,
 		entries_and_exits: bool = True,
 		lux_algo_symbols: bool = True,
-		alpha_vantage_symbols: bool = False,
 		indicators: bool = False,
 		indicator_rows: Optional[list[dict[str, Any]]] = None,
 		indicator_settings: Optional[dict[str, Any]] = None,
@@ -4002,10 +3938,8 @@ class BackTester:
 			exits=exits,
 			anchor_timeframe=anchor_timeframe,
 			signal_events=signal_events,
-			news_sentiment_events=news_sentiment_events,
 			entries_and_exits=entries_and_exits,
 			lux_algo_symbols=lux_algo_symbols,
-			alpha_vantage_symbols=alpha_vantage_symbols,
 			indicators=indicators, indicator_rows=indicator_rows, indicator_settings=indicator_settings, reversal_markers=reversal_markers,
 		)
 
@@ -4035,7 +3969,6 @@ class BackTester:
 		title: Optional[str] = None,
 		entries_and_exits: bool = True,
 		lux_algo_symbols: bool = True,
-		alpha_vantage_symbols: bool = False,
 		indicators: bool = False,
 		lux_algo_timeframes: Optional[dict[str, bool]] = None,
 	) -> io.BytesIO:
@@ -4086,11 +4019,6 @@ class BackTester:
 			for event in signal_events
 			if lux_algo_symbols and event.get("ticker")
 		}
-		overlay_tickers.update({
-			event.get("ticker")
-			for event in (result.get("news_sentiment_events") or [])
-			if alpha_vantage_symbols and event.get("ticker")
-		})
 		if indicators:
 			overlay_tickers.update((result.get("indicator_series") or {}).keys())
 		traded_tickers = sorted(set(traded_tickers) | overlay_tickers)
@@ -4103,7 +4031,6 @@ class BackTester:
 			"anchor_timeframe"
 		) or "anchor"
 
-		news_sentiment_events = result.get("news_sentiment_events") or []
 
 		zip_buffer = io.BytesIO()
 
@@ -4160,10 +4087,8 @@ class BackTester:
 						exits=ticker_exits,
 						anchor_timeframe=anchor_timeframe,
 						signal_events=[event for event in signal_events if event.get("ticker") == ticker],
-						news_sentiment_events=[event for event in news_sentiment_events if event.get("ticker") == ticker],
 						entries_and_exits=entries_and_exits,
 						lux_algo_symbols=lux_algo_symbols,
-						alpha_vantage_symbols=alpha_vantage_symbols,
 						indicators=indicators,
 						indicator_rows=(result.get("indicator_series") or {}).get(ticker, []),
 						indicator_settings=result.get("strategy_settings") or {},

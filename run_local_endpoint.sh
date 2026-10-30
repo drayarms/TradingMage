@@ -108,7 +108,7 @@ Golden-cross investment strategy examples:
 		strategy_name=golden_cross_dip_recovery_4h \
 		start=2026-06-01T04:00:00-04:00 end=2026-10-01T20:00:00-04:00 \
 		position_size=6600 indicators=true entries_and_exits=true \
-		lux_algo_symbols=false alpha_vantage_symbols=false
+		lux_algo_symbols=false
 
 	Do not supply exit_strategy or intraday liquidation flags for this strategy.
 

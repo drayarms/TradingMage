@@ -1,11 +1,12 @@
 """Long-horizon simulation adapter; reuses TradingMage's fills and PnL accounting."""
 import math
+from market_filters import confirmation_candle_exit, MARKET_FIELDS
 from backtest_progress import BacktestProgress
 import os
 import pandas as pd
 from golden_cross_dip_recovery import STRATEGY_NAME, snapshot_at, evaluate_entry, evaluate_signal_exit, evaluate_short_entry, evaluate_short_signal_exit
 from golden_cross_history import GoldenCrossHistory
-from cross_strategy_indicators import evaluate_cross_exit, fast_moving_average_reversed, REVERSAL_TIMEFRAMES, turning_point_exit_reasons, confirmatory_candlestick_exit
+from cross_strategy_indicators import evaluate_cross_exit, fast_moving_average_reversed, REVERSAL_TIMEFRAMES, turning_point_exit_reasons
 
 
 def signal_action(event, side="long"):
@@ -57,14 +58,7 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics):
 	if marker_side and position and position.side != marker_side: return
 	side = marker_side or selected_side(event, settings, position.side if position else None)
 	turning_exit = settings.exit_after_turning_point and event.get('_turning_point_exit_side') == side
-	confirmatory_reason = None
-	if settings.exit_on_confirmatory_candlestick:
-		if not hasattr(state,'confirmatory_pairs'): state.confirmatory_pairs={}
-		pair=state.confirmatory_pairs.get(event['ticker'])
-		if position and pair and pair['position'] is position:
-			confirmatory_reason=confirmatory_candlestick_exit(pair['signals'],event,side,pair['opened_at'])
-		elif not position: state.confirmatory_pairs.pop(event['ticker'],None)
-	action = 'exit' if turning_exit or confirmatory_reason else 'entry' if marker_side else signal_action(event, side)
+	action = 'exit' if turning_exit else 'entry' if marker_side else signal_action(event, side)
 	if action == 'entry' and ((settings.entry_trigger == 'turning_point') != bool(marker_side)): return
 	if not action: return
 	key = event_identity(event, action)
@@ -72,13 +66,14 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics):
 	seen.add(key)
 	as_of = min(pd.Timestamp(event['received_dt']), pd.Timestamp(event['dt']))
 	row = snapshot_at(frames.get(event['ticker'], pd.DataFrame()), as_of)
+	if row:
+		row['_market_filter_context'] = snapshot_at(frames.get(event['ticker'], pd.DataFrame()),event['received_dt'])
 	direction = 'golden_cross' if side == 'long' else 'death_cross'
 	previous_count = len(state.trade_events)
 	if action == 'exit':
 		engine = evaluate_signal_exit if side == 'long' else evaluate_short_signal_exit
 		reason = evaluate_cross_exit(side, event.get('price'), row, settings) if event.get('signal') == '_cross_exit' else engine(event, row, settings)
 		if turning_exit: reason = event['timeframe']+('_bearish_exit_after_maximum' if side == 'long' else '_bullish_exit_after_minimum')
-		if confirmatory_reason: reason = confirmatory_reason
 		if reason is None:
 			diagnostics.append({'ticker':event['ticker'], 'time':event['received_dt'].isoformat(), 'strategy_direction':direction, 'reason':'exit_condition_not_met_or_missing_signal_price'}); return
 		signal_time = event['time']
@@ -101,7 +96,8 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics):
 			trade.update(strategy_direction=direction,entry_trigger=settings.entry_trigger)
 			if marker_side: trade['turning_point_evaluated_at']=event['turning_point_evaluated_at']
 		if settings.exit_on_confirmatory_candlestick and not position and event['ticker'] in state.positions:
-			state.confirmatory_pairs[event['ticker']]={'position':state.positions[event['ticker']],'opened_at':event['received_dt'],'signals':{}}
+			if not hasattr(state,'confirmatory_pairs'): state.confirmatory_pairs={}
+			state.confirmatory_pairs[event['ticker']]={'position':state.positions[event['ticker']],'opened_at':event['received_dt']}
 
 
 def directional_snapshot(state, when, reports):
@@ -118,7 +114,7 @@ def directional_snapshot(state, when, reports):
 		report['overall_pnl_history'].append({'time':when.isoformat(), 'overall_total_pnl':realized+unrealized, 'gross_open_exposure':exposure})
 
 
-def run_simulation(bt, api, start, end, tickers, position_size, settings, include_news_sentiment=False):
+def run_simulation(bt, api, start, end, tickers, position_size, settings):
 	from backtester import SimState
 	progress=BacktestProgress()
 	progress.stage("Loading signals and market data...")
@@ -161,6 +157,20 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings, includ
 	bt.recording_enabled=True;bt.diagnostic_logging_enabled=False
 	timeline=bt._build_backtest_timeline(state,events,start_dt,end_dt,market_bar_interval_minutes=(1 if settings.cross_exit_method == 'price' else bt.PNL_SNAPSHOT_INTERVAL_MINUTES))
 	context_times={ticker:pd.DatetimeIndex(frame.completed_at).asi8 for ticker,frame in frames.items() if not frame.empty}
+	if settings.exit_on_confirmatory_candlestick:
+		by_candle={ticker:{} for ticker in frames}
+		for event in events:
+			ticker=event['ticker']
+			if ticker not in context_times or event.get('timeframe') not in {'1h','4h'}: continue
+			index=int(context_times[ticker].searchsorted(pd.Timestamp(event['received_dt']).value,side='left'))
+			if index<len(frames[ticker]) and frames[ticker].index[index]<pd.Timestamp(event['received_dt']):
+				by_candle[ticker].setdefault(index,[]).append(event)
+		for ticker,frame in frames.items():
+			for index in range(1,len(frame)):
+				when=pd.Timestamp(frame.iloc[index].completed_at)
+				if not pd.Timestamp(start_dt)<=when<=pd.Timestamp(end_dt): continue
+				timeline.append(dict(kind='confirmation_candle',dt=when.to_pydatetime().astimezone(start_dt.tzinfo),payload=dict(ticker=ticker,index=index)))
+
 	if settings.entry_trigger == 'turning_point':
 		for ticker,markers in points.items():
 			for point in markers:
@@ -180,7 +190,7 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings, includ
 			if crossing not in frame: continue
 			for _, row in frame.loc[frame[crossing] & (frame.completed_at >= pd.Timestamp(start_dt)) & (frame.completed_at <= pd.Timestamp(end_dt))].iterrows():
 				timeline.append({'kind':crossing, 'dt':row.completed_at.to_pydatetime(), 'payload':{'ticker':ticker, 'price':float(row.close)}})
-	timeline.sort(key=lambda item:(item['dt'], {'market_bar':0, 'death_cross':1, 'golden_cross':1, 'dema5_death_cross':1, 'dema5_golden_cross':1, 'signal':2}.get(item['kind'],3)))
+	timeline.sort(key=lambda item:(item['dt'], {'market_bar':0, 'death_cross':1, 'golden_cross':1, 'dema5_death_cross':1, 'dema5_golden_cross':1, 'signal':2,'confirmation_candle':3}.get(item['kind'],4)))
 	for item in timeline:
 		progress.update(item['dt'])
 		if item['kind']=='market_bar':
@@ -207,6 +217,19 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings, includ
 				bt._close_position_at_market_bar(state,ticker,item['dt'],price,'4h_'+item['kind'])
 				for trade in state.trade_events[previous_count:]: trade['strategy_direction'] = 'golden_cross' if position.side == 'long' else 'death_cross'
 				record(item['dt'])
+		elif item['kind']=='confirmation_candle':
+			ticker=item['payload']['ticker']; index=item['payload']['index']
+			position=state.positions.get(ticker)
+			pair=getattr(state,'confirmatory_pairs',{}).get(ticker)
+			if position and pair and pair['position'] is position:
+				frame=frames[ticker]
+				candidate_events=by_candle[ticker].get(index-1,[])+by_candle[ticker].get(index,[])
+				reason=confirmation_candle_exit(frame.iloc[index-1:index+1],candidate_events,position.side,pair['opened_at'])
+				if reason:
+					previous_count=len(state.trade_events)
+					bt._close_position_at_market_bar(state,ticker,item['dt'],state.last_price_by_ticker.get(ticker,float(frame.iloc[index].close)),reason)
+					for trade in state.trade_events[previous_count:]: trade['strategy_direction']='golden_cross' if position.side=='long' else 'death_cross'
+					record(item['dt'])
 		elif item['kind'] in {'signal','turning_point'}:
 			event=item['payload']
 			if item['kind']=='signal': bt._register_event_context(state,event)
@@ -225,7 +248,7 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings, includ
 	for ticker,frame in frames.items():
 		visible=frame.loc[(frame.index>=pd.Timestamp(start_dt)) & (frame.completed_at<=pd.Timestamp(end_dt))] if not frame.empty else frame
 		anchor[ticker]=[{'time':t.isoformat(),**{c:float(row[c]) for c in ('open','high','low','close')},'volume':float(row.get('volume',0))} for t,row in visible.iterrows()]
-		indicators[ticker]=[{'time':t.isoformat(),'completed_at':row.completed_at.isoformat(),**{k:(None if pd.isna(row.get(k)) else float(row[k])) for k in ('fast_moving_average','slow_moving_average','bollinger_upper','bollinger_lower','dema5')}} for t,row in visible.iterrows()]
+		indicators[ticker]=[{'time':t.isoformat(),'completed_at':row.completed_at.isoformat(),**{k:(None if pd.isna(row.get(k)) else bool(row[k]) if k in MARKET_FIELDS[1:4] else float(row[k])) for k in ('fast_moving_average','slow_moving_average','bollinger_upper','bollinger_lower','dema5','atr','high','low',*MARKET_FIELDS)}} for t,row in visible.iterrows()]
 	reversals={ticker:[] for ticker in symbols}
 	if settings.fast_moving_average_reversed:
 		reversal_frames=frames
@@ -238,13 +261,10 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings, includ
 			reversal_frames={ticker:reversal_history.get_frame(ticker,start_dt,end_dt) for ticker in symbols}
 		for ticker, frame in reversal_frames.items():
 			reversals[ticker]=[m for m in fast_moving_average_reversed(frame,tf) if pd.Timestamp(start_dt)<=pd.Timestamp(m['confirmed_at'])<=pd.Timestamp(end_dt) and pd.Timestamp(m['time'])>=pd.Timestamp(start_dt)]
-	news=[]
-	if include_news_sentiment:
-		for ticker in symbols:news.extend(bt.alpha_vantage_news.get_news_sentiment(ticker=ticker,start_dt=start_dt,end_dt=end_dt))
 	open_positions=[]
 	for ticker,p in state.positions.items():
 		market=state.last_price_by_ticker.get(ticker,p.avg_price_per_share)
 		open_positions.append({'ticker':ticker,'side':p.side,'num_shares':p.num_shares,'avg_price_per_share':p.avg_price_per_share,'market_price':market,'unrealized_pnl':(market-p.avg_price_per_share)*p.num_shares*(1 if p.side == 'long' else -1),'market_value':market*p.num_shares})
 	for direction, report in reports.items():
 		report['trade_count'] = sum(e.get('strategy_direction') == direction and e.get('event_type') in {'open', 'add', 'close'} for e in state.trade_events)
-	return {'cross_exit_method':settings.cross_exit_method, 'fast_moving_average_reversed':reversals, 'strategy_mode':settings.strategy_mode, 'direction_results':reports, 'strategy_name':STRATEGY_NAME,'exit_strategy':('death_cross_or_4h_bullish_exit_or_1h_upper_atr_bullish_exit' if settings.cross_exit_method == 'fast_moving_average' and settings.strategy_mode == 'golden_cross' else settings.cross_exit_method+'_slow_average_or_directional_signal_exit'),'anchor_timeframe':'4h','ATR_period':settings.atr_period,'ATR_multiplier':None,'start':start_dt.isoformat(),'end':end_dt.isoformat(),'position_size':base,'strategy_settings':settings.to_dict(),'warmup_sessions':0,'warmup_signal_count':0,'signal_count':len(events),'tickers':symbols,'signal_events':[bt._serialize_signal_event(e) for e in events],'trade_events':state.trade_events,'trade_count':sum(e['event_type'] in {'open','add','close'} for e in state.trade_events),'overall_pnl_history':state.overall_pnl_history,'ticker_pnl_history':state.ticker_pnl_history,'daily_max_open_exposure':bt._daily_exposure_rows(state.daily_max_exposure),'anchor_bars':anchor,'indicator_series':indicators,'news_sentiment_events':news,'include_news_sentiment':include_news_sentiment,'open_positions':open_positions,'realized_pnl':sum(state.realized_by_ticker.values()),'unrealized_pnl':sum(p['unrealized_pnl'] for p in open_positions),'entry_diagnostics':diagnostics,'liquidate_before_market_close':False,'run_exit_strategy':True}
+	return {'cross_exit_method':settings.cross_exit_method, 'fast_moving_average_reversed':reversals, 'strategy_mode':settings.strategy_mode, 'direction_results':reports, 'strategy_name':STRATEGY_NAME,'exit_strategy':('death_cross_or_4h_bullish_exit_or_1h_upper_atr_bullish_exit' if settings.cross_exit_method == 'fast_moving_average' and settings.strategy_mode == 'golden_cross' else settings.cross_exit_method+'_slow_average_or_directional_signal_exit'),'anchor_timeframe':'4h','ATR_period':settings.atr_period,'ATR_multiplier':None,'start':start_dt.isoformat(),'end':end_dt.isoformat(),'position_size':base,'strategy_settings':settings.to_dict(),'warmup_sessions':0,'warmup_signal_count':0,'signal_count':len(events),'tickers':symbols,'signal_events':[bt._serialize_signal_event(e) for e in events],'trade_events':state.trade_events,'trade_count':sum(e['event_type'] in {'open','add','close'} for e in state.trade_events),'overall_pnl_history':state.overall_pnl_history,'ticker_pnl_history':state.ticker_pnl_history,'daily_max_open_exposure':bt._daily_exposure_rows(state.daily_max_exposure),'anchor_bars':anchor,'indicator_series':indicators,'open_positions':open_positions,'realized_pnl':sum(state.realized_by_ticker.values()),'unrealized_pnl':sum(p['unrealized_pnl'] for p in open_positions),'entry_diagnostics':diagnostics,'liquidate_before_market_close':False,'run_exit_strategy':True}

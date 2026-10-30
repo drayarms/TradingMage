@@ -135,19 +135,3 @@ def turning_point_exit_reasons(events, markers):
 				if armed == 'minimum' and bullish: result[i] = 'short'
 	return result
 
-
-def confirmatory_candlestick_exit(state, event, side, opened_at):
-	"""Pair post-entry 1H/4H directional signals, clearing on opposite signals."""
-	if min(pd.Timestamp(event['received_dt']),pd.Timestamp(event['dt'])) <= pd.Timestamp(opened_at): return None
-	tf = event.get('timeframe')
-	if tf not in {'1h','4h'}: return None
-	signal = str(event.get('signal') or '').lower()
-	direction = 'buy' if signal in {'buy','buy+','buy_plus'} else 'sell' if signal in {'sell','sell+','sell_plus'} else None
-	if direction is None: return None
-	expected = 'sell' if side == 'long' else 'buy'
-	if direction != expected:
-		state.clear(); return None
-	other = '4h' if tf == '1h' else '1h'
-	matched = other in state
-	state[tf] = pd.Timestamp(event['received_dt']).isoformat()
-	return 'confirmatory_candlestick_exit' if matched else None
