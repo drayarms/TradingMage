@@ -9,7 +9,7 @@ MARKET_FIELDS = ('dema9', 'ranging_market', 'extreme_bullish_price_stretch',
 def finite(value):
 	return value is not None and math.isfinite(value)
 
-def annotate_market_conditions(frame, stretch_multiple):
+def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0):
 	frame=frame.copy()
 	if frame.empty: return frame
 	ema=frame.close.ewm(span=9,adjust=False,min_periods=9).mean()
@@ -25,12 +25,12 @@ def annotate_market_conditions(frame, stretch_multiple):
 		near_upper=ready and row.close>upper-.2*atr
 		near_lower=ready and row.close<lower+.2*atr
 		if near_upper:
-			width_valid=last_lower_gap is not None and .75<=gap/last_lower_gap<=1/.75
+			width_valid=last_lower_gap is not None and gap_similarity_ratio<=gap/last_lower_gap<=1/gap_similarity_ratio
 			last_upper_gap=gap
 			upper_dema=row.dema9 if finite(row.dema9) else None
 			trough=None
 		if near_lower:
-			width_valid=last_upper_gap is not None and .75<=gap/last_upper_gap<=1/.75
+			width_valid=last_upper_gap is not None and gap_similarity_ratio<=gap/last_upper_gap<=1/gap_similarity_ratio
 			last_lower_gap=gap
 			lower_dema=row.dema9 if finite(row.dema9) else None
 			peak=None
@@ -41,8 +41,8 @@ def annotate_market_conditions(frame, stretch_multiple):
 				row.close>row.open and previous.close>previous.open and
 				(row.high>upper or previous.high>previous.bollinger_upper))
 		ranging=ready and .4<=atr/gap<=.6 and width_valid and not cling
-		bullish=ready and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
-		bearish=ready and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
+		bullish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
+		bearish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
 		if bullish: peak=row.high
 		if bearish: trough=row.low
 		output.append(dict(ranging_market=bool(ranging),extreme_bullish_price_stretch=bool(bullish),
@@ -55,7 +55,7 @@ def annotate_market_conditions(frame, stretch_multiple):
 		frame[name]=pd.Series(values,index=frame.index,dtype=bool if name in MARKET_FIELDS[1:4] else float)
 	return frame
 
-def entry_filter_reason(side, price, snapshot, stretch_multiple):
+def entry_filter_reason(side, price, snapshot, stretch_multiple, min_stretch_gap_atr_multiple=3.0):
 	upper,lower,atr,slow=(snapshot.get(k) for k in ('bollinger_upper','bollinger_lower','atr','slow_moving_average'))
 	if not all(finite(v) for v in (upper,lower,atr,slow)) or atr<=0 or upper<=lower: return None
 	if snapshot.get('ranging_market',False):
@@ -63,11 +63,11 @@ def entry_filter_reason(side, price, snapshot, stretch_multiple):
 		if side=='short' and price<lower+.5*atr: return 'short_near_lower_band_in_range'
 	mid=(upper+lower)/2
 	if side=='long':
-		if slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
+		if upper-lower>=min_stretch_gap_atr_multiple*atr and slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
 		peak,slope=snapshot.get('obvious_peak'),snapshot.get('dema9_lower_touch_slope')
 		if finite(peak) and finite(slope) and price<peak and slope>0: return 'after_obvious_peak_with_positive_dema9_slope'
 	else:
-		if slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
+		if upper-lower>=min_stretch_gap_atr_multiple*atr and slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
 		trough,slope=snapshot.get('obvious_trough'),snapshot.get('dema9_upper_touch_slope')
 		if finite(trough) and finite(slope) and price>trough and slope<0: return 'after_obvious_trough_with_negative_dema9_slope'
 	return None

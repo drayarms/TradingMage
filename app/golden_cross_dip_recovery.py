@@ -35,6 +35,8 @@ class StrategySettings:
 	bollinger_period: int = 20
 	bollinger_std_dev: float = 2.0
 
+	range_bollinger_gap_similarity_ratio: float = 0.6
+	extreme_price_stretch_min_bollinger_gap_atr_multiple: float = 3.0
 	shade_ranging_area: bool = True
 	extreme_price_stretch_atr_multiple: float = 2.0
 	entry_trigger: str = 'buy_sell_signal'
@@ -45,6 +47,10 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not math.isfinite(self.range_bollinger_gap_similarity_ratio) or not 0 < self.range_bollinger_gap_similarity_ratio <= 1:
+			raise ValueError('range_bollinger_gap_similarity_ratio must be finite and in (0, 1]')
+		if not math.isfinite(self.extreme_price_stretch_min_bollinger_gap_atr_multiple) or self.extreme_price_stretch_min_bollinger_gap_atr_multiple <= 0:
+			raise ValueError('extreme_price_stretch_min_bollinger_gap_atr_multiple must be positive and finite')
 		if not math.isfinite(self.extreme_price_stretch_atr_multiple) or self.extreme_price_stretch_atr_multiple <= 0:
 			raise ValueError('extreme_price_stretch_atr_multiple must be positive and finite')
 		if self.entry_trigger not in {'buy_sell_signal','turning_point'}:
@@ -144,7 +150,7 @@ def build_indicator_frame(bars, settings, bar_duration=None):
 	frame['bollinger_upper'] = band_mid + settings.bollinger_std_dev * band_std
 	frame['bollinger_lower'] = band_mid - settings.bollinger_std_dev * band_std
 	frame['completed_at'] = frame.index+(bar_duration if bar_duration is not None else pd.Timedelta(hours=4))
-	return annotate_market_conditions(attach_entry_cross_references(frame), settings.extreme_price_stretch_atr_multiple)
+	return annotate_market_conditions(attach_entry_cross_references(frame), settings.extreme_price_stretch_atr_multiple, settings.range_bollinger_gap_similarity_ratio, settings.extreme_price_stretch_min_bollinger_gap_atr_multiple)
 
 
 def attach_entry_cross_references(frame):
@@ -207,7 +213,7 @@ def evaluate_entry(price, base_amount, snapshot, current_exposure, pending_buy_e
 			result['reason'] = 'close_not_above_fast_average'; return result
 		if fast <= previous_fast:
 			result['reason'] = 'fast_average_not_rising'; return result
-	filter_reason = entry_filter_reason('long',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple)
+	filter_reason = entry_filter_reason('long',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple,settings.extreme_price_stretch_min_bollinger_gap_atr_multiple)
 	if filter_reason:
 		result['reason'] = filter_reason; return result
 	f_slow = atr/(atr+abs(price-slow))
@@ -281,7 +287,7 @@ def evaluate_short_entry(price, base_amount, snapshot, current_exposure, pending
 			result['reason'] = 'close_not_below_fast_average'; return result
 		if fast >= previous_fast:
 			result['reason'] = 'fast_average_not_falling'; return result
-	filter_reason = entry_filter_reason('short',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple)
+	filter_reason = entry_filter_reason('short',price,snapshot.get('_market_filter_context',snapshot),settings.extreme_price_stretch_atr_multiple,settings.extreme_price_stretch_min_bollinger_gap_atr_multiple)
 	if filter_reason:
 		result['reason'] = filter_reason; return result
 	f_slow = atr/(atr+abs(price-slow))

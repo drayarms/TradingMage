@@ -7,11 +7,13 @@ bash ./run_local_endpoint.sh plot \
   fast_moving_average_reversed=true \
   fast_moving_average_reversal_timeframe=4h \
   start=2026-05-30T04:00:00-04:00 \
-  end=2026-08-04T20:00:00-04:00 \
+  end=2026-10-29T20:00:00-04:00 \
   position_size=6600 \
   exit_after_turning_point=true \
   exit_on_confirmatory_candlestick=true \
   shade_ranging_area=true \
+  range_bollinger_gap_similarity_ratio=0.6 \
+  extreme_price_stretch_min_bollinger_gap_atr_multiple=3 \
   extreme_price_stretch_atr_multiple=2 \
   slow_average_to_price_weight=0.1 \
   cross_point_to_price_weight=0.6 \
