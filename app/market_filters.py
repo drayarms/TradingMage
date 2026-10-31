@@ -9,7 +9,7 @@ MARKET_FIELDS = ('dema9', 'ranging_market', 'extreme_bullish_price_stretch',
 def finite(value):
 	return value is not None and math.isfinite(value)
 
-def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0):
+def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0, max_atr_to_gap_ratio=.5):
 	frame=frame.copy()
 	if frame.empty: return frame
 	ema=frame.close.ewm(span=9,adjust=False,min_periods=9).mean()
@@ -40,7 +40,7 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 				(row.low<lower or previous.low<previous.bollinger_lower)) or (
 				row.close>row.open and previous.close>previous.open and
 				(row.high>upper or previous.high>previous.bollinger_upper))
-		ranging=ready and .4<=atr/gap<=.6 and width_valid and not cling
+		ranging=ready and atr/gap<=max_atr_to_gap_ratio and width_valid and not cling
 		bullish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
 		bearish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
 		if bullish: peak=row.high
@@ -55,21 +55,24 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 		frame[name]=pd.Series(values,index=frame.index,dtype=bool if name in MARKET_FIELDS[1:4] else float)
 	return frame
 
-def entry_filter_reason(side, price, snapshot, stretch_multiple, min_stretch_gap_atr_multiple=3.0):
+def entry_filter_reason(side, price, snapshot, stretch_multiple, min_stretch_gap_atr_multiple=3.0, settings=None):
+	range_enabled=getattr(settings,side+"_range_entry_filter_enabled",True)
+	stretch_enabled=getattr(settings,side+"_extreme_stretch_entry_filter_enabled",True)
+	post_extreme_enabled=getattr(settings,"long_post_peak_entry_filter_enabled" if side=="long" else "short_post_trough_entry_filter_enabled",True)
 	upper,lower,atr,slow=(snapshot.get(k) for k in ('bollinger_upper','bollinger_lower','atr','slow_moving_average'))
 	if not all(finite(v) for v in (upper,lower,atr,slow)) or atr<=0 or upper<=lower: return None
-	if snapshot.get('ranging_market',False):
+	if range_enabled and snapshot.get('ranging_market',False):
 		if side=='long' and price>upper-.5*atr: return 'long_near_upper_band_in_range'
 		if side=='short' and price<lower+.5*atr: return 'short_near_lower_band_in_range'
 	mid=(upper+lower)/2
 	if side=='long':
-		if upper-lower>=min_stretch_gap_atr_multiple*atr and slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
+		if stretch_enabled and upper-lower>=min_stretch_gap_atr_multiple*atr and slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
 		peak,slope=snapshot.get('obvious_peak'),snapshot.get('dema9_lower_touch_slope')
-		if finite(peak) and finite(slope) and price<peak and slope>0: return 'after_obvious_peak_with_positive_dema9_slope'
+		if post_extreme_enabled and finite(peak) and finite(slope) and price<peak and slope>0: return 'after_obvious_peak_with_positive_dema9_slope'
 	else:
-		if upper-lower>=min_stretch_gap_atr_multiple*atr and slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
+		if stretch_enabled and upper-lower>=min_stretch_gap_atr_multiple*atr and slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
 		trough,slope=snapshot.get('obvious_trough'),snapshot.get('dema9_upper_touch_slope')
-		if finite(trough) and finite(slope) and price>trough and slope<0: return 'after_obvious_trough_with_negative_dema9_slope'
+		if post_extreme_enabled and finite(trough) and finite(slope) and price>trough and slope<0: return 'after_obvious_trough_with_negative_dema9_slope'
 	return None
 
 def confirmation_candle_exit(candles, events, side, opened_at):
@@ -97,7 +100,7 @@ def draw_market_shading(ax, bar_times, indicator_rows, shade_ranging_area=True):
 	"""Shade each evaluated candle separately, including isolated classifications."""
 	from matplotlib.patches import Rectangle, Patch
 	rows={pd.Timestamp(row['time']):row for row in indicator_rows}
-	colors={'Range':'#EAF7A4','Bullish price stretch':'#DECDF4','Bearish price stretch':'#FFD7AD'}
+	colors={'Range':'#D3E85A','Bullish price stretch':'#BC95E0','Bearish price stretch':'#F4AF69'}
 	used=set()
 	for x,when in enumerate(bar_times):
 		row=rows.get(pd.Timestamp(when),{})
@@ -109,6 +112,6 @@ def draw_market_shading(ax, bar_times, indicator_rows, shade_ranging_area=True):
 		if row.get('extreme_bullish_price_stretch'): areas.append(('Bullish price stretch',mid,max(upper,row.get('high',upper))))
 		if row.get('extreme_bearish_price_stretch'): areas.append(('Bearish price stretch',min(lower,row.get('low',lower)),mid))
 		for label,bottom,top in areas:
-			ax.add_patch(Rectangle((x-.5,bottom),1,top-bottom,facecolor=colors[label],alpha=.3,edgecolor='none',zorder=.5))
+			ax.add_patch(Rectangle((x-.5,bottom),1,top-bottom,facecolor=colors[label],alpha=.45,edgecolor='none',zorder=.5))
 			used.add(label)
-	return [Patch(facecolor=color,alpha=.3,label=label) for label,color in colors.items() if label in used]
+	return [Patch(facecolor=color,alpha=.45,label=label) for label,color in colors.items() if label in used]

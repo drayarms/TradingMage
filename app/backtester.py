@@ -254,8 +254,22 @@ class BackTester:
 		confirmatory_fast_average_exit_atr_multiple: Optional[float] = None,
 		bullish_exit_above_fast_average_atr_multiple: float = 1.0,
 		strategy_mode: str = "golden_cross",
+		cross_strategy_enabled: bool = True,
+		range_strategy_enabled: bool = True,
+		disabled_strategy_virtual_positions_enabled: bool = True,
+		range_sizing_low_atr_price_ratio: float = 0.01,
+		range_sizing_high_atr_price_ratio: float = 0.05,
+		range_sizing_min_entry_fraction: float = 0.25,
+		range_sizing_max_entry_fraction: float = 1.0,
+		range_max_atr_to_bollinger_gap_ratio: float = 0.5,
 		range_bollinger_gap_similarity_ratio: float = 0.6,
 		extreme_price_stretch_min_bollinger_gap_atr_multiple: float = 3.0,
+		long_range_entry_filter_enabled: bool = True,
+		short_range_entry_filter_enabled: bool = True,
+		long_extreme_stretch_entry_filter_enabled: bool = True,
+		short_extreme_stretch_entry_filter_enabled: bool = True,
+		long_post_peak_entry_filter_enabled: bool = True,
+		short_post_trough_entry_filter_enabled: bool = True,
 		shade_ranging_area: bool = True,
 		extreme_price_stretch_atr_multiple: float = 2.0,
 		entry_trigger: str = "buy_sell_signal",
@@ -314,7 +328,7 @@ class BackTester:
 				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
 			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
-			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
 			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings)
 
 		if not isinstance(
@@ -3600,11 +3614,11 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="^",
-					s=90,
+					marker="2" if entry.get("strategy_type")=="range" else "^",
+					s=180 if entry.get("strategy_type")=="range" else 90,
 					color="#7B2CBF",
-					edgecolors="black",
-					linewidths=0.5,
+					edgecolors=None if entry.get("strategy_type")=="range" else "black",
+					linewidths=2.6 if entry.get("strategy_type")=="range" else 0.5,
 					zorder=5,
 					label=label,
 				)
@@ -3621,11 +3635,11 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="v",
-					s=90,
+					marker="1" if entry.get("strategy_type")=="range" else "v",
+					s=180 if entry.get("strategy_type")=="range" else 90,
 					color="#00A6A6",
-					edgecolors="black",
-					linewidths=0.5,
+					edgecolors=None if entry.get("strategy_type")=="range" else "black",
+					linewidths=2.6 if entry.get("strategy_type")=="range" else 0.5,
 					zorder=5,
 					label=label,
 				)
@@ -3633,7 +3647,7 @@ class BackTester:
 				short_label_added = True
 
 			ax.annotate(
-				f"Entry ${abs(entry_price * float(entry['num_shares'])):,.2f}",
+				f"{'Range entry' if entry.get('strategy_type')=='range' else 'Entry'} ${abs(entry_price * float(entry['num_shares'])):,.2f}",
 				(
 					nearest_bar_index,
 					entry_price,
@@ -3659,15 +3673,15 @@ class BackTester:
 			ax.scatter(
 				nearest_bar_index,
 				exit_price,
-				marker="s",
-				s=70,
+				marker="*" if exit_event.get("strategy_type")=="range" else "s",
+				s=150 if exit_event.get("strategy_type")=="range" else 70,
 				facecolors="#FF00CC",
 				edgecolors="#FF00CC",
 				linewidths=1.2,
 				zorder=5,
 			)
 			ax.annotate(
-				"EXIT",
+				"RANGE EXIT" if exit_event.get("strategy_type")=="range" else "EXIT",
 				(nearest_bar_index, exit_price),
 				xytext=(0, 9),
 				textcoords="offset points",
@@ -3801,9 +3815,12 @@ class BackTester:
 		legend_handles = list(indicator_handles)
 		if entries_and_exits:
 			legend_handles.extend([
-				Line2D([0], [0], marker="^", linestyle="None", markersize=8, markerfacecolor="#7B2CBF", markeredgecolor="black", label="Long entry"),
-				Line2D([0], [0], marker="v", linestyle="None", markersize=8, markerfacecolor="#00A6A6", markeredgecolor="black", label="Short entry"),
-				Line2D([0], [0], marker="s", linestyle="None", markersize=7, markerfacecolor="#FF00CC", markeredgecolor="#FF00CC", label="Strategy exit"),
+				Line2D([0], [0], marker="^", linestyle="None", markersize=8, markerfacecolor="#7B2CBF", markeredgecolor="black", label="Cross long entry"),
+				Line2D([0], [0], marker="v", linestyle="None", markersize=8, markerfacecolor="#00A6A6", markeredgecolor="black", label="Cross short entry"),
+				Line2D([0], [0], marker="s", linestyle="None", markersize=7, markerfacecolor="#FF00CC", markeredgecolor="#FF00CC", label="Cross exit"),
+				Line2D([0],[0],marker="2",linestyle="None",markersize=11,markeredgewidth=2.6,color="#7B2CBF",label="Range long entry"),
+				Line2D([0],[0],marker="1",linestyle="None",markersize=11,markeredgewidth=2.6,color="#00A6A6",label="Range short entry"),
+				Line2D([0],[0],marker="*",linestyle="None",markersize=11,color="#FF00CC",label="Range exit"),
 			])
 		if lux_algo_symbols:
 			legend_handles.extend([
@@ -4056,6 +4073,10 @@ class BackTester:
 					pnl_image.getvalue(),
 				)
 
+			for owner, strategy_result in (result.get('strategy_results') or {}).items():
+				if strategy_result.get('overall_pnl_history'):
+					image=self._build_overall_pnl_image(result=dict(result,**strategy_result),title=owner+' strategy performance')
+					zip_file.writestr('00_'+owner+'_strategy_pnl.png',image.getvalue())
 			for direction, directional_result in (result.get('direction_results') or {}).items():
 				if directional_result.get('overall_pnl_history'):
 					image = self._build_overall_pnl_image(result=dict(result, **directional_result), title=direction + ' performance')
@@ -4494,6 +4515,19 @@ class BackTester:
 
 		closest_bar_dt = None
 		closest_price = None
+
+		# Shared, immutable lookup prepared by the multi-strategy simulation.
+		# Keys in Alpaca data may be UTC while execution timestamps are Eastern.
+		indexed=getattr(state,'execution_price_index',{}).get(ticker)
+		if indexed is not None:
+			times,values=indexed
+			index=int(times.searchsorted(target_bar_dt.value,side='right'))-1
+			if index<0 or target_bar_dt.value-int(times[index])>pd.Timedelta(minutes=max_bar_age_minutes).value:
+				raise SimulatedOrderPriceUnavailable(f'No fresh completed one-minute price for {ticker} at {received_dt}')
+			price=float(values[index])
+			if not math.isfinite(price) or price<=0:
+				raise SimulatedOrderPriceUnavailable(f'Invalid completed one-minute price for {ticker}')
+			return price,pd.Timestamp(int(times[index]),tz='UTC').to_pydatetime().astimezone(received_dt.tzinfo)
 
 		for timestamp, price in ticker_prices.items():
 			bar_dt = pd.Timestamp(timestamp)

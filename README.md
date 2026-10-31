@@ -18,7 +18,7 @@ Scope: /backtest/run and /backtest/plot for golden_cross_dip_recovery_4h. Existi
 
 All market-state annotations use completed 4h candles. Band proximity is measured with the completed candle's close; live entry-price thresholds use the simulated execution price and the latest completed 4h context available at signal receipt. Legacy sizing and regime context are preserved.
 
-A range requires ATR / (upper band - lower band) between 0.4 and 0.6 inclusive, a valid band-width comparison, and no band clinging. On an upper proximity close (> upper - 0.2 ATR), compare current width with the width at the latest lower proximity close (< lower + 0.2 ATR), and conversely. Width ratios must be between range_bollinger_gap_similarity_ratio and its reciprocal inclusive (default 0.6 to 1/0.6). A successful comparison persists between proximity events; ATR ratio and clinging are reevaluated every completed candle. No opposite touch means no established range.
+A range requires ATR / (upper band - lower band) at most range_max_atr_to_bollinger_gap_ratio (default 0.5), with no lower ratio bound, a valid band-width comparison, and no band clinging. On an upper proximity close (> upper - 0.2 ATR), compare current width with the width at the latest lower proximity close (< lower + 0.2 ATR), and conversely. Width ratios must be between range_bollinger_gap_similarity_ratio and its reciprocal inclusive (default 0.6 to 1/0.6). A successful comparison persists between proximity events; ATR ratio and clinging are reevaluated every completed candle. No opposite touch means no established range.
 
 Clinging means two consecutive green candles with either high above its own upper band, or two consecutive red candles with either low below its own lower band. Any clinging disqualifies that candle from the range classification. A long is blocked above upper - 0.5 ATR during a range; a short is blocked below lower + 0.5 ATR.
 
@@ -43,3 +43,52 @@ Use run_market_filters_test.sh from your existing project root after copying the
 Restored BackTester initialization before accessing its research helper. Alpha Vantage remains removed. An offline regression test executes the real initialization statements in startup order without an Alpha Vantage key. 145 offline tests pass.
 
 Latest parameter update validation: 151 offline tests pass, including endpoint and simulation forwarding, invalid values, custom range ratios, and the inclusive stretch-width boundary for longs and shorts.
+
+## Independent long/short entry filters
+
+All six arguments default to true:
+
+- long_range_entry_filter_enabled
+- short_range_entry_filter_enabled
+- long_extreme_stretch_entry_filter_enabled
+- short_extreme_stretch_entry_filter_enabled
+- long_post_peak_entry_filter_enabled
+- short_post_trough_entry_filter_enabled
+
+false disables only that directional entry filter. Detection, reference tracking and shading continue. Other eligibility checks, sizing and exits remain active. Both signal and turning-point entries use these switches, including additions. DEMA9 slope signs remain unchanged: positive blocks longs after a peak; negative blocks shorts after a trough.
+
+Range, bullish-stretch and bearish-stretch shades have been darkened and opacity raised from 0.30 to 0.45. The range ATR/gap lower bound remains removed.
+
+Directional-switch update validation: 156 offline tests pass, including independent switches, both endpoint forwarding paths, simulation settings forwarding and preservation of regime gates.
+
+The endpoint argument range_max_atr_to_bollinger_gap_ratio=0.5 sets the maximum ATR/Bollinger-width ratio. This is separate from range_bollinger_gap_similarity_ratio=0.6, which compares two band widths. The existing extreme_price_stretch_min_bollinger_gap_atr_multiple=3 continues to require Bollinger width >= 3 ATR for bullish/bearish stretch detection and filtering.
+
+## Range and cross strategies together
+
+Both /backtest/run and /backtest/plot now accept:
+
+- cross_strategy_enabled=true
+- range_strategy_enabled=true
+- disabled_strategy_virtual_positions_enabled=true
+- range_sizing_low_atr_price_ratio=0.01
+- range_sizing_high_atr_price_ratio=0.05
+- range_sizing_min_entry_fraction=0.25
+- range_sizing_max_entry_fraction=1.0
+
+These defaults enable both actual simulated strategy books. A disabled strategy continues virtually when disabled_strategy_virtual_positions_enabled=true. Its positions can block opposite-side actual entries in the same ticker. Virtual trades and open positions are returned separately and excluded from actual PnL/exposure. Set the virtual flag false to test one strategy in full isolation. Cross strategy_mode and entry_trigger continue to apply only to the cross book. The range book trades both directions using its own range rules, without fast/slow cross gates or the six cross-entry filter switches.
+
+Ownership: cross and range can own separate same-side quantities in one ticker. Every new entry/addition checks both active books for opposite exposure, including disabled-strategy virtual books. Cross entries have priority for simultaneous opposing flat-entry opportunities. A strategy exit closes only its own quantity. The existing max_exposure_multiple cap applies independently per strategy and ticker, so combined exposure may be greater than in a cross-only run.
+
+Range entries evaluate every completed 1m price update and each incoming signal (all loaded timeframes), using only the latest completed 4h indicators. Entry long when ranging and market price < lower Bollinger + 0.2 ATR; entry short when ranging and price > upper Bollinger - 0.2 ATR. Range entries in 4h candle 10 allow another same-side range entry in candle 12. This spacing persists across exits and covers additions, counting native 4h candle steps rather than wall-clock hours.
+
+Range exits do not require the market to remain ranging. Longs exit near the current upper band or near its projected next value; shorts mirror this at the lower band. Projection = current band + (current band - band two completed candles earlier)/2. Current ATR is used for the same 0.2 ATR proximity test; current price is held constant for projection. No extra stop or forced exit upon range termination is introduced. No same-timestamp range reentry after a range exit.
+
+Range sizing: let v = ATR / execution price, and u = clamp((v - low_ratio)/(high_ratio - low_ratio), 0, 1). Entry fraction = max_fraction + u*(min_fraction - max_fraction). Defaults give 100% of base at <=1% normalized ATR, 62.5% at 3%, and 25% at >=5%, before clipping to the owner's exposure cap. This produces a desired entry amount rather than guaranteed execution; existing simulated quote/fill constraints remain active.
+
+Results: strategy_results.cross and strategy_results.range contain independently attributed actual PnL histories. direction_results retains golden_cross/death_cross for cross trades and adds range_long/range_short. trade_events and open_positions identify strategy_type. virtual_trade_events / virtual_open_positions are explicitly marked is_virtual=true. Overall/ticker PnL and gross exposure include actual books only. Charts include separate cross/range PnL images; range long/short entries use thick purple/teal tri_up/tri_down markers, and range exits use magenta stars. Existing cross filled-triangle/square markers remain.
+
+This release is backtest-only; it does not place live broker orders. Live multi-strategy ownership would require a broker fill ledger and reconciliation of each strategy's quantity against the ticker's combined net holding.
+
+Run bash run_range_cross_test.sh after copying all replacement app files. This command uses both strategies, your latest supplied date window/filter settings, and the accepted range sizing defaults. To test cross-only, use range_strategy_enabled=false; range-only uses cross_strategy_enabled=false. The virtual setting still applies unless explicitly disabled.
+
+Validation: 179 offline tests pass, including new range, portfolio, endpoint, chart and UTC execution-index regression tests. Synthetic marker charts were rendered and inspected. No external market-data performance backtest was run in this environment.
