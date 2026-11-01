@@ -5,9 +5,9 @@ Cross and range quantities are combined per stock. Times include UTC offsets.
 
 Stock       Peak open market value   First observed at
 ------------------------------------------------------------------------------
-NFLX       $            22,259.23   2026-08-26T09:25:00-04:00
 ADBE       $            22,003.82   2026-07-22T10:03:00-04:00
 CRM        $            21,855.73   2026-08-14T09:30:00-04:00
+NFLX       $            21,834.36   2026-08-19T11:06:00-04:00
 TSLA       $            21,596.32   2026-06-15T09:35:00-04:00
 DIS        $            21,173.38   2026-08-20T09:53:00-04:00
 XOM        $            21,165.20   2026-08-10T09:31:00-04:00
@@ -26,14 +26,14 @@ INTC       $            18,225.12   2026-07-21T15:54:00-04:00
 META       $            17,028.46   2026-06-09T09:53:00-04:00
 SNOW       $            16,012.58   2026-09-30T10:00:00-04:00
 
-Overall simultaneous peak: $272,273.76
+Overall simultaneous peak: $265,779.60
 First observed at: 2026-10-19T04:03:00-04:00
 Holdings at the overall peak:
   AAPL       $19,837.43
   ADBE       $11,443.81
   AMAT       $18,077.42
   AMD        $19,761.91
-  AMZN       $12,903.41
+  AMZN       $6,409.25
   CRM        $17,371.83
   CVX        $19,964.91
   DIS        $19,907.01
