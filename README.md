@@ -75,9 +75,9 @@ Both /backtest/run and /backtest/plot now accept:
 - range_sizing_min_entry_fraction=0.25
 - range_sizing_max_entry_fraction=1.0
 
-These defaults enable both actual simulated strategy books. A disabled strategy continues virtually when disabled_strategy_virtual_positions_enabled=true. Its positions can block opposite-side actual entries in the same ticker. Virtual trades and open positions are returned separately and excluded from actual PnL/exposure. Set the virtual flag false to test one strategy in full isolation. Cross strategy_mode and entry_trigger continue to apply only to the cross book. The range book trades both directions using its own range rules, without fast/slow cross gates or the six cross-entry filter switches.
+These defaults enable both actual simulated strategy books. A disabled strategy continues virtually when disabled_strategy_virtual_positions_enabled=true. Its qualifying entries participate in opposite-side precedence and replacement in the same ticker. Virtual trades and open positions are returned separately and excluded from actual PnL/exposure. Set the virtual flag false to test one strategy in full isolation. Cross strategy_mode and entry_trigger continue to apply only to the cross book. The range book trades both directions using its own range rules, without fast/slow cross gates or the six cross-entry filter switches.
 
-Ownership: cross and range can own separate same-side quantities in one ticker. Every new entry/addition checks both active books for opposite exposure, including disabled-strategy virtual books. Cross entries have priority for simultaneous opposing flat-entry opportunities. A strategy exit closes only its own quantity. The existing max_exposure_multiple cap applies independently per strategy and ticker, so combined exposure may be greater than in a cross-only run.
+Ownership: cross and range can own separate same-side quantities in one ticker. Every qualifying entry/addition resolves opposite exposure against both active books, including disabled-strategy virtual books, using the replacement rules below. The entry_strategy_precedence setting governs simultaneous opposing opportunities. A strategy exit closes only its own quantity. The existing max_exposure_multiple cap applies independently per strategy and ticker, so combined exposure may be greater than in a cross-only run.
 
 Range entries evaluate every completed 1m price update and each incoming signal (all loaded timeframes), using only the latest completed 4h indicators. Entry long when ranging and market price < lower Bollinger + 0.2 ATR; entry short when ranging and price > upper Bollinger - 0.2 ATR. Range entries in 4h candle 10 allow another same-side range entry in candle 12. This spacing persists across exits and covers additions, counting native 4h candle steps rather than wall-clock hours.
 
@@ -92,3 +92,40 @@ This release is backtest-only; it does not place live broker orders. Live multi-
 Run bash run_range_cross_test.sh after copying all replacement app files. This command uses both strategies, your latest supplied date window/filter settings, and the accepted range sizing defaults. To test cross-only, use range_strategy_enabled=false; range-only uses cross_strategy_enabled=false. The virtual setting still applies unless explicitly disabled.
 
 Validation: 179 offline tests pass, including new range, portfolio, endpoint, chart and UTC execution-index regression tests. Synthetic marker charts were rendered and inspected. No external market-data performance backtest was run in this environment.
+
+Latest display/priority update: repeated trade annotations use dollar amounts only and EXIT for both strategy types; markers and the legend distinguish ownership. At each timestamp, process market updates and all exits first, then range entries (including virtual range entries), then cross entries. The default range precedence governs simultaneous opposing entries; cross precedence can be selected. 182 offline tests pass, including priority, virtual priority, exit-before-entry and chart annotation regression checks.
+
+
+## Range width and maximum open positions
+
+Entry annotations show only the dollar amount, at font size 7.
+
+`range_min_bollinger_gap_to_peak_since_turning_point_ratio=0.7` blocks range entries when the latest completed 4h Bollinger width is below 70% of the widest completed width since the latest confirmed 4h maximum or minimum. The turning candle is included. Entries are blocked until the first confirmed turning point. Detection works regardless of reversal plot settings. Equality passes; range exits and cross entries are unchanged.
+
+Every run reports maximum actual gross open market value per stock and the simultaneous overall maximum, with timestamps and portfolio composition at that maximum. Long and short market values are absolute and added together; virtual holdings are excluded. Individual stock maxima need not occur together and are not summed to obtain the portfolio maximum. Sampling uses completed 1m market updates and event times, including values immediately before exits and after entries. This is not intraminute tick exposure, buying power or margin usage.
+
+The runner prints this report and saves `local_backtest_output/max_open_positions_report.txt`. Plot ZIPs contain `max_open_positions_report.txt`, also copied into `backtest_charts`. JSON results include `max_open_positions_exposure` and `max_open_positions_report`. The report extractor reads only the report prefix of JSON responses rather than loading large history arrays.
+
+Latest validation: 193 offline tests pass; Python compilation and shell syntax checks pass. No external market-data performance run was executed here. Replace all supplied app files and run_local_endpoint.sh together, since the exposure report uses two new modules.
+
+
+## Qualifying opposite-entry replacement
+
+`entry_strategy_precedence=range` (default) or `cross` controls which strategy evaluates entries first at an identical timestamp. An executed qualifying entry blocks opposing entries of the other strategy only at that timestamp. A later qualifying opposite entry closes the other strategy's position immediately, then opens its own position. This replaces the persistent opposite-position entry block. Same-side positions remain independent; opposite positions of the same strategy are not automatically flipped.
+
+Cross candidates pass all entry filters and positive sizing before replacement is attempted. Range candidates must pass range classification, band proximity, width filter, spacing and positive sizing. Failed liquidation prevents the incoming entry. Replacement close events carry `replaced_by_qualifying_cross_entry` or `replaced_by_qualifying_range_entry` as exit_reason. Existing entry/exit rules otherwise remain intact.
+
+Disabled books still participate virtually when disabled_strategy_virtual_positions_enabled=true, including precedence and replacement. Set it false for full isolation. Precedence is based on exact engine timestamps, not grouping the entire 1h or 4h candle. A later candidate may replace a position even if it arrives within the same candle.
+
+Replacement release validation: 198 offline tests pass, including both precedence choices, later replacement, virtual replacement, failed liquidation and rejected-candidate preservation. Python compilation and shell syntax checks pass.
+
+
+## Bollinger cusp requirement for extreme stretches
+
+Extreme bullish stretch additionally requires at least one increase in consecutive lower-band gradients since the latest confirmed 4h fast-MA turning point: (lower[t]-lower[t-1]) > (lower[t-1]-lower[t-2]). Extreme bearish stretch requires the mirrored upper-band decrease: (upper[t]-upper[t-1]) < (upper[t-1]-upper[t-2]). These are strict signed comparisons, not absolute slope comparisons; equality does not qualify.
+
+Both gradients must lie entirely within the cycle. The confirmed turning candle is the first sample, so the earliest comparison is two completed 4h candles later. Each side latches independently until the next confirmed fast-MA maximum or minimum resets both. Before the first confirmed point neither cusp can qualify. Crosses alone do not reset these cusp cycles. Missing band samples interrupt adjacent-gradient comparisons. Detection is independent of chart toggles and uses completed candles only.
+
+The condition applies to shading, formation of new obvious peak/trough references and execution-time extreme-stretch entry filtering. Existing peak/trough reference reset rules remain unchanged. Range classification and range entry rules are unchanged. No new endpoint argument is required: retain the current command, including entry_strategy_precedence and all existing stretch parameters. Indicator JSON includes lower_bollinger_cusp_confirmed and upper_bollinger_cusp_confirmed (0/1).
+
+Cusp release validation: 205 offline tests pass, including signed comparisons, equality, cycle reset, pre-cycle exclusion, prefix causality, independent detection, shading classifications and entry filtering. Python compilation passes. No external market-data performance run was executed.

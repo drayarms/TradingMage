@@ -37,11 +37,13 @@ class StrategySettings:
 
 	cross_strategy_enabled: bool = True
 	range_strategy_enabled: bool = True
+	entry_strategy_precedence: str = "range"
 	disabled_strategy_virtual_positions_enabled: bool = True
 	range_sizing_low_atr_price_ratio: float = 0.01
 	range_sizing_high_atr_price_ratio: float = 0.05
 	range_sizing_min_entry_fraction: float = 0.25
 	range_sizing_max_entry_fraction: float = 1.0
+	range_min_bollinger_gap_to_peak_since_turning_point_ratio: float = 0.7
 	range_max_atr_to_bollinger_gap_ratio: float = 0.5
 	range_bollinger_gap_similarity_ratio: float = 0.6
 	extreme_price_stretch_min_bollinger_gap_atr_multiple: float = 3.0
@@ -65,6 +67,10 @@ class StrategySettings:
 			raise ValueError('Range sizing ATR/price ratios must be positive, finite and low < high')
 		if not all(math.isfinite(v) for v in (self.range_sizing_min_entry_fraction,self.range_sizing_max_entry_fraction)) or not 0<self.range_sizing_min_entry_fraction<=self.range_sizing_max_entry_fraction<=1:
 			raise ValueError('Range sizing fractions must satisfy 0 < minimum <= maximum <= 1')
+		if self.entry_strategy_precedence not in {"range", "cross"}:
+			raise ValueError("entry_strategy_precedence must be range or cross")
+		if not math.isfinite(self.range_min_bollinger_gap_to_peak_since_turning_point_ratio) or not 0<self.range_min_bollinger_gap_to_peak_since_turning_point_ratio<=1:
+			raise ValueError("range_min_bollinger_gap_to_peak_since_turning_point_ratio must be finite and in (0, 1]")
 		if not math.isfinite(self.range_max_atr_to_bollinger_gap_ratio) or self.range_max_atr_to_bollinger_gap_ratio <= 0:
 			raise ValueError("range_max_atr_to_bollinger_gap_ratio must be positive and finite")
 		if not math.isfinite(self.range_bollinger_gap_similarity_ratio) or not 0 < self.range_bollinger_gap_similarity_ratio <= 1:

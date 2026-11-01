@@ -4,6 +4,8 @@ bash ./run_local_endpoint.sh plot \
   strategy_mode=both \
   cross_strategy_enabled=true \
   range_strategy_enabled=true \
+  entry_strategy_precedence=range \
+  range_min_bollinger_gap_to_peak_since_turning_point_ratio=0.7 \
   disabled_strategy_virtual_positions_enabled=true \
   range_sizing_low_atr_price_ratio=0.01 \
   range_sizing_high_atr_price_ratio=0.05 \

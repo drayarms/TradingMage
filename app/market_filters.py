@@ -4,12 +4,36 @@ import pandas as pd
 
 MARKET_FIELDS = ('dema9', 'ranging_market', 'extreme_bullish_price_stretch',
 	'extreme_bearish_price_stretch', 'obvious_peak', 'obvious_trough',
-	'dema9_lower_touch_slope', 'dema9_upper_touch_slope')
+	'dema9_lower_touch_slope', 'dema9_upper_touch_slope',
+	'lower_bollinger_cusp_confirmed', 'upper_bollinger_cusp_confirmed')
 
 def finite(value):
 	return value is not None and math.isfinite(value)
 
-def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0, max_atr_to_gap_ratio=.5):
+def bollinger_cusp_context(frame, turning_points=None):
+	"""Latch strictly increasing/decreasing band gradients within confirmed cycles."""
+	if turning_points is None:
+		from cross_strategy_indicators import fast_moving_average_reversed
+		turning_points=fast_moving_average_reversed(frame,'4h') if 'fast_moving_average' in frame else []
+	confirmations=sorted({pd.Timestamp(p['confirmed_at']).value for p in turning_points})
+	cursor=0; armed=False; samples=[]; lower_seen=upper_seen=False; result=[]
+	for row in frame.itertuples():
+		reset=False
+		while cursor<len(confirmations) and confirmations[cursor]<=pd.Timestamp(row.completed_at).value:
+			armed=True;reset=True;cursor+=1
+		if reset: samples=[];lower_seen=upper_seen=False
+		upper,lower=row.bollinger_upper,row.bollinger_lower
+		if armed and finite(upper) and finite(lower):
+			samples.append((upper,lower));samples=samples[-3:]
+			if len(samples)==3:
+				a,b,c=samples
+				lower_seen=lower_seen or c[1]-b[1]>b[1]-a[1]
+				upper_seen=upper_seen or c[0]-b[0]<b[0]-a[0]
+		elif armed: samples=[]
+		result.append((lower_seen,upper_seen))
+	return result
+
+def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0, max_atr_to_gap_ratio=.5, turning_points=None):
 	frame=frame.copy()
 	if frame.empty: return frame
 	ema=frame.close.ewm(span=9,adjust=False,min_periods=9).mean()
@@ -18,7 +42,8 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 	width_valid=False
 	previous=None
 	output=[]
-	for row in frame.itertuples():
+	cusps=bollinger_cusp_context(frame,turning_points)
+	for row,(lower_cusp,upper_cusp) in zip(frame.itertuples(),cusps):
 		upper,lower,atr,slow=row.bollinger_upper,row.bollinger_lower,row.atr,row.slow_moving_average
 		gap=upper-lower
 		ready=all(finite(v) for v in (upper,lower,atr,slow)) and gap>0 and atr>0
@@ -41,11 +66,11 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 				row.close>row.open and previous.close>previous.open and
 				(row.high>upper or previous.high>previous.bollinger_upper))
 		ranging=ready and atr/gap<=max_atr_to_gap_ratio and width_valid and not cling
-		bullish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
-		bearish=ready and gap>=min_stretch_gap_atr_multiple*atr and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
+		bullish=lower_cusp and ready and gap>=min_stretch_gap_atr_multiple*atr and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
+		bearish=upper_cusp and ready and gap>=min_stretch_gap_atr_multiple*atr and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
 		if bullish: peak=row.high
 		if bearish: trough=row.low
-		output.append(dict(ranging_market=bool(ranging),extreme_bullish_price_stretch=bool(bullish),
+		output.append(dict(lower_bollinger_cusp_confirmed=bool(lower_cusp),upper_bollinger_cusp_confirmed=bool(upper_cusp),ranging_market=bool(ranging),extreme_bullish_price_stretch=bool(bullish),
 			extreme_bearish_price_stretch=bool(bearish),obvious_peak=peak,obvious_trough=trough,
 			dema9_lower_touch_slope=row.dema9-lower_dema if lower_dema is not None else None,
 			dema9_upper_touch_slope=row.dema9-upper_dema if upper_dema is not None else None))
@@ -66,11 +91,11 @@ def entry_filter_reason(side, price, snapshot, stretch_multiple, min_stretch_gap
 		if side=='short' and price<lower+.5*atr: return 'short_near_lower_band_in_range'
 	mid=(upper+lower)/2
 	if side=='long':
-		if stretch_enabled and upper-lower>=min_stretch_gap_atr_multiple*atr and slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
+		if stretch_enabled and snapshot.get('lower_bollinger_cusp_confirmed',False) and upper-lower>=min_stretch_gap_atr_multiple*atr and slow<upper and price>=mid+stretch_multiple*atr: return 'extreme_bullish_price_stretch'
 		peak,slope=snapshot.get('obvious_peak'),snapshot.get('dema9_lower_touch_slope')
 		if post_extreme_enabled and finite(peak) and finite(slope) and price<peak and slope>0: return 'after_obvious_peak_with_positive_dema9_slope'
 	else:
-		if stretch_enabled and upper-lower>=min_stretch_gap_atr_multiple*atr and slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
+		if stretch_enabled and snapshot.get('upper_bollinger_cusp_confirmed',False) and upper-lower>=min_stretch_gap_atr_multiple*atr and slow>lower and price<=mid-stretch_multiple*atr: return 'extreme_bearish_price_stretch'
 		trough,slope=snapshot.get('obvious_trough'),snapshot.get('dema9_upper_touch_slope')
 		if post_extreme_enabled and finite(trough) and finite(slope) and price>trough and slope<0: return 'after_obvious_trough_with_negative_dema9_slope'
 	return None

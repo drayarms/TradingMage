@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from golden_cross_dip_recovery import STRATEGY_NAME
 from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction
+from open_exposure_report import OpenExposureTracker
 
 class StrategyPortfolio:
 	def __init__(self,bt,settings,cross_state,frames,base):
@@ -28,8 +29,10 @@ class StrategyPortfolio:
 		self.cursors=dict.fromkeys(self.books,0)
 		self.virtual_trade_events=[]
 		self.diagnostics=[]
+		self.exposure=OpenExposureTracker(frames)
 		self.last_range_entry={}
 		self.rejections=set()
+		self.entry_claims={}
 		self.rows={t:f.to_dict('records') for t,f in frames.items()}
 		self.times={t:pd.DatetimeIndex(f.completed_at).asi8 for t,f in frames.items() if not f.empty}
 		self.strategy_reports={owner:dict(enabled=enabled,overall_pnl_history=[]) for owner,enabled in self.enabled.items()}
@@ -42,6 +45,30 @@ class StrategyPortfolio:
 	def allows(self,owner,ticker,side):
 		if not self.active(owner): return False
 		return not any(self.active(other) and ticker in book.positions and book.positions[ticker].side!=side for other,book in self.books.items())
+
+	def prepare_entry(self,owner,ticker,side,event):
+		"""Called only after sizing and all strategy entry requirements pass."""
+		if not self.active(owner): return False
+		if not self.bt.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(event['received_dt']): return False
+		if event['received_dt'].date().isoformat() in self.books[owner].market_close_liquidation_dates: return False
+		own=self.books[owner].positions.get(ticker)
+		if own and own.side!=side: return False
+		when=pd.Timestamp(event['received_dt']).value
+		claim=self.entry_claims.get((ticker,when))
+		if claim and claim[0]!=owner and claim[1]!=side: return False
+		for other,book in self.books.items():
+			position=book.positions.get(ticker)
+			if other==owner or not self.active(other) or not position or position.side==side: continue
+			self.track_exposure(event['received_dt'])
+			reason='replaced_by_qualifying_'+owner+'_entry'
+			if not self.bt._close_position(book,dict(event,exit_reason=reason)): return False
+			book.trade_events[-1]['exit_reason']=reason
+			book.last_exit_time_by_ticker[ticker]=event['received_dt']
+			self.sync(other)
+		return True
+
+	def claim_entry(self,owner,ticker,side,event):
+		self.entry_claims[ticker,pd.Timestamp(event['received_dt']).value]=(owner,side)
 
 	def direction(self,owner,side):
 		return ('golden_cross' if side=='long' else 'death_cross') if owner=='cross' else 'range_'+side
@@ -87,12 +114,12 @@ class StrategyPortfolio:
 					book.trade_events[-1]['exit_reason']=reason
 				self.sync('range')
 			return
-		side=range_entry_side(market,row)
+		side=range_entry_side(market,row,self.settings.range_min_bollinger_gap_to_peak_since_turning_point_ratio)
 		if side is None: return
 		last=self.last_range_entry.get((ticker,side))
 		if last is not None and index-last<2: return
 		reason=None
-		if not self.allows('range',ticker,side): reason='opposite_position_in_shared_book'
+
 		price=self.bt._get_execution_price(quote,'buy' if side=='long' else 'sell')
 		fraction=range_entry_fraction(price,float(row['atr']),self.settings)
 		exposure=position.num_shares*price if position else 0.
@@ -104,16 +131,30 @@ class StrategyPortfolio:
 				self.diagnostics.append(dict(ticker=ticker,time=when.isoformat(),strategy_type='range',is_virtual=not self.enabled['range'],reason=reason))
 				self.rejections.add(key)
 			return
+		if not self.prepare_entry('range',ticker,side,event): return
 		previous=len(book.trade_events)
 		self.bt._open_or_add_position(book,event,side,amount/price)
 		trades=book.trade_events[previous:]
 		if any(e.get('event_type') in {'open','add'} for e in trades):
+			self.claim_entry('range',ticker,side,event)
 			self.last_range_entry[ticker,side]=index
 			for trade in trades:
 				trade.update(entry_trigger='range_band_proximity',range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
 		self.sync('range')
 
+	def track_exposure(self,when):
+		values={}
+		for owner,book in self.books.items():
+			if not self.enabled[owner]: continue
+			for ticker,p in book.positions.items():
+				values[ticker]=values.get(ticker,0.)+abs(p.num_shares*self.prices.get(ticker,p.avg_price_per_share))
+		when=pd.Timestamp(when).to_pydatetime().astimezone(self.bt.tvw_helpers.eastern_tz)
+		self.exposure.update(when,values)
+		day=when.date().isoformat()
+		self.aggregate.daily_max_exposure[day]=max(self.aggregate.daily_max_exposure.get(day,0.),sum(values.values()))
+
 	def record(self,when):
+		self.track_exposure(when)
 		self.aggregate.positions={}
 		self.aggregate.realized_by_ticker={}
 		unrealized_directions=dict.fromkeys(self.direction_reports,0.)

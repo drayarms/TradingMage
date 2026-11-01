@@ -1216,6 +1216,10 @@ if [[ "$OUTPUT_TYPE" == "json" ]]; then
 
 	fi
 
+	if [[ -f "$APP_DIR/extract_open_exposure_report.py" ]]; then
+		python3 "$APP_DIR/extract_open_exposure_report.py" "$OUTPUT_FILE" "$OUTPUT_DIR/max_open_positions_report.txt"
+	fi
+
 
 # ============================================================
 # ZIP RESPONSE
@@ -1243,6 +1247,11 @@ elif [[ "$OUTPUT_TYPE" == "zip" ]]; then
 	fi
 
 	echo "ZIP archive validated successfully."
+
+	if [[ -f "$APP_DIR/extract_open_exposure_report.py" ]]; then
+		python3 "$APP_DIR/extract_open_exposure_report.py" "$OUTPUT_FILE" "$OUTPUT_DIR/max_open_positions_report.txt"
+	fi
+
 
 
 	if [[ "$EXTRACT_ZIP" == "true" ]]; then
@@ -1274,6 +1283,9 @@ elif [[ "$OUTPUT_TYPE" == "zip" ]]; then
 			mkdir -p "$BACKTEST_CHARTS_DIR"
 
 			find "$OUTPUT_DIRECTORY" -maxdepth 1 -type f -name '*.png' -exec cp {} "$BACKTEST_CHARTS_DIR/" \;
+			if [[ -f "$OUTPUT_DIRECTORY/max_open_positions_report.txt" ]]; then
+				cp "$OUTPUT_DIRECTORY/max_open_positions_report.txt" "$BACKTEST_CHARTS_DIR/"
+			fi
 
 			echo
 			echo "Fresh backtest charts copied to:"

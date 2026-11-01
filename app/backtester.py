@@ -256,11 +256,13 @@ class BackTester:
 		strategy_mode: str = "golden_cross",
 		cross_strategy_enabled: bool = True,
 		range_strategy_enabled: bool = True,
+		entry_strategy_precedence: str = "range",
 		disabled_strategy_virtual_positions_enabled: bool = True,
 		range_sizing_low_atr_price_ratio: float = 0.01,
 		range_sizing_high_atr_price_ratio: float = 0.05,
 		range_sizing_min_entry_fraction: float = 0.25,
 		range_sizing_max_entry_fraction: float = 1.0,
+		range_min_bollinger_gap_to_peak_since_turning_point_ratio: float = 0.7,
 		range_max_atr_to_bollinger_gap_ratio: float = 0.5,
 		range_bollinger_gap_similarity_ratio: float = 0.6,
 		extreme_price_stretch_min_bollinger_gap_atr_multiple: float = 3.0,
@@ -328,7 +330,7 @@ class BackTester:
 				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
 			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
-			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_min_bollinger_gap_to_peak_since_turning_point_ratio=range_min_bollinger_gap_to_peak_since_turning_point_ratio, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
 			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings)
 
 		if not isinstance(
@@ -3647,7 +3649,7 @@ class BackTester:
 				short_label_added = True
 
 			ax.annotate(
-				f"Entry ${abs(entry_price * float(entry['num_shares'])):,.2f}",
+				f"${abs(entry_price * float(entry['num_shares'])):,.2f}",
 				(
 					nearest_bar_index,
 					entry_price,
@@ -3655,7 +3657,7 @@ class BackTester:
 				xytext=(0, 10),
 				textcoords="offset points",
 				ha="center",
-				fontsize=8,
+				fontsize=7,
 			)
 
 
@@ -4058,6 +4060,8 @@ class BackTester:
 			mode="w",
 			compression=zipfile.ZIP_DEFLATED,
 		) as zip_file:
+			if result.get('max_open_positions_report'):
+				zip_file.writestr('max_open_positions_report.txt',result['max_open_positions_report'])
 			history = result.get(
 				"overall_pnl_history"
 			) or []
