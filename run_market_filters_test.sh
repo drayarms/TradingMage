@@ -2,7 +2,7 @@
 bash ./run_local_endpoint.sh plot \
   strategy_name=golden_cross_dip_recovery_4h \
   strategy_mode=both \
-  cross_strategy_enabled=false \
+  cross_strategy_enabled=true \
   range_strategy_enabled=true \
   disabled_strategy_virtual_positions_enabled=true \
   range_sizing_low_atr_price_ratio=0.01 \

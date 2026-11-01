@@ -54,7 +54,7 @@ def selected_side(event, settings, position_side=None):
 	return 'long'
 
 
-def process_event(bt, state, event, base, settings, frames, seen, diagnostics):
+def process_event(bt, state, event, base, settings, frames, seen, diagnostics, entry_phase=None):
 	position = state.positions.get(event['ticker'])
 	marker_side=event.get('_turning_point_entry_side')
 	if marker_side and position and position.side != marker_side: return
@@ -63,6 +63,7 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics):
 	action = 'exit' if turning_exit else 'entry' if marker_side else signal_action(event, side)
 	if action == 'entry' and ((settings.entry_trigger == 'turning_point') != bool(marker_side)): return
 	if not action: return
+	if entry_phase is not None and (action=='entry')!=entry_phase: return
 	key = event_identity(event, action)
 	if key in seen or (action == 'entry' and event_identity(event, 'exit') in seen): return
 	seen.add(key)
@@ -201,6 +202,7 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 		batch=list(items)
 		tickers_at_time=sorted({item['payload']['ticker'] for item in batch})
 		before_trades=len(portfolio.aggregate.trade_events)
+		cross_candidates=[]
 		for item in batch:
 			if item['kind']=='market_bar':
 				payload=item['payload'];state.last_price_by_ticker[payload['ticker']]=float(payload['close'])
@@ -227,12 +229,19 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 				elif item['kind'] in {'signal','turning_point'}:
 					event=item['payload']
 					if item['kind']=='signal': bt._register_event_context(state,event)
+					cross_candidates.append(event)
 					if state.last_exit_time_by_ticker.get(event['ticker'])!=event['received_dt']:
 						count=len(diagnostics)
-						process_event(bt,state,event,base,settings,frames,seen,diagnostics)
+						process_event(bt,state,event,base,settings,frames,seen,diagnostics,entry_phase=False)
 						for diagnostic in diagnostics[count:]: diagnostic.update(strategy_type='cross',is_virtual=not settings.cross_strategy_enabled)
 				portfolio.sync('cross')
 		for ticker in tickers_at_time: portfolio.process_range(ticker,when,entries=True)
+		for event in cross_candidates:
+			if state.last_exit_time_by_ticker.get(event['ticker'])==event['received_dt']: continue
+			count=len(diagnostics)
+			process_event(bt,state,event,base,settings,frames,seen,diagnostics,entry_phase=True)
+			for diagnostic in diagnostics[count:]: diagnostic.update(strategy_type='cross',is_virtual=not settings.cross_strategy_enabled)
+			portfolio.sync('cross')
 		if when.minute%bt.PNL_SNAPSHOT_INTERVAL_MINUTES==0 or any(item['kind']!='market_bar' for item in batch) or len(portfolio.aggregate.trade_events)!=before_trades:
 			record(when)
 	progress.stage('Simulation complete; preparing results...')

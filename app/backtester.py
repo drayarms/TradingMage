@@ -3647,7 +3647,7 @@ class BackTester:
 				short_label_added = True
 
 			ax.annotate(
-				f"{'Range entry' if entry.get('strategy_type')=='range' else 'Entry'} ${abs(entry_price * float(entry['num_shares'])):,.2f}",
+				f"Entry ${abs(entry_price * float(entry['num_shares'])):,.2f}",
 				(
 					nearest_bar_index,
 					entry_price,
@@ -3681,7 +3681,7 @@ class BackTester:
 				zorder=5,
 			)
 			ax.annotate(
-				"RANGE EXIT" if exit_event.get("strategy_type")=="range" else "EXIT",
+				"EXIT",
 				(nearest_bar_index, exit_price),
 				xytext=(0, 9),
 				textcoords="offset points",
