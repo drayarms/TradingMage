@@ -11,24 +11,27 @@ def finite(value):
 	return value is not None and math.isfinite(value)
 
 def bollinger_cusp_context(frame, turning_points=None):
-	"""Latch strictly increasing/decreasing band gradients within confirmed cycles."""
+	"""Latch band-gradient cusps after the latest running minimum cycle width."""
 	if turning_points is None:
 		from cross_strategy_indicators import fast_moving_average_reversed
 		turning_points=fast_moving_average_reversed(frame,'4h') if 'fast_moving_average' in frame else []
 	confirmations=sorted({pd.Timestamp(p['confirmed_at']).value for p in turning_points})
-	cursor=0; armed=False; samples=[]; lower_seen=upper_seen=False; result=[]
+	cursor=0; armed=False; samples=[]; lower_seen=upper_seen=False; minimum_gap=None; result=[]
 	for row in frame.itertuples():
 		reset=False
 		while cursor<len(confirmations) and confirmations[cursor]<=pd.Timestamp(row.completed_at).value:
 			armed=True;reset=True;cursor+=1
-		if reset: samples=[];lower_seen=upper_seen=False
+		if reset: samples=[];lower_seen=upper_seen=False;minimum_gap=None
 		upper,lower=row.bollinger_upper,row.bollinger_lower
-		if armed and finite(upper) and finite(lower):
-			samples.append((upper,lower));samples=samples[-3:]
-			if len(samples)==3:
-				a,b,c=samples
-				lower_seen=lower_seen or c[1]-b[1]>b[1]-a[1]
-				upper_seen=upper_seen or c[0]-b[0]<b[0]-a[0]
+		if armed and finite(upper) and finite(lower) and upper>lower:
+			gap=upper-lower
+			if minimum_gap is None or gap<=minimum_gap:
+				minimum_gap=gap;samples=[];lower_seen=upper_seen=False
+			samples.append((upper,lower));samples=samples[-4:]
+			if len(samples)==4:
+				a,b,c,d=samples
+				lower_seen=lower_seen or d[1]-b[1]>c[1]-a[1]
+				upper_seen=upper_seen or d[0]-b[0]<c[0]-a[0]
 		elif armed: samples=[]
 		result.append((lower_seen,upper_seen))
 	return result

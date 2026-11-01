@@ -122,10 +122,19 @@ Replacement release validation: 198 offline tests pass, including both precedenc
 
 ## Bollinger cusp requirement for extreme stretches
 
-Extreme bullish stretch additionally requires at least one increase in consecutive lower-band gradients since the latest confirmed 4h fast-MA turning point: (lower[t]-lower[t-1]) > (lower[t-1]-lower[t-2]). Extreme bearish stretch requires the mirrored upper-band decrease: (upper[t]-upper[t-1]) < (upper[t-1]-upper[t-2]). These are strict signed comparisons, not absolute slope comparisons; equality does not qualify.
+Extreme bullish stretch additionally requires at least one increase in consecutive lower-band gradients since the latest confirmed 4h fast-MA turning point: (lower[t]-lower[t-2]) > (lower[t-1]-lower[t-3]). Extreme bearish stretch requires the mirrored upper-band decrease: (upper[t]-upper[t-2]) < (upper[t-1]-upper[t-3]). These are strict signed comparisons, not absolute slope comparisons; equality does not qualify.
 
-Both gradients must lie entirely within the cycle. The confirmed turning candle is the first sample, so the earliest comparison is two completed 4h candles later. Each side latches independently until the next confirmed fast-MA maximum or minimum resets both. Before the first confirmed point neither cusp can qualify. Crosses alone do not reset these cusp cycles. Missing band samples interrupt adjacent-gradient comparisons. Detection is independent of chart toggles and uses completed candles only.
+Both gradients must lie entirely at or after the running narrowest-gap anchor within the cycle. The anchor candle is the first sample, so the earliest comparison is three completed 4h candles later. Each side latches independently until a new or equal minimum gap, or the next confirmed fast-MA maximum or minimum, resets both. Before the first confirmed point neither cusp can qualify. Crosses alone do not reset these cusp cycles. Missing band samples interrupt adjacent-gradient comparisons. Detection is independent of chart toggles and uses completed candles only.
 
 The condition applies to shading, formation of new obvious peak/trough references and execution-time extreme-stretch entry filtering. Existing peak/trough reference reset rules remain unchanged. Range classification and range entry rules are unchanged. No new endpoint argument is required: retain the current command, including entry_strategy_precedence and all existing stretch parameters. Indicator JSON includes lower_bollinger_cusp_confirmed and upper_bollinger_cusp_confirmed (0/1).
 
 Cusp release validation: 205 offline tests pass, including signed comparisons, equality, cycle reset, pre-cycle exclusion, prefix causality, independent detection, shading classifications and entry filtering. Python compilation passes. No external market-data performance run was executed.
+
+Gradient update: Bollinger cusp gradients now span t to t-2, compared with the immediately preceding overlapping gradient (t-1 to t-3). Both remain entirely within the confirmed turning-point cycle. All other conditions and endpoint arguments remain unchanged.
+
+
+## Running narrowest-gap cusp anchor
+
+The Bollinger cusp comparison now starts at the candle with the narrowest positive Bollinger gap observed since the latest confirmed 4h fast-MA turning point. A new smaller gap moves the anchor to that candle and clears both cusp conditions. Equal minimum gaps use the latest candle and also clear both conditions. The first comparison needs four completed candles including the anchor: compare band[t]-band[t-2] against band[t-1]-band[t-3]. Earlier samples are excluded. New fast-MA turning points restart the minimum-width search, including their own candle. Future minimums do not rewrite past classifications. No endpoint argument changes are required. This changes only the stretch-cusp anchor, not the range-entry widest-gap reference.
+
+Narrowest-anchor release validation: 210 offline tests pass; Python compilation passes. Tests cover new minima, equal-minimum resets, fast-MA cycle resets and causality.
