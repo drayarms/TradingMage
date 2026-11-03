@@ -59,19 +59,23 @@ def selected_side(event, settings, position_side=None):
 def process_event(bt, state, event, base, settings, frames, seen, diagnostics, entry_phase=None):
 	position = state.positions.get(event['ticker'])
 	marker_side=event.get('_turning_point_entry_side')
-	if marker_side and position and position.side != marker_side: return
-	side = marker_side or selected_side(event, settings, position.side if position else None)
+	continuous_side=event.get('_continuous_entry_side')
+	forced_side=marker_side or continuous_side
+	if forced_side and position and position.side != forced_side: return
+	side = forced_side or selected_side(event, settings, position.side if position else None)
 	turning_exit = settings.exit_after_turning_point and event.get('_turning_point_exit_side') == side
-	action = 'exit' if turning_exit else 'entry' if marker_side else signal_action(event, side)
-	if action == 'entry' and ((settings.entry_trigger == 'turning_point') != bool(marker_side)): return
+	action = 'exit' if turning_exit else 'entry' if forced_side else signal_action(event, side)
+	if action == 'entry':
+		trigger='turning_point' if marker_side else 'none' if continuous_side else 'buy_sell_signal'
+		if settings.entry_trigger!=trigger: return
 	if not action: return
 	if entry_phase is not None and (action=='entry')!=entry_phase: return
 	key = event_identity(event, action)
 	if key in seen or (action == 'entry' and event_identity(event, 'exit') in seen): return
 	seen.add(key)
-	as_of = min(pd.Timestamp(event['received_dt']), pd.Timestamp(event['dt']))
-	row = snapshot_at(frames.get(event['ticker'], pd.DataFrame()), as_of)
-	if row:
+	as_of = pd.Timestamp(event['received_dt']) if action=='entry' else min(pd.Timestamp(event['received_dt']), pd.Timestamp(event['dt']))
+	row = dict(event['_entry_snapshot']) if '_entry_snapshot' in event else snapshot_at(frames.get(event['ticker'], pd.DataFrame()), as_of)
+	if row and '_entry_snapshot' not in event:
 		row['_market_filter_context'] = snapshot_at(frames.get(event['ticker'], pd.DataFrame()),event['received_dt'])
 	direction = 'golden_cross' if side == 'long' else 'death_cross'
 	previous_count = len(state.trade_events)
@@ -87,6 +91,10 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics, e
 			state.trade_events[-1].update(signal_time=signal_time, exit_reason=reason, strategy_direction=direction)
 		return
 	if settings.strategy_mode not in {direction, 'both'}: return
+	if hasattr(state,'cross_entry_spacing_reason'):
+		spacing=state.cross_entry_spacing_reason(event['ticker'],side,event['received_dt'])
+		if spacing:
+			diagnostics.append(dict(ticker=event['ticker'],time=event['time'],reason=spacing)); return
 	try:
 		quote = bt._get_simulated_quote(state, event)
 		price = bt._get_execution_price(quote, 'buy' if side == 'long' else 'sell')
@@ -101,7 +109,9 @@ def process_event(bt, state, event, base, settings, frames, seen, diagnostics, e
 		if hasattr(state,'prepare_entry') and not state.prepare_entry(event['ticker'],side,event):
 			diagnostics[-1].update(eligible=False,reason='entry_precedence_or_replacement_exit_failed'); return
 		bt._open_or_add_position(state, dict(event, exit_strategy=None), side, decision['quantity'])
-		if any(t.get('event_type') in {'open','add'} for t in state.trade_events[previous_count:]) and hasattr(state,'claim_entry'): state.claim_entry(event['ticker'],side,event)
+		if any(t.get('event_type') in {'open','add'} for t in state.trade_events[previous_count:]):
+			if hasattr(state,'claim_entry'): state.claim_entry(event['ticker'],side,event)
+			if hasattr(state,'record_cross_fill'): state.record_cross_fill(event['ticker'],side,event)
 		for trade in state.trade_events[previous_count:]:
 			trade.update(strategy_direction=direction,entry_trigger=settings.entry_trigger)
 			if marker_side: trade['turning_point_evaluated_at']=event['turning_point_evaluated_at']
@@ -150,10 +160,11 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 		progress.stage(f'Loading indicators: {ticker} ({number}/{len(symbols)})')
 		frames[ticker]=history.get_frame(ticker,start_dt,end_dt)
 	points={}
-	if settings.exit_after_turning_point or settings.entry_trigger == 'turning_point' or settings.range_strategy_enabled or settings.disabled_strategy_virtual_positions_enabled:
+	if settings.cross_strategy_enabled or settings.exit_after_turning_point or settings.entry_trigger == 'turning_point' or settings.range_strategy_enabled or settings.disabled_strategy_virtual_positions_enabled:
 		# Execution always uses 4H turning points, independently of plot switches.
 		points={ticker:fast_moving_average_reversed(frame,'4h') for ticker,frame in frames.items()}
-	frames={ticker:attach_turning_point_gap_reference(frame,points.get(ticker,[])) for ticker,frame in frames.items()}
+	from cross_entry_policy import attach_cross_turning_context, attach_cross_entry_context, ENTRY_CONTEXT_FIELDS
+	frames={ticker:attach_cross_turning_context(attach_turning_point_gap_reference(frame if all(k in frame for k in ENTRY_CONTEXT_FIELDS) else attach_cross_entry_context(frame),points.get(ticker,[])),points.get(ticker,[])) for ticker,frame in frames.items()}
 	if settings.exit_after_turning_point:
 		for event,side in zip(events,turning_point_exit_reasons(events,points)):
 			if side: event['_turning_point_exit_side']=side
@@ -164,6 +175,8 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 	portfolio=StrategyPortfolio(bt,settings,state,frames,base)
 	state.prepare_entry=lambda ticker,side,event:portfolio.prepare_entry('cross',ticker,side,event)
 	state.claim_entry=lambda ticker,side,event:portfolio.claim_entry('cross',ticker,side,event)
+	state.record_cross_fill=portfolio.record_cross_fill
+	state.cross_entry_spacing_reason=portfolio.cross_entry_spacing_reason
 	state.defer_entry=lambda event,side,qty:portfolio.limit_orders.submit('cross',event,side,qty)
 	reports=portfolio.direction_reports
 	def record(when):
@@ -200,6 +213,12 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 				timeline.append(dict(kind='turning_point',dt=when,payload=event))
 
 	for ticker, frame in frames.items():
+		# Range crossings always use native fast/slow 4h completions, independently
+		# of the selected cross-book exit method and plot switches.
+		for crossing in ('death_cross','golden_cross'):
+			if crossing not in frame: continue
+			for _,row in frame.loc[frame[crossing] & (frame.completed_at>=pd.Timestamp(start_dt)) & (frame.completed_at<=pd.Timestamp(end_dt))].iterrows():
+				timeline.append(dict(kind='range_anchor_cross',dt=row.completed_at.to_pydatetime(),payload=dict(ticker=ticker)))
 		for crossing in (('dema5_death_cross', 'dema5_golden_cross') if settings.cross_exit_method == 'dema5' else ('death_cross', 'golden_cross') if settings.cross_exit_method == 'fast_moving_average' else ()):
 			if crossing not in frame: continue
 			for _, row in frame.loc[frame[crossing] & (frame.completed_at >= pd.Timestamp(start_dt)) & (frame.completed_at <= pd.Timestamp(end_dt))].iterrows():
@@ -215,6 +234,7 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 			if item['kind']=='market_bar':
 				payload=item['payload'];state.last_price_by_ticker[payload['ticker']]=float(payload['close'])
 		portfolio.track_exposure(when)
+		portfolio.process_exit_intents(when)
 		portfolio.limit_orders.process(when,batch)
 		for ticker in tickers_at_time: portfolio.process_range(ticker,when,entries=False)
 		if portfolio.active('cross'):
@@ -247,6 +267,10 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 				portfolio.sync('cross')
 		if settings.entry_strategy_precedence=='range':
 			for ticker in tickers_at_time: portfolio.process_range(ticker,when,entries=True)
+		if settings.entry_trigger=='none':
+			for ticker in sorted({item['payload']['ticker'] for item in batch if item['kind']=='market_bar'}):
+				event=portfolio.continuous_cross_event(ticker,when)
+				if event is not None: cross_candidates.append(event)
 		for event in cross_candidates:
 			if state.last_exit_time_by_ticker.get(event['ticker'])==event['received_dt']: continue
 			count=len(diagnostics)
@@ -292,4 +316,4 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 		report['trade_count']=sum(e.get('strategy_type')==owner and e.get('event_type') in {'open','add','close'} for e in state.trade_events)
 	for direction, report in reports.items():
 		report['trade_count'] = sum(e.get('strategy_direction') == direction and e.get('event_type') in {'open', 'add', 'close'} for e in state.trade_events)
-	return {'max_open_positions_report':portfolio.exposure.to_text(),'max_open_positions_exposure':portfolio.exposure.to_dict(),'execution_policy':dict(calendar='Alpaca',timezone='America/New_York',session='04:00-20:00 capped by calendar session bounds',overnight=False,extended_fill_model='DAY limit; subsequent full 1m bar touch, positive volume sufficient for full quantity; no partial fills'), 'execution_order_events':portfolio.limit_orders.events,'pending_exit_intents':[dict(ticker=k[1],strategy_type=k[0],signal_time=e.get('time'),reason=e.get('exit_reason')) for k,(e,p) in portfolio.limit_orders.closed_exit_intents.items()], 'pending_execution_orders':[dict(ticker=k[1],strategy_type=k[0],limit_price=o['limit'],submitted_at=o['submitted'].isoformat(),action='exit' if o['exit_order'] else 'entry') for k,o in portfolio.limit_orders.pending.items()],'strategy_results':portfolio.strategy_reports,'virtual_trade_events':portfolio.virtual_trade_events,'virtual_open_positions':portfolio.open_positions(virtual=True),'cross_exit_method':settings.cross_exit_method, 'fast_moving_average_reversed':reversals, 'strategy_mode':settings.strategy_mode, 'direction_results':reports, 'strategy_name':STRATEGY_NAME,'exit_strategy':('death_cross_or_4h_bullish_exit_or_1h_upper_atr_bullish_exit' if settings.cross_exit_method == 'fast_moving_average' and settings.strategy_mode == 'golden_cross' else settings.cross_exit_method+'_slow_average_or_directional_signal_exit'),'anchor_timeframe':'4h','ATR_period':settings.atr_period,'ATR_multiplier':None,'start':start_dt.isoformat(),'end':end_dt.isoformat(),'position_size':base,'strategy_settings':settings.to_dict(),'warmup_sessions':0,'warmup_signal_count':0,'signal_count':len(events),'tickers':symbols,'signal_events':[bt._serialize_signal_event(e) for e in events],'trade_events':state.trade_events,'trade_count':sum(e['event_type'] in {'open','add','close'} for e in state.trade_events),'overall_pnl_history':state.overall_pnl_history,'ticker_pnl_history':state.ticker_pnl_history,'daily_max_open_exposure':bt._daily_exposure_rows(state.daily_max_exposure),'anchor_bars':anchor,'indicator_series':indicators,'open_positions':open_positions,'realized_pnl':sum(state.realized_by_ticker.values()),'unrealized_pnl':sum(p['unrealized_pnl'] for p in open_positions),'entry_diagnostics':diagnostics,'liquidate_before_market_close':False,'run_exit_strategy':True}
+	return {'max_open_positions_report':portfolio.exposure.to_text(),'max_open_positions_exposure':portfolio.exposure.to_dict(),'execution_policy':dict(calendar='Alpaca',timezone='America/New_York',session='04:00-20:00 capped by calendar session bounds',overnight=False,extended_fill_model='DAY limit; subsequent full 1m bar touch, positive volume sufficient for full quantity; no partial fills'), 'execution_order_events':portfolio.limit_orders.events,'gradient_blocked_exit_intents':[dict(ticker=k[1],strategy_type=k[0],signal_time=e.get('time'),reason=e.get('exit_reason')) for k,(e,p) in portfolio.blocked_exit_intents.items()], 'pending_exit_intents':[dict(ticker=k[1],strategy_type=k[0],signal_time=e.get('time'),reason=e.get('exit_reason')) for k,(e,p) in portfolio.limit_orders.closed_exit_intents.items()], 'pending_execution_orders':[dict(ticker=k[1],strategy_type=k[0],limit_price=o['limit'],submitted_at=o['submitted'].isoformat(),action='exit' if o['exit_order'] else 'entry') for k,o in portfolio.limit_orders.pending.items()],'strategy_results':portfolio.strategy_reports,'virtual_trade_events':portfolio.virtual_trade_events,'virtual_open_positions':portfolio.open_positions(virtual=True),'cross_exit_method':settings.cross_exit_method, 'fast_moving_average_reversed':reversals, 'strategy_mode':settings.strategy_mode, 'direction_results':reports, 'strategy_name':STRATEGY_NAME,'exit_strategy':('death_cross_or_4h_bullish_exit_or_1h_upper_atr_bullish_exit' if settings.cross_exit_method == 'fast_moving_average' and settings.strategy_mode == 'golden_cross' else settings.cross_exit_method+'_slow_average_or_directional_signal_exit'),'anchor_timeframe':'4h','ATR_period':settings.atr_period,'ATR_multiplier':None,'start':start_dt.isoformat(),'end':end_dt.isoformat(),'position_size':base,'strategy_settings':settings.to_dict(),'warmup_sessions':0,'warmup_signal_count':0,'signal_count':len(events),'tickers':symbols,'signal_events':[bt._serialize_signal_event(e) for e in events],'trade_events':state.trade_events,'trade_count':sum(e['event_type'] in {'open','add','close'} for e in state.trade_events),'overall_pnl_history':state.overall_pnl_history,'ticker_pnl_history':state.ticker_pnl_history,'daily_max_open_exposure':bt._daily_exposure_rows(state.daily_max_exposure),'anchor_bars':anchor,'indicator_series':indicators,'open_positions':open_positions,'realized_pnl':sum(state.realized_by_ticker.values()),'unrealized_pnl':sum(p['unrealized_pnl'] for p in open_positions),'entry_diagnostics':diagnostics,'liquidate_before_market_close':False,'run_exit_strategy':True}

@@ -34,7 +34,7 @@ class ExtendedLimitOrders:
 				if other_key[0]!=owner and other_key[1]==ticker and not other['exit_order'] and other['side']!=side:
 					self.finish(other_key,event['received_dt'],'cancelled_by_opposite_entry')
 		when,bounds=calendar.bounds(event['received_dt'])
-		self.pending[key]=dict(owner=owner,event=dict(event),side=side,qty=qty,exit_order=exit_order,buy=buy,limit=limit,submitted=when,expires=bounds[3])
+		self.pending[key]=dict(owner=owner,event=dict(event),side=side,qty=qty,exit_order=exit_order,buy=buy,limit=limit,submitted=when,expires=bounds[3],position=book.positions.get(ticker) if exit_order else None)
 		self.events.append(dict(ticker=ticker,strategy_type=owner,time=when.isoformat(),status='submitted',order_type='limit',time_in_force='day',extended_hours=True,limit_price=limit,action='exit' if exit_order else 'entry'))
 		if not exit_order: self.p.claim_entry(owner,ticker,side,event)
 		return True
@@ -54,6 +54,12 @@ class ExtendedLimitOrders:
 		remaining_volume={}
 		for key,order in sorted(list(self.pending.items()),key=lambda item:item[0][0]!=self.p.settings.entry_strategy_precedence):
 			if key not in self.pending: continue
+			if order['exit_order']:
+				book=self.p.books[key[0]]
+				if book.positions.get(key[1]) is not order['position']:
+					self.finish(key,when,'cancelled_stale_position');continue
+				check=dict(order['event'],received_dt=pd.Timestamp(when).to_pydatetime())
+				if not self.p.exit_allowed(key[0],check): continue
 			if pd.Timestamp(when)>=order['expires']:
 				self.finish(key,when,'expired');continue
 			ticker=key[1];bar=bars.get(ticker)
@@ -68,7 +74,17 @@ class ExtendedLimitOrders:
 			owner=key[0];book=self.p.books[owner]
 			event=dict(order['event'],received_dt=pd.Timestamp(when).to_pydatetime(),time=pd.Timestamp(when).isoformat(),_limit_fill=True,_execution_fill_price=order['limit'])
 			position=book.positions.get(ticker)
-			requested=position.num_shares if order['exit_order'] and position is not None else order['qty']
+			entry_qty=None
+			if not order['exit_order'] and owner=='cross':
+				capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(position.num_shares*order['limit'] if position else 0.))
+				entry_qty=min(order['qty'],capacity/order['limit'])
+				if owner=='cross':
+					decision=self.p.cross_entry_decision(ticker,order['side'],when,order['limit'])
+					if not decision['eligible']:
+						self.finish(key,when,'cancelled_'+decision['reason']);continue
+					entry_qty=min(entry_qty,decision['quantity'])
+				if entry_qty<=0: self.finish(key,when,'cancelled_exposure_cap');continue
+			requested=position.num_shares if order['exit_order'] and position is not None else entry_qty if owner=='cross' else order['qty']
 			if not order['exit_order']:
 				requested+=sum(pos.num_shares for other,other_book in self.p.books.items() if other!=owner and self.p.active(other) and (pos:=other_book.positions.get(ticker)) is not None and pos.side!=order['side'])
 			if requested is not None and requested>volume: continue
@@ -79,9 +95,11 @@ class ExtendedLimitOrders:
 					book.last_exit_time_by_ticker[ticker]=event['received_dt']
 					book.trade_events[-1]['exit_reason']=event.get('exit_reason','limit_exit')
 			else:
-				capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(position.num_shares*order['limit'] if position else 0.))
-				qty=min(order['qty'],capacity/order['limit'])
-				if qty<=0: self.finish(key,when,'cancelled_exposure_cap');continue
+				if owner=='cross': qty=entry_qty
+				else:
+					capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(position.num_shares*order['limit'] if position else 0.))
+					qty=min(order['qty'],capacity/order['limit'])
+					if qty<=0: self.finish(key,when,'cancelled_exposure_cap');continue
 				if not self.p.prepare_entry(owner,ticker,order['side'],event): continue
 				filled=self.p.bt._open_or_add_position(book,event,order['side'],qty)
 				if filled:
@@ -89,6 +107,7 @@ class ExtendedLimitOrders:
 						if not hasattr(book,'confirmatory_pairs'): book.confirmatory_pairs={}
 						book.confirmatory_pairs[ticker]=dict(position=book.positions[ticker],opened_at=event['received_dt'])
 					self.p.claim_entry(owner,ticker,order['side'],event)
+					if owner=='cross': self.p.record_cross_fill(ticker,order['side'],event)
 					book.trade_events[-1].update(entry_trigger=event.get('entry_trigger','range_band_proximity' if owner=='range' else self.p.settings.entry_trigger),order_type='limit',limit_price=order['limit'],order_submitted_at=order['submitted'].isoformat())
 					book.trade_events[-1]['signal_time']=order['event'].get('time')
 					for name in ('range_entry_fraction','atr_price_ratio','range_context_completed_at','turning_point_evaluated_at'):

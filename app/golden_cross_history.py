@@ -10,8 +10,6 @@ class GoldenCrossHistory:
 		self.initial_days = initial_days
 		self.bar_duration = bar_duration if bar_duration is not None else pd.Timedelta(hours=4)
 		self.cache = {}
-		self.turning_cache = {}
-		self.source_history = None
 		self.lock = threading.RLock()
 
 	def _fetch(self, ticker, start, end):
@@ -55,7 +53,7 @@ class GoldenCrossHistory:
 				frame = build_indicator_frame(raw,self.settings, self.bar_duration)
 				prior = frame.loc[frame.completed_at <= start] if not frame.empty else frame
 				# Each direction needs its own mature cross reference at the start.
-				names = ('golden_cross_price',) if self.settings.strategy_mode == 'golden_cross' else ('death_cross_price',) if self.settings.strategy_mode == 'death_cross' else ('golden_cross_price', 'death_cross_price')
+				names = ('long_entry_cross_price',) if self.settings.strategy_mode == 'golden_cross' else ('short_entry_cross_price',) if self.settings.strategy_mode == 'death_cross' else ('long_entry_cross_price', 'short_entry_cross_price')
 				ready = not prior.empty and all(pd.notna(prior.iloc[-1][name]) for name in names)
 				if ready or left <= self.earliest:
 					break
@@ -67,36 +65,5 @@ class GoldenCrossHistory:
 			self.cache[ticker] = {'requested_start': start, 'end':end, 'left':left, 'raw':raw, 'frame':frame}
 			return frame.copy()
 
-	def get_turning_point_frame(self, ticker, start, end, anchor_frame=None):
-		from cross_strategy_indicators import REVERSAL_TIMEFRAMES, attach_turning_point_events
-		anchor = self.get_frame(ticker, start, end) if anchor_frame is None else anchor_frame
-		if anchor.empty: return anchor
-		if self.settings.fast_moving_average_reversal_timeframe == '4h':
-			source = anchor
-		else:
-			from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
-			with self.lock:
-				if self.source_history is None:
-					minutes = REVERSAL_TIMEFRAMES[self.settings.fast_moving_average_reversal_timeframe]
-					timeframe = TimeFrame(minutes//60, TimeFrameUnit.Hour) if minutes >= 60 else TimeFrame(minutes, TimeFrameUnit.Minute)
-					self.source_history = GoldenCrossHistory(self.api, self.settings, timeframe,
-						initial_days=14, bar_duration=pd.Timedelta(minutes=minutes))
-			# Include the last primary cross for correct source-interval tethering.
-			crossed = anchor.loc[anchor.death_cross | anchor.golden_cross]
-			prior = crossed.loc[crossed.completed_at <= pd.Timestamp(start)]
-			source_start = prior.index[-1] if not prior.empty else anchor.index[0]
-			source = self.source_history.get_frame(ticker, source_start, end)
-		key = (len(anchor), anchor.completed_at.iloc[-1], len(source),
-			source.completed_at.iloc[-1] if not source.empty else None)
-		with self.lock:
-			cached = self.turning_cache.get(ticker)
-			if cached and cached[0] == key: return cached[1].copy()
-			result = attach_turning_point_events(anchor, source, self.settings)
-			self.turning_cache[ticker] = (key, result)
-			return result.copy()
-
 	def snapshot(self, ticker, as_of):
-		frame = self.get_frame(ticker, as_of, as_of)
-		if self.settings.do_not_enter_after_opposite_turning_point:
-			frame = self.get_turning_point_frame(ticker, as_of, as_of, frame)
-		return snapshot_at(frame, as_of)
+		return snapshot_at(self.get_frame(ticker,as_of,as_of),as_of)

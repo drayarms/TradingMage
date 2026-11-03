@@ -32,6 +32,9 @@ class StrategyPortfolio:
 		self.diagnostics=[]
 		self.exposure=OpenExposureTracker(frames)
 		self.last_range_entry={}
+		self.last_cross_entry={}
+		self.cross_snapshot_cache={}
+		self.blocked_exit_intents={}
 		self.rejections=set()
 		self.entry_claims={}
 		self.rows={t:f.to_dict('records') for t,f in frames.items()}
@@ -41,8 +44,49 @@ class StrategyPortfolio:
 		self.realized_directions=dict.fromkeys(self.direction_reports,0.)
 		self.limit_orders=ExtendedLimitOrders(self)
 		for owner,book in self.books.items():
+			book.exit_allowed=lambda event,owner=owner:self.exit_allowed(owner,event)
+			book.on_position_closed=lambda ticker,when,owner=owner:self.position_closed(owner,ticker,when)
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
 			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
+
+	def exit_allowed(self,owner,event):
+		from cross_entry_policy import exit_gradient_blocked
+		key=(owner,event['ticker']);book=self.books[owner]
+		position=book.positions.get(event['ticker'])
+		if position is None: return True
+		_,row=self.context(event['ticker'],event['received_dt'])
+		if row is None or not exit_gradient_blocked(position.side,row): return True
+		existing=self.blocked_exit_intents.get(key)
+		if existing is None or existing[1] is not position:
+			clean={k:v for k,v in event.items() if k not in {'_limit_fill','_execution_fill_price'}}
+			self.blocked_exit_intents[key]=(clean,position)
+			self.limit_orders.events.append(dict(ticker=key[1],strategy_type=owner,time=pd.Timestamp(event['received_dt']).isoformat(),status='blocked_by_three_gradients',action='exit',exit_reason=event.get('exit_reason')))
+		order=self.limit_orders.pending.get(key)
+		if order and order['exit_order']: self.limit_orders.finish(key,event['received_dt'],'cancelled_by_three_gradient_veto')
+		self.limit_orders.closed_exit_intents.pop(key,None)
+		return False
+
+	def position_closed(self,owner,ticker,when):
+		key=(owner,ticker)
+		self.books[owner].last_exit_time_by_ticker[ticker]=when
+		self.blocked_exit_intents.pop(key,None)
+		self.limit_orders.closed_exit_intents.pop(key,None)
+		order=self.limit_orders.pending.get(key)
+		if order and not order['exit_order']: self.limit_orders.finish(key,when,'cancelled_by_position_close')
+
+	def process_exit_intents(self,when):
+		"""Retry remembered exits before fresh entries, at current execution prices."""
+		for key,(original,position) in list(self.blocked_exit_intents.items()):
+			book=self.books[key[0]]
+			if book.positions.get(key[1]) is not position:
+				self.blocked_exit_intents.pop(key,None);continue
+			event=dict(original,received_dt=pd.Timestamp(when).to_pydatetime(),time=pd.Timestamp(when).isoformat(),signal_time=original.get('signal_time',original.get('time')))
+			if not self.exit_allowed(key[0],event): continue
+			order=self.limit_orders.pending.get(key)
+			if order and order['exit_order']: continue
+			if self.bt._close_position(book,event):
+				book.trade_events[-1].update(exit_reason=original.get('exit_reason','deferred_exit'),signal_time=event['signal_time'])
+				self.sync(key[0])
 
 	def active(self,owner):
 		return self.enabled[owner] or self.settings.disabled_strategy_virtual_positions_enabled
@@ -54,6 +98,7 @@ class StrategyPortfolio:
 	def prepare_entry(self,owner,ticker,side,event):
 		"""Called only after sizing and all strategy entry requirements pass."""
 		if not self.active(owner): return False
+		if owner=='cross' and self.cross_entry_spacing_reason(ticker,side,event['received_dt']): return False
 		if not self.bt._execution_session_allowed(self.books[owner],event['received_dt']): return False
 		if event['received_dt'].date().isoformat() in self.books[owner].market_close_liquidation_dates: return False
 		own=self.books[owner].positions.get(ticker)
@@ -80,6 +125,66 @@ class StrategyPortfolio:
 
 	def claim_entry(self,owner,ticker,side,event):
 		self.entry_claims[ticker,pd.Timestamp(event['received_dt']).value]=(owner,side)
+
+	def cross_entry_spacing_reason(self,ticker,side,when):
+		last=self.last_cross_entry.get((ticker,side))
+		if last is None: return None
+		index,_=self.context(ticker,when)
+		return 'cross_entry_spacing' if index is None or index-last<2 else None
+
+	def record_cross_fill(self,ticker,side,event):
+		index,_=self.context(ticker,event['received_dt'])
+		if index is not None: self.last_cross_entry[ticker,side]=index
+
+	def cross_entry_snapshot(self,ticker,when):
+		index,row=self.context(ticker,when)
+		if row is None: return {}
+		key=(ticker,index)
+		if key not in self.cross_snapshot_cache:
+			clean={}
+			for name,value in row.items():
+				if pd.isna(value): value=None
+				elif isinstance(value,pd.Timestamp): value=value.isoformat()
+				elif isinstance(value,np.generic): value=value.item()
+				clean[name]=value
+			self.cross_snapshot_cache[key]=clean
+		return self.cross_snapshot_cache[key]
+
+	def cross_entry_decision(self,ticker,side,when,price):
+		from cross_entry_policy import evaluate_cross_entry
+		if self.settings.strategy_mode not in {'both','golden_cross' if side=='long' else 'death_cross'}:
+			return dict(eligible=False,reason='strategy_mode_disallows_side',quantity=0.)
+		spacing=self.cross_entry_spacing_reason(ticker,side,when)
+		if spacing: return dict(eligible=False,reason=spacing,quantity=0.)
+		position=self.books['cross'].positions.get(ticker)
+		if position and position.side!=side:
+			return dict(eligible=False,reason='opposite_cross_position_open',quantity=0.)
+		return evaluate_cross_entry(side,price,self.base,self.cross_entry_snapshot(ticker,when),
+			position.num_shares*price if position else 0.,0.,self.settings)
+
+	def continuous_cross_event(self,ticker,when):
+		if not self.active('cross'): return None
+		event=self.range_event(ticker,when)
+		if not self.bt._execution_session_allowed(self.books['cross'],event['received_dt']): return None
+		row=self.cross_entry_snapshot(ticker,when)
+		if not row or row.get('fast_moving_average') is None or row.get('slow_moving_average') is None: return None
+		position=self.books['cross'].positions.get(ticker)
+		aligned='long' if row.get('fast_moving_average',0)>row.get('slow_moving_average',0) else 'short'
+		sides=[position.side] if position else [aligned,'short' if aligned=='long' else 'long']
+		try: quote=self.bt._get_simulated_quote(self.books['cross'],event)
+		except ValueError: return None
+		for side in sides:
+			price=self.bt._get_execution_price(quote,'buy' if side=='long' else 'sell')
+			decision=self.cross_entry_decision(ticker,side,when,price)
+			if decision['eligible']:
+				return dict(event,signal='_cross_entry',_continuous_entry_side=side,_entry_snapshot=row)
+			index,_=self.context(ticker,when)
+			key=('cross',ticker,side,index,decision['reason'])
+			if key not in self.rejections:
+				self.diagnostics.append(dict(ticker=ticker,time=event['time'],strategy_type='cross',
+					is_virtual=not self.enabled['cross'],side=side,reason=decision['reason']))
+				self.rejections.add(key)
+		return None
 
 	def direction(self,owner,side):
 		return ('golden_cross' if side=='long' else 'death_cross') if owner=='cross' else 'range_'+side
@@ -118,7 +223,9 @@ class StrategyPortfolio:
 		except ValueError: return
 		market=float(quote['market'])
 		if not entries:
-			reason=range_exit_reason(position.side,market,self.rows[ticker],index)
+			cross='golden_cross' if position.side=='long' else 'death_cross'
+			native_cross=bool(row.get(cross,False)) and pd.Timestamp(row['completed_at'])==pd.Timestamp(when) and (position.entry_time is None or pd.Timestamp(position.entry_time)<pd.Timestamp(when))
+			reason='range_4h_'+cross if native_cross else range_exit_reason(position.side,market,self.rows[ticker],index)
 			if reason:
 				if self.bt._close_position(book,dict(event,exit_reason=reason)):
 					book.last_exit_time_by_ticker[ticker]=when
