@@ -22,14 +22,14 @@ bash ./run_local_endpoint.sh plot \
   exit_on_confirmatory_candlestick=true \
   long_range_entry_filter_enabled=true \
   short_range_entry_filter_enabled=true \
-  long_extreme_stretch_entry_filter_enabled=false \
+  long_extreme_stretch_entry_filter_enabled=true \
   short_extreme_stretch_entry_filter_enabled=true \
   long_post_peak_entry_filter_enabled=true \
   short_post_trough_entry_filter_enabled=true \
   shade_ranging_area=true \
   range_max_atr_to_bollinger_gap_ratio=0.5 \
-  range_bollinger_gap_similarity_ratio=0.8 \
-  extreme_price_stretch_min_bollinger_gap_atr_multiple=4 \
+  range_bollinger_gap_similarity_ratio=0.6 \
+  extreme_price_stretch_min_bollinger_gap_atr_multiple=5 \
   extreme_price_stretch_atr_multiple=2 \
   slow_average_to_price_weight=0.1 \
   cross_point_to_price_weight=0.6 \

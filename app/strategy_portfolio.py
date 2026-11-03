@@ -5,6 +5,7 @@ import pandas as pd
 from golden_cross_dip_recovery import STRATEGY_NAME
 from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction
 from open_exposure_report import OpenExposureTracker
+from backtest_limit_orders import ExtendedLimitOrders
 
 class StrategyPortfolio:
 	def __init__(self,bt,settings,cross_state,frames,base):
@@ -38,6 +39,10 @@ class StrategyPortfolio:
 		self.strategy_reports={owner:dict(enabled=enabled,overall_pnl_history=[]) for owner,enabled in self.enabled.items()}
 		self.direction_reports={name:dict(overall_pnl_history=[]) for name in ('golden_cross','death_cross','range_long','range_short')}
 		self.realized_directions=dict.fromkeys(self.direction_reports,0.)
+		self.limit_orders=ExtendedLimitOrders(self)
+		for owner,book in self.books.items():
+			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
+			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
 
 	def active(self,owner):
 		return self.enabled[owner] or self.settings.disabled_strategy_virtual_positions_enabled
@@ -49,13 +54,18 @@ class StrategyPortfolio:
 	def prepare_entry(self,owner,ticker,side,event):
 		"""Called only after sizing and all strategy entry requirements pass."""
 		if not self.active(owner): return False
-		if not self.bt.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(event['received_dt']): return False
+		if not self.bt._execution_session_allowed(self.books[owner],event['received_dt']): return False
 		if event['received_dt'].date().isoformat() in self.books[owner].market_close_liquidation_dates: return False
 		own=self.books[owner].positions.get(ticker)
 		if own and own.side!=side: return False
 		when=pd.Timestamp(event['received_dt']).value
 		claim=self.entry_claims.get((ticker,when))
 		if claim and claim[0]!=owner and claim[1]!=side: return False
+		if not event.get('_limit_fill'):
+			self.limit_orders.finish((owner,ticker),event['received_dt'],'cancelled_by_new_entry')
+		for key,order in list(self.limit_orders.pending.items()):
+			if key[0]!=owner and key[1]==ticker and not order['exit_order'] and order['side']!=side:
+				self.limit_orders.finish(key,event['received_dt'],'cancelled_by_opposite_entry')
 		for other,book in self.books.items():
 			position=book.positions.get(ticker)
 			if other==owner or not self.active(other) or not position or position.side==side: continue
@@ -65,6 +75,7 @@ class StrategyPortfolio:
 			book.trade_events[-1]['exit_reason']=reason
 			book.last_exit_time_by_ticker[ticker]=event['received_dt']
 			self.sync(other)
+			self.limit_orders.finish((other,ticker),event['received_dt'],'cancelled_by_replacement')
 		return True
 
 	def claim_entry(self,owner,ticker,side,event):
@@ -131,6 +142,8 @@ class StrategyPortfolio:
 				self.diagnostics.append(dict(ticker=ticker,time=when.isoformat(),strategy_type='range',is_virtual=not self.enabled['range'],reason=reason))
 				self.rejections.add(key)
 			return
+		event.update(entry_trigger='range_band_proximity',range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
+		if self.limit_orders.submit('range',event,side,amount/price): return
 		if not self.prepare_entry('range',ticker,side,event): return
 		previous=len(book.trade_events)
 		self.bt._open_or_add_position(book,event,side,amount/price)

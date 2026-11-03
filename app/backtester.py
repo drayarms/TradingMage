@@ -1,5 +1,6 @@
 import io
 from backtest_progress import BacktestProgress
+from backtest_sessions import BacktestSessions
 from market_filters import draw_market_shading
 import copy
 from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
@@ -606,6 +607,7 @@ class BackTester:
 		anchor_ohlc = self._dataframe_to_ohlc_rows(anchor_df,start_dt,end_dt,)
 
 		state = SimState()
+		state.market_data["execution_sessions"]=BacktestSessions.load(alpaca_api,warmup_start_dt,end_dt)
 
 		state.research_group_id = research_group_id
 		state.record_factor_research = record_factor_research
@@ -624,6 +626,7 @@ class BackTester:
 			)
 
 		state.market_data = {
+			"execution_sessions":state.market_data["execution_sessions"],
 			"open_1m": _1min_open_prices,
 			"high_1m": _1min_high_prices,
 			"low_1m": _1min_low_prices,
@@ -2667,13 +2670,15 @@ class BackTester:
 		return True
 
 
+	def _execution_session_allowed(self,state,when):
+		calendar=state.market_data.get('execution_sessions')
+		return calendar.allows(when) if calendar is not None else self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(when)
+
 	def _open_or_add_position(self, state: SimState, event: dict[str, Any], position_side: str, qty: float) -> bool:
 
 		execution_dt = event["received_dt"]
 
-		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(
-			execution_dt
-		):
+		if not self._execution_session_allowed(state,execution_dt):
 			return False
 
 		if event.get("entry_validation_only"):
@@ -3430,6 +3435,13 @@ class BackTester:
 		exit_reason: str,
 	) -> None:
 		"""Close a simulated position when a one-minute trailing stop is crossed."""
+		if state.market_data.get('execution_sessions') is not None:
+			closed=self._close_position(state,dict(ticker=ticker,received_dt=bar_dt,time=bar_dt.isoformat(),timeframe='1m',signal='_strategy_exit',exit_reason=exit_reason))
+			if closed:
+				state.last_exit_time_by_ticker[ticker]=bar_dt
+				if state.trade_events: state.trade_events[-1]['exit_reason']=exit_reason
+			return closed
+
 		position = state.positions.get(ticker)
 
 		if position is None or position.num_shares <= 0:
@@ -4141,10 +4153,13 @@ class BackTester:
 											
 	def _close_position(self, state: SimState, event: dict[str, Any]) -> bool:
 		execution_dt = event["received_dt"]
-		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
+		if not self._execution_session_allowed(state,execution_dt):
+			if hasattr(state,"defer_closed_exit"): state.defer_closed_exit(event)
 			return False
 
 		"""Close the current in-memory position and accumulate realized PnL."""
+		position=state.positions.get(event['ticker'])
+		if position and hasattr(state,'defer_exit') and not event.get('_limit_fill') and state.defer_exit(event,position.side): return False
 		ticker = event["ticker"]
 		position = state.positions.get(ticker)
 
@@ -4234,7 +4249,7 @@ class BackTester:
 	def _close_partial_position(self, state: SimState, event: dict[str, Any], qty: float) -> bool:
 
 		execution_dt = event["received_dt"]
-		if not self.tvw_helpers.is_between_8pm_sun_and_8pm_fri_et(execution_dt):
+		if not self._execution_session_allowed(state,execution_dt):
 			return False
 
 		ticker = event["ticker"]
@@ -4583,6 +4598,9 @@ class BackTester:
 		Construct a simulated bid and ask from the latest completed real
 		one-minute Alpaca bar available when the signal was received.
 		"""
+		if event.get('_limit_fill') and '_execution_fill_price' in event:
+			if not self._execution_session_allowed(state,event['received_dt']): raise SimulatedOrderPriceUnavailable('Outside Alpaca session')
+			price=float(event['_execution_fill_price']);return dict(market=price,bid=price,ask=price,source_bar_time=event['received_dt'])
 		market_price, source_bar_dt = (
 			self._get_execution_market_price(
 				state,
@@ -4591,10 +4609,13 @@ class BackTester:
 		)
 
 		execution_dt = event["received_dt"]
+		calendar=state.market_data.get('execution_sessions')
+		if calendar is not None and (not calendar.allows(execution_dt) or not calendar.same_session(source_bar_dt,execution_dt)):
+			raise SimulatedOrderPriceUnavailable('No fresh price in an eligible Alpaca session')
 
-		if self.tvw_helpers._is_regular_hours_et(
+		if (not calendar.extended(execution_dt) if calendar is not None else self.tvw_helpers._is_regular_hours_et(
 			execution_dt
-		):
+		)):
 			price_offset = 0.01
 		else:
 			price_offset = 0.05
