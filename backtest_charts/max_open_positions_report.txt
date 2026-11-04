@@ -5,28 +5,28 @@ Cross and range quantities are combined per stock. Times include UTC offsets.
 
 Stock       Peak open market value   First observed at
 ------------------------------------------------------------------------------
+MS         $            25,689.54   2026-10-06T10:08:00-04:00
 AMZN       $            22,366.90   2026-07-22T05:40:00-04:00
-TSLA       $            22,136.77   2026-10-20T10:59:00-04:00
 CRM        $            21,855.73   2026-08-14T09:30:00-04:00
 DIS        $            21,715.13   2026-08-24T10:08:00-04:00
-AMD        $            21,395.81   2026-10-21T15:50:00-04:00
+TSLA       $            21,596.32   2026-06-15T09:35:00-04:00
 MSFT       $            21,259.74   2026-10-28T16:03:00-04:00
+ADBE       $            21,249.43   2026-08-10T16:07:00-04:00
 CVX        $            21,150.15   2026-10-30T06:17:00-04:00
 AMAT       $            21,059.38   2026-10-06T07:58:00-04:00
 XOM        $            20,999.01   2026-07-24T10:43:00-04:00
-ADBE       $            20,909.87   2026-10-01T07:01:00-04:00
+SNOW       $            20,780.30   2026-09-23T09:51:00-04:00
+NFLX       $            20,751.85   2026-10-07T15:41:00-04:00
 NVDA       $            20,650.35   2026-06-30T15:58:00-04:00
 GOOGL      $            20,633.72   2026-09-14T07:06:00-04:00
+AAPL       $            20,487.07   2026-09-03T11:13:00-04:00
 GS         $            20,476.99   2026-07-15T15:46:00-04:00
-NFLX       $            20,297.83   2026-08-05T09:28:00-04:00
-JPM        $            20,283.01   2026-09-21T09:19:00-04:00
-MS         $            20,226.06   2026-07-28T07:41:00-04:00
-AAPL       $            20,154.14   2026-10-16T08:30:00-04:00
-META       $            17,028.46   2026-06-09T09:53:00-04:00
+JPM        $            20,322.52   2026-10-12T09:31:00-04:00
+AMD        $            20,305.61   2026-10-21T15:50:00-04:00
 INTC       $            16,786.57   2026-08-27T10:28:00-04:00
-SNOW       $            16,757.10   2026-10-06T09:39:00-04:00
+META       $            11,259.66   2026-06-16T09:49:00-04:00
 
-Overall simultaneous peak: $273,221.14
+Overall simultaneous peak: $252,736.52
 First observed at: 2026-10-19T04:03:00-04:00
 Holdings at the overall peak:
   AAPL       $19,837.43
@@ -39,14 +39,14 @@ Holdings at the overall peak:
   DIS        $19,907.01
   GOOGL      $12,534.36
   GS         $12,062.05
-  JPM        $19,977.77
+  INTC       $1,647.48
+  JPM        $12,764.95
   MS         $12,118.43
   MSFT       $12,976.41
   NFLX       $6,061.76
   NVDA       $20,124.76
   SNOW       $4,849.67
-  TSLA       $19,695.52
-  XOM        $13,406.34
+  TSLA       $18,182.58
 
 The overall peak is measured at one moment; individual-stock peaks can occur at different times.
 These are observed market values, before broker margin requirements; intraminute tick highs are not measured.

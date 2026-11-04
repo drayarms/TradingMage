@@ -10,7 +10,7 @@ bash ./run_local_endpoint.sh plot \
 	range_sizing_high_atr_price_ratio=0.05 \
 	range_sizing_min_entry_fraction=0.25 \
 	range_sizing_max_entry_fraction=1.0 \
-	entry_trigger=none \
+	entry_trigger=buy_sell_signal \
 	enforce_atr_invalidation=false \
 	cross_entry_bollinger_gap_atr_divisor=2 \
 	cross_exit_method=fast_moving_average \
