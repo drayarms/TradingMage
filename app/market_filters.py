@@ -71,6 +71,7 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 		ranging=ready and atr/gap<=max_atr_to_gap_ratio and width_valid and not cling
 		bullish=lower_cusp and ready and gap>=min_stretch_gap_atr_multiple*atr and slow<upper and row.close>=(upper+lower)/2+stretch_multiple*atr
 		bearish=upper_cusp and ready and gap>=min_stretch_gap_atr_multiple*atr and slow>lower and row.close<=(upper+lower)/2-stretch_multiple*atr
+		ranging=ranging and not (bullish or bearish)
 		if bullish: peak=row.high
 		if bearish: trough=row.low
 		output.append(dict(lower_bollinger_cusp_confirmed=bool(lower_cusp),upper_bollinger_cusp_confirmed=bool(upper_cusp),ranging_market=bool(ranging),extreme_bullish_price_stretch=bool(bullish),

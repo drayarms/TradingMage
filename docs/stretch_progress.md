@@ -10,3 +10,5 @@ Review: one confirmed important finding — pending add could reopen just after 
 Final verification results appended after fresh suite completes. No authenticated historical-data run or live orders.
 
 Final: python -m unittest discover -s tests — 277 tests passed in 26.790s. Python compileall and shell syntax checks exited 0.
+
+Follow-up: exclusive stretch/range classification and separate exit gradients from latest running minimum Bollinger width since confirmed turn. Five new regressions observed RED then GREEN; pre-existing countertrend gradient preserved. Most recent minimum wins ties. Final verification: 282 tests passed in 36.925s; Python compilation and shell syntax checks passed.

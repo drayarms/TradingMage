@@ -30,7 +30,9 @@ The latest completed 4h candle must also have a body maximum greater than at lea
 
 ## Universal exit veto and remembered exits
 
-All exits in both strategy books are blocked while the upper Bollinger, lower Bollinger and fast MA changes since the latest confirmed 4h moving-average turning point are all positive for longs or all negative for shorts. Each indicator uses its own value on the turning-point evaluation candle; no unconfirmed point is visible. Zero or unavailable gradients do not veto.
+Extreme bullish and bearish stretch candles cannot also be classified as ranges.
+
+All exits in both strategy books are blocked while the upper Bollinger, lower Bollinger and fast MA changes from the candle with the narrowest Bollinger gap since the latest confirmed 4h moving-average turning point are all positive for longs or all negative for shorts. Search includes the turning-point evaluation candle and subsequent completed candles. Each indicator uses its own value on that same minimum-gap candle; ties use the most recent candle. No unconfirmed point or incomplete candle is visible. The fast-MA gradient for countertrend entries still starts at the turning point. Zero or unavailable gradients do not veto.
 
 The first blocked exit stays attached to that specific position. When the veto clears, it executes without a new trigger at the first permitted execution opportunity, using current quotes and the existing calendar/extended-hours limit model. The veto is checked again before delayed fills. Closing clears the remembered intent and cancels pending additions belonging to that book/ticker; it cannot reopen or close a later position accidentally. Reports include `gradient_blocked_exit_intents` and block/cancellation events.
 

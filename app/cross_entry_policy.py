@@ -36,6 +36,43 @@ def attach_cross_turning_context(frame, points):
 	for name in TURNING_INDICATORS:
 		frame[name+'_gradient_since_turning_point']=pd.Series(gradients[name],index=frame.index,dtype=float)
 	frame['fast_moving_average_at_last_turning_point']=pd.Series(references,index=frame.index,dtype=float)
+	return attach_exit_gap_gradients(frame,points)
+
+
+def attach_exit_gap_gradients(frame,points):
+	"""Use the most recent running minimum width since the confirmed turn.
+
+	Keep this reference separate from the turning-point fast-MA entry gradient.
+	On confirmation, include completed candles from evaluation through now.
+	"""
+	rows=list(frame.itertuples()); events=[]
+	for point in points:
+		when=pd.Timestamp(point['confirmed_at'])
+		evaluation=pd.Timestamp(point.get('time',when-pd.Timedelta(hours=4)))
+		if evaluation not in frame.index: continue
+		index=frame.index.get_loc(evaluation)
+		if pd.Timestamp(rows[index].completed_at)<=when: events.append((when.value,index))
+	events.sort(key=lambda event:event[0])
+	cursor=0; minimum=None; reference=None; armed=False
+	gradients={name:[] for name in TURNING_INDICATORS}
+	for index,row in enumerate(rows):
+		reset=None
+		while cursor<len(events) and events[cursor][0]<=pd.Timestamp(row.completed_at).value:
+			reset=events[cursor][1];cursor+=1
+		if reset is not None:
+			armed=True;minimum=None;reference=None
+		candidates=rows[reset:index+1] if reset is not None else [row] if armed else []
+		for candidate in candidates:
+			upper=getattr(candidate,'bollinger_upper',None);lower=getattr(candidate,'bollinger_lower',None)
+			if finite(upper) and finite(lower) and upper>lower:
+				gap=upper-lower
+				if minimum is None or gap<=minimum:
+					minimum=gap;reference=candidate
+		for name in TURNING_INDICATORS:
+			value=getattr(row,name,None);previous=getattr(reference,name,None)
+			gradients[name].append(value-previous if finite(value) and finite(previous) else None)
+	for name in TURNING_INDICATORS:
+		frame[name+'_exit_gradient_since_gap_minimum']=pd.Series(gradients[name],index=frame.index,dtype=float)
 	return frame
 
 
@@ -63,7 +100,7 @@ def attach_cross_entry_context(frame):
 
 
 def exit_gradient_blocked(side, context):
-	values=[context.get(name+'_gradient_since_turning_point') for name in TURNING_INDICATORS]
+	values=[context.get(name+'_exit_gradient_since_gap_minimum') for name in TURNING_INDICATORS]
 	return all(finite(value) and (value>0 if side=='long' else value<0) for value in values)
 
 
