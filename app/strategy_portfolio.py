@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import pandas as pd
 from golden_cross_dip_recovery import STRATEGY_NAME
-from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction
+from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction, post_stretch_entry_side
 from open_exposure_report import OpenExposureTracker
 from backtest_limit_orders import ExtendedLimitOrders
 
@@ -11,8 +11,8 @@ class StrategyPortfolio:
 	def __init__(self,bt,settings,cross_state,frames,base):
 		from backtester import SimState
 		self.bt,self.settings,self.base=bt,settings,base
-		self.books={'cross':cross_state,'range':SimState()}
-		self.enabled={'cross':settings.cross_strategy_enabled,'range':settings.range_strategy_enabled}
+		self.books={'cross':cross_state,'range':SimState(),'post_stretch_range':SimState()}
+		self.enabled={'cross':settings.cross_strategy_enabled,'range':settings.range_strategy_enabled,'post_stretch_range':settings.range_strategy_enabled}
 		self.prices=cross_state.last_price_by_ticker
 		# Price dictionaries are immutable within a run. Build UTC indexes once so
 		# Eastern signal arrivals never scan a complete per-ticker minute history.
@@ -40,7 +40,7 @@ class StrategyPortfolio:
 		self.rows={t:f.to_dict('records') for t,f in frames.items()}
 		self.times={t:pd.DatetimeIndex(f.completed_at).asi8 for t,f in frames.items() if not f.empty}
 		self.strategy_reports={owner:dict(enabled=enabled,overall_pnl_history=[]) for owner,enabled in self.enabled.items()}
-		self.direction_reports={name:dict(overall_pnl_history=[]) for name in ('golden_cross','death_cross','range_long','range_short')}
+		self.direction_reports={name:dict(overall_pnl_history=[]) for name in ('golden_cross','death_cross','range_long','range_short','post_stretch_range_long','post_stretch_range_short')}
 		self.realized_directions=dict.fromkeys(self.direction_reports,0.)
 		self.limit_orders=ExtendedLimitOrders(self)
 		for owner,book in self.books.items():
@@ -98,6 +98,12 @@ class StrategyPortfolio:
 	def prepare_entry(self,owner,ticker,side,event):
 		"""Called only after sizing and all strategy entry requirements pass."""
 		if not self.active(owner): return False
+		if owner!='cross':
+			index,_=self.context(ticker,event['received_dt']);last=self.last_range_entry.get((ticker,side))
+			if last is not None and (index is None or index-last<2): return False
+		if owner=='post_stretch_range':
+			_,row=self.context(ticker,event['received_dt'])
+			if row is None or post_stretch_entry_side(event.get('_execution_fill_price',event.get('price',float('nan'))),row)!=side:return False
 		if owner=='cross' and self.cross_entry_spacing_reason(ticker,side,event['received_dt']): return False
 		if not self.bt._execution_session_allowed(self.books[owner],event['received_dt']): return False
 		if event['received_dt'].date().isoformat() in self.books[owner].market_close_liquidation_dates: return False
@@ -187,7 +193,7 @@ class StrategyPortfolio:
 		return None
 
 	def direction(self,owner,side):
-		return ('golden_cross' if side=='long' else 'death_cross') if owner=='cross' else 'range_'+side
+		return ('golden_cross' if side=='long' else 'death_cross') if owner=='cross' else owner+'_'+side
 
 	def sync(self,owner):
 		book=self.books[owner]
@@ -210,12 +216,31 @@ class StrategyPortfolio:
 		when=pd.Timestamp(when).to_pydatetime().astimezone(self.bt.tvw_helpers.eastern_tz)
 		return dict(ticker=ticker,dt=when,received_dt=when,sort_dt=when,time=when.isoformat(),received_time=when.isoformat(),timeframe='1m',signal='_range',raw_fields={},strategy_name=STRATEGY_NAME,exit_strategy=None)
 
+	def range_exposure(self,ticker,price,side=None):
+		return sum(book.positions[ticker].num_shares*price for owner,book in self.books.items() if owner!='cross' and self.active(owner) and ticker in book.positions and (side is None or book.positions[ticker].side==side))
+
 	def process_range(self,ticker,when,entries=False):
-		if not self.active('range'): return
+		if entries and self.active('post_stretch_range'):
+			_,row=self.context(ticker,when)
+			if row is not None:
+				try:
+					quote=self.bt._get_simulated_quote(self.books['post_stretch_range'],self.range_event(ticker,when))
+					side=post_stretch_entry_side(float(quote['market']),row)
+					price=self.bt._get_execution_price(quote,'buy' if side=='long' else 'sell') if side else None
+				except ValueError:side=None;price=None
+				if side and post_stretch_entry_side(price,row)==side:
+					self.process_range_book('post_stretch_range',ticker,when,True)
+					return
+		if entries:self.process_range_book('range',ticker,when,True)
+		else:
+			for owner in ('post_stretch_range','range'):self.process_range_book(owner,ticker,when,False)
+
+	def process_range_book(self,owner,ticker,when,entries=False):
+		if not self.active(owner): return
 		index,row=self.context(ticker,when)
 		if row is None: return
 		if entries and not row.get('ranging_market',False): return
-		book=self.books['range']; position=book.positions.get(ticker)
+		book=self.books[owner]; position=book.positions.get(ticker)
 		if not entries and position is None: return
 		if entries and book.last_exit_time_by_ticker.get(ticker)==when: return
 		event=self.range_event(ticker,when)
@@ -225,42 +250,46 @@ class StrategyPortfolio:
 		if not entries:
 			cross='golden_cross' if position.side=='long' else 'death_cross'
 			native_cross=bool(row.get(cross,False)) and pd.Timestamp(row['completed_at'])==pd.Timestamp(when) and (position.entry_time is None or pd.Timestamp(position.entry_time)<pd.Timestamp(when))
-			reason='range_4h_'+cross if native_cross else range_exit_reason(position.side,market,self.rows[ticker],index)
+			reason='range_4h_'+cross if native_cross else range_exit_reason(position.side,market,self.rows[ticker],index,projection_candles=3 if owner=='post_stretch_range' else 1)
+			if reason and owner=='post_stretch_range':reason='post_stretch_'+reason
 			if reason:
 				if self.bt._close_position(book,dict(event,exit_reason=reason)):
 					book.last_exit_time_by_ticker[ticker]=when
 					book.trade_events[-1]['exit_reason']=reason
-				self.sync('range')
+				self.sync(owner)
 			return
-		side=range_entry_side(market,row,self.settings.range_min_bollinger_gap_to_peak_since_turning_point_ratio)
+		side=post_stretch_entry_side(market,row) if owner=='post_stretch_range' else range_entry_side(market,row,self.settings.range_min_bollinger_gap_to_peak_since_turning_point_ratio)
 		if side is None: return
 		last=self.last_range_entry.get((ticker,side))
 		if last is not None and index-last<2: return
 		reason=None
 
 		price=self.bt._get_execution_price(quote,'buy' if side=='long' else 'sell')
+		if owner=='post_stretch_range' and post_stretch_entry_side(price,row)!=side:return
+		event['price']=price
+		trigger='post_stretch_range_fast_average' if owner=='post_stretch_range' else 'range_band_proximity'
 		fraction=range_entry_fraction(price,float(row['atr']),self.settings)
-		exposure=position.num_shares*price if position else 0.
+		exposure=self.range_exposure(ticker,price,side)
 		amount=min(self.base*fraction,max(0.,self.base*self.settings.max_exposure_multiple-exposure))
 		if amount<=0: reason=reason or 'exposure_cap_reached'
 		if reason:
 			key=(ticker,side,index,reason)
 			if key not in self.rejections:
-				self.diagnostics.append(dict(ticker=ticker,time=when.isoformat(),strategy_type='range',is_virtual=not self.enabled['range'],reason=reason))
+				self.diagnostics.append(dict(ticker=ticker,time=when.isoformat(),strategy_type=owner,is_virtual=not self.enabled[owner],reason=reason))
 				self.rejections.add(key)
 			return
-		event.update(entry_trigger='range_band_proximity',range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
-		if self.limit_orders.submit('range',event,side,amount/price): return
-		if not self.prepare_entry('range',ticker,side,event): return
+		event.update(entry_trigger=trigger,range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
+		if self.limit_orders.submit(owner,event,side,amount/price): return
+		if not self.prepare_entry(owner,ticker,side,event): return
 		previous=len(book.trade_events)
 		self.bt._open_or_add_position(book,event,side,amount/price)
 		trades=book.trade_events[previous:]
 		if any(e.get('event_type') in {'open','add'} for e in trades):
-			self.claim_entry('range',ticker,side,event)
+			self.claim_entry(owner,ticker,side,event)
 			self.last_range_entry[ticker,side]=index
 			for trade in trades:
-				trade.update(entry_trigger='range_band_proximity',range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
-		self.sync('range')
+				trade.update(entry_trigger=trigger,range_entry_fraction=fraction,atr_price_ratio=float(row['atr'])/price,range_context_completed_at=pd.Timestamp(row['completed_at']).isoformat())
+		self.sync(owner)
 
 	def track_exposure(self,when):
 		values={}

@@ -3,7 +3,7 @@ import math
 from itertools import groupby
 from backtest_sessions import BacktestSessions
 from strategy_portfolio import StrategyPortfolio
-from range_strategy import attach_turning_point_gap_reference, GAP_REFERENCE
+from range_strategy import attach_turning_point_gap_reference, attach_post_stretch_context, GAP_REFERENCE
 from market_filters import confirmation_candle_exit, MARKET_FIELDS
 from backtest_progress import BacktestProgress
 import os
@@ -164,7 +164,7 @@ def run_simulation(bt, api, start, end, tickers, position_size, settings):
 		# Execution always uses 4H turning points, independently of plot switches.
 		points={ticker:fast_moving_average_reversed(frame,'4h') for ticker,frame in frames.items()}
 	from cross_entry_policy import attach_cross_turning_context, attach_cross_entry_context, ENTRY_CONTEXT_FIELDS
-	frames={ticker:attach_cross_turning_context(attach_turning_point_gap_reference(frame if all(k in frame for k in ENTRY_CONTEXT_FIELDS) else attach_cross_entry_context(frame),points.get(ticker,[])),points.get(ticker,[])) for ticker,frame in frames.items()}
+	frames={ticker:attach_cross_turning_context(attach_turning_point_gap_reference(attach_post_stretch_context(frame if all(k in frame for k in ENTRY_CONTEXT_FIELDS) else attach_cross_entry_context(frame)),points.get(ticker,[])),points.get(ticker,[])) for ticker,frame in frames.items()}
 	if settings.exit_after_turning_point:
 		for event,side in zip(events,turning_point_exit_reasons(events,points)):
 			if side: event['_turning_point_exit_side']=side

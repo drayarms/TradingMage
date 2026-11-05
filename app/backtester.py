@@ -3630,7 +3630,7 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="2" if entry.get("strategy_type")=="range" else "^",
+					marker="D" if entry.get("strategy_type")=="post_stretch_range" else "2" if entry.get("strategy_type")=="range" else "^",
 					s=180 if entry.get("strategy_type")=="range" else 90,
 					color="#7B2CBF",
 					edgecolors=None if entry.get("strategy_type")=="range" else "black",
@@ -3651,7 +3651,7 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="1" if entry.get("strategy_type")=="range" else "v",
+					marker="D" if entry.get("strategy_type")=="post_stretch_range" else "1" if entry.get("strategy_type")=="range" else "v",
 					s=180 if entry.get("strategy_type")=="range" else 90,
 					color="#00A6A6",
 					edgecolors=None if entry.get("strategy_type")=="range" else "black",
@@ -3689,7 +3689,7 @@ class BackTester:
 			ax.scatter(
 				nearest_bar_index,
 				exit_price,
-				marker="*" if exit_event.get("strategy_type")=="range" else "s",
+				marker="P" if exit_event.get("strategy_type")=="post_stretch_range" else "*" if exit_event.get("strategy_type")=="range" else "s",
 				s=150 if exit_event.get("strategy_type")=="range" else 70,
 				facecolors="#FF00CC",
 				edgecolors="#FF00CC",
@@ -3837,6 +3837,9 @@ class BackTester:
 				Line2D([0],[0],marker="2",linestyle="None",markersize=11,markeredgewidth=2.6,color="#7B2CBF",label="Range long entry"),
 				Line2D([0],[0],marker="1",linestyle="None",markersize=11,markeredgewidth=2.6,color="#00A6A6",label="Range short entry"),
 				Line2D([0],[0],marker="*",linestyle="None",markersize=11,color="#FF00CC",label="Range exit"),
+				Line2D([0],[0],marker="D",linestyle="None",markersize=8,color="#7B2CBF",label="Post-stretch range long entry"),
+				Line2D([0],[0],marker="D",linestyle="None",markersize=8,color="#00A6A6",label="Post-stretch range short entry"),
+				Line2D([0],[0],marker="P",linestyle="None",markersize=8,color="#FF00CC",label="Post-stretch range exit"),
 			])
 		if lux_algo_symbols:
 			legend_handles.extend([

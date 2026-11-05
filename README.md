@@ -45,3 +45,11 @@ This release targets the backtest run/plot endpoints, not a live continuous-entr
 See docs/progress.md for verification results and docs/design.md for the approved detailed specification. No authenticated historical-data backtest or live orders were run here. Tests use deterministic fixtures.
 
 The archive includes the latest supplied source files plus the changed history module, tests and design notes. Unchanged older modules recovered solely to run tests are not supplied as replacements. Run tests in your full project using `python -m unittest discover -s tests`.
+
+## Post-stretch range class
+
+`range_strategy_enabled=true` also enables a separately owned/reported `post_stretch_range` class. During the first two completed native 4h candles after the last extreme stretch candle, when currently in a range, a bullish stretch permits short entry above the fast MA and a bearish stretch permits long entry below the fast MA. Equality does not qualify. This class replaces ordinary range band-proximity and minimum-width-reference entry checks with that fast-MA condition.
+
+When both classes qualify, post-stretch range has priority, including while its order is pending. Both classes share normal range sizing, same-side fill spacing, and the range exposure cap. Opposite positions being replaced do not consume replacement capacity. Existing cross-versus-range precedence still applies. New-class delayed entries must still satisfy their window and price condition when filled.
+
+The new class retains its ownership and liberal exits for the position lifetime: exit near the current target Bollinger or any of its one-, two-, or three-candle projections, using only the existing completed two-candle slope. Ordinary range retains its one-candle projection. Native range cross exits, calendar/limit execution and the universal gradient veto/remembered release still apply. JSON includes separate strategy and directional results; charts use diamonds for this class's entries and filled-plus markers for exits, preserving existing direction colors. No command changes required.

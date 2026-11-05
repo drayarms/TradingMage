@@ -52,7 +52,7 @@ class ExtendedLimitOrders:
 				book.trade_events[-1]['exit_reason']=event.get('exit_reason','deferred_exit');self.p.sync(key[0])
 			if closed or key in self.pending: self.closed_exit_intents.pop(key,None)
 		remaining_volume={}
-		for key,order in sorted(list(self.pending.items()),key=lambda item:item[0][0]!=self.p.settings.entry_strategy_precedence):
+		for key,order in sorted(list(self.pending.items()),key=lambda item:((('cross' if item[0][0]=='cross' else 'range')!=self.p.settings.entry_strategy_precedence),item[0][0]=='range')):
 			if key not in self.pending: continue
 			if order['exit_order']:
 				book=self.p.books[key[0]]
@@ -74,9 +74,14 @@ class ExtendedLimitOrders:
 			owner=key[0];book=self.p.books[owner]
 			event=dict(order['event'],received_dt=pd.Timestamp(when).to_pydatetime(),time=pd.Timestamp(when).isoformat(),_limit_fill=True,_execution_fill_price=order['limit'])
 			position=book.positions.get(ticker)
+			if not order['exit_order'] and owner=='post_stretch_range':
+				from range_strategy import post_stretch_entry_side
+				_,row=self.p.context(ticker,when)
+				if row is None or post_stretch_entry_side(order['limit'],row)!=order['side']:
+					self.finish(key,when,'cancelled_post_stretch_entry_no_longer_valid');continue
 			entry_qty=None
 			if not order['exit_order'] and owner=='cross':
-				capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(position.num_shares*order['limit'] if position else 0.))
+				capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(self.p.range_exposure(ticker,order['limit'],order['side']) if owner!='cross' else position.num_shares*order['limit'] if position else 0.))
 				entry_qty=min(order['qty'],capacity/order['limit'])
 				if owner=='cross':
 					decision=self.p.cross_entry_decision(ticker,order['side'],when,order['limit'])
@@ -97,7 +102,7 @@ class ExtendedLimitOrders:
 			else:
 				if owner=='cross': qty=entry_qty
 				else:
-					capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(position.num_shares*order['limit'] if position else 0.))
+					capacity=max(0.,self.p.base*self.p.settings.max_exposure_multiple-(self.p.range_exposure(ticker,order['limit'],order['side']) if owner!='cross' else position.num_shares*order['limit'] if position else 0.))
 					qty=min(order['qty'],capacity/order['limit'])
 					if qty<=0: self.finish(key,when,'cancelled_exposure_cap');continue
 				if not self.p.prepare_entry(owner,ticker,order['side'],event): continue
@@ -112,7 +117,7 @@ class ExtendedLimitOrders:
 					book.trade_events[-1]['signal_time']=order['event'].get('time')
 					for name in ('range_entry_fraction','atr_price_ratio','range_context_completed_at','turning_point_evaluated_at'):
 						if name in event:book.trade_events[-1][name]=event[name]
-					if owner=='range':
+					if owner!='cross':
 						index,_=self.p.context(ticker,when);self.p.last_range_entry[ticker,order['side']]=index
 			if filled:
 				remaining_volume[volume_key]=volume-requested

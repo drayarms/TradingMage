@@ -33,7 +33,7 @@ def range_entry_side(price,row,min_gap_ratio=.7):
 	if price>row['bollinger_upper']-.2*row['atr']: return 'short'
 	return None
 
-def range_exit_reason(side,price,rows,index):
+def range_exit_reason(side,price,rows,index,projection_candles=1):
 	row=rows[index]
 	if not valid(row): return None
 	band='bollinger_upper' if side=='long' else 'bollinger_lower'
@@ -44,8 +44,9 @@ def range_exit_reason(side,price,rows,index):
 	if index>=2:
 		previous=rows[index-2].get(band)
 		if previous is not None and math.isfinite(previous):
-			projected=row[band]+(row[band]-previous)/2
-			if projected>0 and near(projected): return 'range_projected_'+label+'_band'
+			for ahead in range(1,projection_candles+1):
+				projected=row[band]+ahead*(row[band]-previous)/2
+				if projected>0 and near(projected): return 'range_projected_'+label+'_band'+('' if ahead==1 else '_'+str(ahead)+'_candles')
 	return None
 
 def range_entry_fraction(price,atr,settings):
@@ -53,3 +54,25 @@ def range_entry_fraction(price,atr,settings):
 	ratio=atr/price
 	weight=max(0.,min(1.,(ratio-settings.range_sizing_low_atr_price_ratio)/(settings.range_sizing_high_atr_price_ratio-settings.range_sizing_low_atr_price_ratio)))
 	return settings.range_sizing_max_entry_fraction+weight*(settings.range_sizing_min_entry_fraction-settings.range_sizing_max_entry_fraction)
+
+
+def attach_post_stretch_context(frame):
+	frame=frame.copy();last=None;last_index=None;directions=[];ages=[]
+	for index,row in enumerate(frame.itertuples()):
+		if getattr(row,'extreme_bullish_price_stretch',False):last='bullish';last_index=index
+		elif getattr(row,'extreme_bearish_price_stretch',False):last='bearish';last_index=index
+		directions.append(last);ages.append(index-last_index if last_index is not None else None)
+	frame['post_stretch_direction']=pd.Series(directions,index=frame.index,dtype=object)
+	frame['post_stretch_age']=pd.Series(ages,index=frame.index,dtype=float)
+	return frame
+
+
+def post_stretch_entry_side(price,row):
+	if not valid(row) or not row.get('ranging_market',False):return None
+	if row.get('extreme_bullish_price_stretch',False) or row.get('extreme_bearish_price_stretch',False):return None
+	age=row.get('post_stretch_age');fast=row.get('fast_moving_average')
+	if age is None or not math.isfinite(age) or not 1<=age<=2:return None
+	if fast is None or not math.isfinite(fast) or fast<=0 or not math.isfinite(price) or price<=0:return None
+	if row.get('post_stretch_direction')=='bullish' and price>fast:return 'short'
+	if row.get('post_stretch_direction')=='bearish' and price<fast:return 'long'
+	return None
