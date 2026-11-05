@@ -13,6 +13,8 @@ bash ./run_local_endpoint.sh plot \
 	entry_trigger=buy_sell_signal \
 	enforce_atr_invalidation=false \
 	cross_entry_bollinger_gap_atr_divisor=2 \
+	range_transition_zones_enabled=false \
+	range_transition_band_speed_multiple=2 \
 	cross_exit_method=fast_moving_average \
 	fast_moving_average_reversed=true \
 	fast_moving_average_reversal_timeframe=4h \

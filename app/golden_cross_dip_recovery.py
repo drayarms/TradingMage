@@ -55,7 +55,10 @@ class StrategySettings:
 	short_post_trough_entry_filter_enabled: bool = True
 	shade_ranging_area: bool = True
 	extreme_price_stretch_atr_multiple: float = 2.0
-	entry_trigger: str = 'none'
+	entry_trigger: str = 'buy_sell_signal'
+	range_transition_zones_enabled: bool = True
+	range_transition_band_speed_multiple: float = 2.0
+	range_transition_price_speed_multiple: float = 3.0 # Deprecated: accepted and validated for compatibility, not used.
 	cross_entry_bollinger_gap_atr_divisor: float = 2.0
 	enforce_atr_invalidation: bool = False
 	exit_on_confirmatory_candlestick: bool = False
@@ -65,6 +68,9 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not isinstance(self.range_transition_zones_enabled,bool):raise ValueError("range_transition_zones_enabled must be boolean")
+		for name in ("range_transition_band_speed_multiple","range_transition_price_speed_multiple"):
+			if not math.isfinite(getattr(self,name)) or getattr(self,name)<=0:raise ValueError(name+" must be positive and finite")
 		if not math.isfinite(self.cross_entry_bollinger_gap_atr_divisor) or self.cross_entry_bollinger_gap_atr_divisor<=0:
 			raise ValueError("cross_entry_bollinger_gap_atr_divisor must be positive and finite")
 		if not all(math.isfinite(v) and v>0 for v in (self.range_sizing_low_atr_price_ratio,self.range_sizing_high_atr_price_ratio)) or self.range_sizing_low_atr_price_ratio>=self.range_sizing_high_atr_price_ratio:

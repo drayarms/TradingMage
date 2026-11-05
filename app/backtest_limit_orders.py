@@ -19,6 +19,13 @@ class ExtendedLimitOrders:
 		book=self.p.books[owner];calendar=book.market_data.get('execution_sessions')
 		if event.get('_limit_fill') or calendar is None or not calendar.extended(event['received_dt']): return False
 		ticker=event['ticker'];key=(owner,ticker)
+		if not exit_order:
+			reason=self.p.entry_zone_reason(side,ticker,event['received_dt'])
+			if reason:
+				existing=self.pending.get(key)
+				if existing and not existing['exit_order']:self.finish(key,event['received_dt'],'cancelled_'+reason)
+				self.events.append(dict(ticker=ticker,strategy_type=owner,time=pd.Timestamp(event['received_dt']).isoformat(),status='rejected_'+reason,action='entry'))
+				return True
 		if key in self.pending:
 			if exit_order and not self.pending[key]['exit_order']: self.finish(key,event['received_dt'],'cancelled_by_exit')
 			else: return True
@@ -62,6 +69,9 @@ class ExtendedLimitOrders:
 				if not self.p.exit_allowed(key[0],check): continue
 			if pd.Timestamp(when)>=order['expires']:
 				self.finish(key,when,'expired');continue
+			if not order['exit_order']:
+				reason=self.p.entry_zone_reason(order['side'],key[1],when)
+				if reason:self.finish(key,when,'cancelled_'+reason);continue
 			ticker=key[1];bar=bars.get(ticker)
 			if bar is None: continue
 			start=pd.Timestamp(bar['source_bar_time'])

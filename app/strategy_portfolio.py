@@ -35,6 +35,7 @@ class StrategyPortfolio:
 		self.last_cross_entry={}
 		self.cross_snapshot_cache={}
 		self.blocked_exit_intents={}
+		self.transition_zone_intervals={}
 		self.rejections=set()
 		self.entry_claims={}
 		self.rows={t:f.to_dict('records') for t,f in frames.items()}
@@ -48,6 +49,35 @@ class StrategyPortfolio:
 			book.on_position_closed=lambda ticker,when,owner=owner:self.position_closed(owner,ticker,when)
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
 			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
+
+	def entry_zone_reason(self,side,ticker,when):
+		from range_transition_zones import prohibited_entry
+		_,row=self.context(ticker,when)
+		if row is None:return None
+		try:price=float(self.bt._get_simulated_quote(self.books['cross'],self.range_event(ticker,when))['market'])
+		except ValueError:return None
+		return prohibited_entry(side,price,row,self.settings)
+
+	def process_zone_exits(self,ticker,when,record_zone=False):
+		from range_transition_zones import transition_zones,zone_exit_reason
+		_,row=self.context(ticker,when)
+		if row is None:return
+		event=self.range_event(ticker,when)
+		try:price=float(self.bt._get_simulated_quote(self.books['cross'],event)['market'])
+		except ValueError:return
+		bull,bear=transition_zones(price,row,self.settings)
+		if record_zone and (bull or bear):
+			start=pd.Timestamp(when);end=start+pd.Timedelta(minutes=1)
+			zones=self.transition_zone_intervals.setdefault(ticker,[])
+			fields=dict(bullish=bool(bull),bearish=bool(bear),upper=float(row['bollinger_upper']),lower=float(row['bollinger_lower']))
+			if zones and zones[-1]['end']==start.isoformat() and all(zones[-1][k]==v for k,v in fields.items()):zones[-1]['end']=end.isoformat()
+			else:zones.append(dict(start=start.isoformat(),end=end.isoformat(),**fields))
+		for owner,book in self.books.items():
+			position=book.positions.get(ticker)
+			if not self.active(owner) or position is None:continue
+			reason=zone_exit_reason(owner,position.side,price,row,self.settings)
+			if reason and self.bt._close_position(book,dict(event,exit_reason=reason)):
+				book.trade_events[-1]['exit_reason']=reason;self.sync(owner)
 
 	def exit_allowed(self,owner,event):
 		from cross_entry_policy import exit_gradient_blocked
@@ -98,6 +128,7 @@ class StrategyPortfolio:
 	def prepare_entry(self,owner,ticker,side,event):
 		"""Called only after sizing and all strategy entry requirements pass."""
 		if not self.active(owner): return False
+		if self.entry_zone_reason(side,ticker,event['received_dt']):return False
 		if owner!='cross':
 			index,_=self.context(ticker,event['received_dt']);last=self.last_range_entry.get((ticker,side))
 			if last is not None and (index is None or index-last<2): return False

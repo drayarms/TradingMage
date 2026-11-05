@@ -55,6 +55,7 @@ def attach_exit_gap_gradients(frame,points):
 	events.sort(key=lambda event:event[0])
 	cursor=0; minimum=None; reference=None; armed=False
 	gradients={name:[] for name in TURNING_INDICATORS}
+	reference_closes=[]
 	for index,row in enumerate(rows):
 		reset=None
 		while cursor<len(events) and events[cursor][0]<=pd.Timestamp(row.completed_at).value:
@@ -68,11 +69,17 @@ def attach_exit_gap_gradients(frame,points):
 				gap=upper-lower
 				if minimum is None or gap<=minimum:
 					minimum=gap;reference=candidate
+		reference_closes.append(getattr(reference,'close',None))
 		for name in TURNING_INDICATORS:
 			value=getattr(row,name,None);previous=getattr(reference,name,None)
 			gradients[name].append(value-previous if finite(value) and finite(previous) else None)
 	for name in TURNING_INDICATORS:
 		frame[name+'_exit_gradient_since_gap_minimum']=pd.Series(gradients[name],index=frame.index,dtype=float)
+	frame['exit_gap_reference_close']=pd.Series(reference_closes,index=frame.index,dtype=float)
+	for name in ('bollinger_upper','bollinger_lower'):
+		values=frame[name] if name in frame else pd.Series(float('nan'),index=frame.index)
+		frame[name+'_recent_gradient']=values.diff()
+		frame[name+'_previous_gradient']=values.diff().shift(1)
 	return frame
 
 
@@ -151,6 +158,8 @@ def evaluate_cross_entry(side, price, base_amount, snapshot, current_exposure, p
 	normal = fast>slow if side=='long' else fast<slow
 	if not normal and not (finite(gradient) and (gradient>0 if side=='long' else gradient<0)):
 		return reject('countertrend_gradient_not_positive' if side=='long' else 'countertrend_gradient_not_negative')
+	if normal and finite(gradient) and (gradient<0 if side=='long' else gradient>0):
+		return reject('aligned_fast_average_moving_against_entry')
 	result['sizing_branch'] = 'normal' if normal else 'countertrend'
 	if settings.require_entry_confirmation and (price<=fast if side=='long' else price>=fast):
 		return reject('price_not_above_fast_average' if side=='long' else 'price_not_below_fast_average')

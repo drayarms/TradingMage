@@ -1,0 +1,15 @@
+# Range transition zones — approved requirements and plan
+
+Only ranging areas qualify; no extreme-stretch overlap. Reference is most recent minimum-width completed 4h candle since confirmed moving-average turn, same reference as exit veto. n = range_transition_band_speed_multiple default 2, m = range_transition_price_speed_multiple default 3; finite positive endpoint args. Bullish: lower delta < 0 AND (upper delta >= n*abs(lower delta) OR minute-market-price rise >= m*abs(lower delta)). Bearish: upper delta > 0 AND (abs(lower decline) >= n*upper delta OR minute-market-price decline >= m*upper delta). Use net changes over common interval, so elapsed time cancels. Minute market approximation is latest completed one-minute close, never a forming minute. Price change anchor is the completed reference candle's close (known before simulation); current price changes minute by minute. Most recent tied minimum; zero directional denominator does not qualify. If configurable ratios allow both zones, both prohibitions/exits apply.
+
+Disallow shorts/exit existing shorts in bullish transition; disallow longs/exit existing longs in bearish transition, all three owned books. Range and post-stretch range additionally exit long in completed bearish stretch and short in completed bullish stretch. All these exits remain subject to universal gradient veto and remembered execution. Gate immediate entries and pending fills with latest minute market classification. Cross aligned-short also blocked for fast gradient since turning >0 when fast<slow; aligned-long blocked for gradient<0 when fast>slow. Zero/missing gradient does not add restriction. Countertrend branch unchanged. Default trigger buy_sell_signal everywhere including updated command; preserve explicit none/turning_point.
+
+Architecture: pure range_transition_zones.py evaluator, shared completed minimum-reference price fields, portfolio-wide dynamic gates/exit processing, compressed minute zone intervals for yellow chart overlays, endpoint/settings plumbing. Existing range classes/exits/sizing/precedence remain.
+
+Plan:
+- [x] RED pure formula/ref/cross/default/endpoint tests, implement policy/reference/settings.
+- [x] RED immediate/pending/owned-book forced exit and veto tests, implement portfolio and order gates.
+- [x] RED minute-price simulation and plotting checks, implement compressed causal intervals and yellow shading.
+- [x] Regression suite, compile and shell checks; one fresh review, fix important findings, package/update existing deliverable.
+
+Progress: 13 new tests cover mirrored formulas, strict directional movement, endpoint forwarding, countertrend preservation, causal reference, all-book entry/exit gates, minute-vs-4h price timing, blocked exit release and shading. Pure and execution tests observed RED then GREEN. Fresh review found prohibited extended submissions could queue/cancel valid orders before fill guard; reproduced RED and fixed with submit-time gate. Visual check found a half-candle shading offset; timestamp regression RED then GREEN. Final regression suite after all fixes: 303 tests passed in 55.425s; Python compilation and shell syntax checks passed.
