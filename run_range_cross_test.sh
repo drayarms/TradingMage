@@ -2,7 +2,7 @@
 bash ./run_local_endpoint.sh plot \
 	strategy_name=golden_cross_dip_recovery_4h \
 	strategy_mode=both \
-	cross_strategy_enabled=true \
+	cross_strategy_enabled=false \
 	range_strategy_enabled=true \
 	disabled_strategy_virtual_positions_enabled=true \
 	entry_strategy_precedence=range \
@@ -18,8 +18,8 @@ bash ./run_local_endpoint.sh plot \
 	cross_exit_method=fast_moving_average \
 	fast_moving_average_reversed=true \
 	fast_moving_average_reversal_timeframe=4h \
-	start=2026-05-30T04:00:00-04:00 \
-	end=2026-10-30T20:00:00-04:00 \
+	start=2026-09-25T04:00:00-04:00 \
+	end=2026-11-10T20:00:00-04:00 \
 	position_size=6600 \
 	exit_after_turning_point=true \
 	exit_on_confirmatory_candlestick=true \
@@ -43,4 +43,15 @@ bash ./run_local_endpoint.sh plot \
 	lux_algo_symbols15m=false \
 	lux_algo_symbols1h=true \
 	lux_algo_symbols4h=true \
+	plotted_range_zone=4h \
+	plotted_stretch_zones=4h \
+	plotted_fast_ma=4h \
+	plotted_slow_ma=4h \
+	plotted_bollingers=4h \
+	plotted_candlesticks=1h \
+	plotted_ichimoku_cloud=4h \
+	candlestick_type=heikin_ashi \
+	heikin_ashi_filter_candles=3 \
+	exit_on_opposing_heikin_ashi_run=true \
+	do_not_enter_on_opposing_heikin_ashi_run=true \
 	indicators=true

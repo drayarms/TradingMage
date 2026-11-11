@@ -20,7 +20,7 @@ class ExtendedLimitOrders:
 		if event.get('_limit_fill') or calendar is None or not calendar.extended(event['received_dt']): return False
 		ticker=event['ticker'];key=(owner,ticker)
 		if not exit_order:
-			reason=self.p.entry_zone_reason(side,ticker,event['received_dt'])
+			reason=self.p.entry_zone_reason(side,ticker,event['received_dt'],owner=owner)
 			if reason:
 				existing=self.pending.get(key)
 				if existing and not existing['exit_order']:self.finish(key,event['received_dt'],'cancelled_'+reason)
@@ -70,7 +70,7 @@ class ExtendedLimitOrders:
 			if pd.Timestamp(when)>=order['expires']:
 				self.finish(key,when,'expired');continue
 			if not order['exit_order']:
-				reason=self.p.entry_zone_reason(order['side'],key[1],when)
+				reason=self.p.entry_zone_reason(order['side'],key[1],when,owner=key[0])
 				if reason:self.finish(key,when,'cancelled_'+reason);continue
 			ticker=key[1];bar=bars.get(ticker)
 			if bar is None: continue

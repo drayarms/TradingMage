@@ -275,6 +275,9 @@ class BackTester:
 		short_post_trough_entry_filter_enabled: bool = True,
 		shade_ranging_area: bool = True,
 		extreme_price_stretch_atr_multiple: float = 2.0,
+		heikin_ashi_filter_candles: int = 2,
+		do_not_enter_on_opposing_heikin_ashi_run: bool = True,
+		exit_on_opposing_heikin_ashi_run: bool = True,
 		entry_trigger: str = "buy_sell_signal",
 		range_transition_zones_enabled: bool = True,
 		range_transition_band_speed_multiple: float = 2.0,
@@ -284,6 +287,15 @@ class BackTester:
 		exit_on_confirmatory_candlestick: bool = False,
 		exit_after_turning_point: bool = False,
 		cross_exit_method: str = "price",
+		plotted_range_zone: str = "4h",
+		plotted_stretch_zones: str = "4h",
+		plotted_fast_ma: str = "4h",
+		plotted_slow_ma: str = "4h",
+		plotted_bollingers: str = "4h",
+		plotted_candlesticks: str = "4h",
+		plotted_ichimoku_cloud: str = "4h",
+		candlestick_type: str = "regular",
+		prepare_plot_data: bool = False,
 		fast_moving_average_reversed: bool = True,
 		fast_moving_average_reversal_timeframe: str = "4h",
 		bearish_exit_below_fast_average_atr_multiple: float = 1.0,
@@ -336,8 +348,12 @@ class BackTester:
 				raise ValueError("This strategy uses historical indicator warmup, not warmup trades; omit warmup_sessions")
 			if bearish_exit_confirmation_window_candles or profit_protection_enabled:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
-			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_min_bollinger_gap_to_peak_since_turning_point_ratio=range_min_bollinger_gap_to_peak_since_turning_point_ratio, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, entry_trigger=entry_trigger, range_transition_zones_enabled=range_transition_zones_enabled, range_transition_band_speed_multiple=range_transition_band_speed_multiple, range_transition_price_speed_multiple=range_transition_price_speed_multiple, cross_entry_bollinger_gap_atr_divisor=cross_entry_bollinger_gap_atr_divisor, enforce_atr_invalidation=enforce_atr_invalidation, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
-			return run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings)
+			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_min_bollinger_gap_to_peak_since_turning_point_ratio=range_min_bollinger_gap_to_peak_since_turning_point_ratio, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, heikin_ashi_filter_candles=heikin_ashi_filter_candles, do_not_enter_on_opposing_heikin_ashi_run=do_not_enter_on_opposing_heikin_ashi_run, exit_on_opposing_heikin_ashi_run=exit_on_opposing_heikin_ashi_run, entry_trigger=entry_trigger, range_transition_zones_enabled=range_transition_zones_enabled, range_transition_band_speed_multiple=range_transition_band_speed_multiple, range_transition_price_speed_multiple=range_transition_price_speed_multiple, cross_entry_bollinger_gap_atr_divisor=cross_entry_bollinger_gap_atr_divisor, enforce_atr_invalidation=enforce_atr_invalidation, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
+			from chart_data import PlotOptions
+			plot_options=PlotOptions(plotted_range_zone=plotted_range_zone,plotted_stretch_zones=plotted_stretch_zones,plotted_fast_ma=plotted_fast_ma,plotted_slow_ma=plotted_slow_ma,plotted_bollingers=plotted_bollingers,plotted_candlesticks=plotted_candlesticks,plotted_ichimoku_cloud=plotted_ichimoku_cloud,candlestick_type=candlestick_type)
+			result=run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings,plot_options=plot_options if prepare_plot_data else None)
+			result["plot_settings"]=plot_options.to_dict()
+			return result
 
 		if not isinstance(
 			record_factor_research,
@@ -3544,6 +3560,10 @@ class BackTester:
 		reversal_markers: Optional[list[dict[str, Any]]] = None,
 	) -> None:
 		"""Plot anchor-timeframe candlesticks and simulated entry markers."""
+		if (indicator_settings or {}).get('_plot_data') is not None:
+			from chart_renderer import draw_chart
+			draw_chart(ax,ticker,indicator_settings['_plot_data'],entries,exits,signal_events,entries_and_exits,lux_algo_symbols,indicators,indicator_settings,reversal_markers)
+			return
 		if not bars:
 			ax.set_title(
 				f"{ticker} — no {anchor_timeframe} candle data"
@@ -4062,6 +4082,7 @@ class BackTester:
 			for event in signal_events
 			if lux_algo_symbols and event.get("ticker")
 		}
+		overlay_tickers.update((result.get("chart_data") or {}).keys())
 		if indicators:
 			overlay_tickers.update((result.get("indicator_series") or {}).keys())
 		traded_tickers = sorted(set(traded_tickers) | overlay_tickers)
@@ -4070,9 +4091,7 @@ class BackTester:
 			"anchor_bars"
 		) or {}
 
-		anchor_timeframe = result.get(
-			"anchor_timeframe"
-		) or "anchor"
+		anchor_timeframe = ((result.get("plot_settings") or {}).get("plotted_candlesticks") if result.get("chart_data") else None) or result.get("anchor_timeframe") or "anchor"
 
 
 		zip_buffer = io.BytesIO()
@@ -4140,7 +4159,7 @@ class BackTester:
 						lux_algo_symbols=lux_algo_symbols,
 						indicators=indicators,
 						indicator_rows=(result.get("indicator_series") or {}).get(ticker, []),
-						indicator_settings={**(result.get("strategy_settings") or {}),"range_transition_intervals":(result.get("range_transition_zones") or {}).get(ticker,[])},
+						indicator_settings={**(result.get("strategy_settings") or {}),"range_transition_intervals":(result.get("range_transition_zones") or {}).get(ticker,[]),"_plot_data":(result.get("chart_data") or {}).get(ticker)},
 						reversal_markers=(result.get("fast_moving_average_reversed") or {}).get(ticker, []),
 					)
 				)

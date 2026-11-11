@@ -55,6 +55,9 @@ class StrategySettings:
 	short_post_trough_entry_filter_enabled: bool = True
 	shade_ranging_area: bool = True
 	extreme_price_stretch_atr_multiple: float = 2.0
+	heikin_ashi_filter_candles: int = 2
+	do_not_enter_on_opposing_heikin_ashi_run: bool = True
+	exit_on_opposing_heikin_ashi_run: bool = True
 	entry_trigger: str = 'buy_sell_signal'
 	range_transition_zones_enabled: bool = True
 	range_transition_band_speed_multiple: float = 2.0
@@ -68,6 +71,9 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not isinstance(self.do_not_enter_on_opposing_heikin_ashi_run,bool):raise ValueError("do_not_enter_on_opposing_heikin_ashi_run must be boolean")
+		if type(self.heikin_ashi_filter_candles) is not int or self.heikin_ashi_filter_candles<1:raise ValueError("heikin_ashi_filter_candles must be a positive integer")
+		if not isinstance(self.exit_on_opposing_heikin_ashi_run,bool):raise ValueError("exit_on_opposing_heikin_ashi_run must be boolean")
 		if not isinstance(self.range_transition_zones_enabled,bool):raise ValueError("range_transition_zones_enabled must be boolean")
 		for name in ("range_transition_band_speed_multiple","range_transition_price_speed_multiple"):
 			if not math.isfinite(getattr(self,name)) or getattr(self,name)<=0:raise ValueError(name+" must be positive and finite")

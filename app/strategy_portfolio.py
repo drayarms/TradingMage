@@ -10,6 +10,8 @@ from backtest_limit_orders import ExtendedLimitOrders
 class StrategyPortfolio:
 	def __init__(self,bt,settings,cross_state,frames,base):
 		from backtester import SimState
+		from heikin_ashi_filter import HeikinAshiRuns
+		self.heikin_ashi_runs=HeikinAshiRuns({},settings.heikin_ashi_filter_candles)
 		self.bt,self.settings,self.base=bt,settings,base
 		self.books={'cross':cross_state,'range':SimState(),'post_stretch_range':SimState()}
 		self.enabled={'cross':settings.cross_strategy_enabled,'range':settings.range_strategy_enabled,'post_stretch_range':settings.range_strategy_enabled}
@@ -50,7 +52,24 @@ class StrategyPortfolio:
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
 			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
 
-	def entry_zone_reason(self,side,ticker,when):
+	def process_heikin_ashi_exits(self,ticker,when):
+		from heikin_ashi_filter import EXIT_REASON
+		if not self.settings.exit_on_opposing_heikin_ashi_run:return
+		for owner,book in self.books.items():
+			position=book.positions.get(ticker)
+			if not self.active(owner) or position is None or not self.heikin_ashi_runs.blocks(ticker,position.side,when):continue
+			key=(owner,ticker)
+			# Replace any older gradient-blocked or ordinary pending exit with this liquidation.
+			self.blocked_exit_intents.pop(key,None)
+			order=self.limit_orders.pending.get(key)
+			if order and order['exit_order'] and order['event'].get('exit_reason')==EXIT_REASON:continue
+			if order:self.limit_orders.finish(key,when,'cancelled_by_heikin_ashi_liquidation')
+			event=dict(self.range_event(ticker,when),exit_reason=EXIT_REASON)
+			if self.bt._close_position(book,event):
+				book.trade_events[-1]['exit_reason']=EXIT_REASON;self.sync(owner)
+
+	def entry_zone_reason(self,side,ticker,when,owner="cross"):
+		if owner=="range" and self.settings.do_not_enter_on_opposing_heikin_ashi_run and self.heikin_ashi_runs.blocks(ticker,side,when):return "opposing_1h_heikin_ashi_run"
 		from range_transition_zones import prohibited_entry
 		_,row=self.context(ticker,when)
 		if row is None:return None
@@ -80,8 +99,13 @@ class StrategyPortfolio:
 				book.trade_events[-1]['exit_reason']=reason;self.sync(owner)
 
 	def exit_allowed(self,owner,event):
+		from heikin_ashi_filter import EXIT_REASON
+		if event.get("exit_reason")==EXIT_REASON:return True
 		from cross_entry_policy import exit_gradient_blocked
 		key=(owner,event['ticker']);book=self.books[owner]
+		pending=self.limit_orders.pending.get(key)
+		closed=self.limit_orders.closed_exit_intents.get(key)
+		if (pending and pending['exit_order'] and pending['event'].get('exit_reason')==EXIT_REASON) or (closed and closed[0].get('exit_reason')==EXIT_REASON):return False
 		position=book.positions.get(event['ticker'])
 		if position is None: return True
 		_,row=self.context(event['ticker'],event['received_dt'])
@@ -128,7 +152,7 @@ class StrategyPortfolio:
 	def prepare_entry(self,owner,ticker,side,event):
 		"""Called only after sizing and all strategy entry requirements pass."""
 		if not self.active(owner): return False
-		if self.entry_zone_reason(side,ticker,event['received_dt']):return False
+		if self.entry_zone_reason(side,ticker,event['received_dt'],owner=owner):return False
 		if owner!='cross':
 			index,_=self.context(ticker,event['received_dt']);last=self.last_range_entry.get((ticker,side))
 			if last is not None and (index is None or index-last<2): return False

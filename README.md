@@ -68,3 +68,37 @@ Recent increments are band[t] - band[t-1] and band[t-1] - band[t-2], using nativ
 Both transition types remain yellow. Only the bullish-transition trading restrictions remain: all three books prohibit shorts and trigger short exits there, subject to the universal veto and remembered release. Bearish-transition zones no longer impose a long-entry ban or force long exits. Opposite extreme-stretch zones no longer independently force range or post-stretch range exits. All other entry and exit rules remain active.
 
 Cross aligned entry restrictions and the `entry_trigger=buy_sell_signal` default remain unchanged. Reports include compressed `range_transition_zones` intervals for chart overlays. No live orders or authenticated historical backtest were run here.
+
+## Independent chart timeframes and Heikin-Ashi
+
+Each of these endpoint arguments independently accepts `4h` (default) or `1h`:
+
+| Argument | Plotted layer |
+|---|---|
+| `plotted_range_zone` | Range and yellow transition zones |
+| `plotted_stretch_zones` | Bullish/bearish extreme stretch zones |
+| `plotted_fast_ma` | Fast moving average |
+| `plotted_slow_ma` | Slow moving average |
+| `plotted_bollingers` | Both Bollinger bands |
+| `plotted_candlesticks` | Displayed OHLC candles |
+| `plotted_ichimoku_cloud` | Ichimoku leading cloud |
+
+All defaults stay 4h. Set any selector to 1h for that layer; mixed selections coexist on one timestamp axis. Native 1h prices are fetched only when a plotted layer needs them. Periods/types are retained and evaluated independently on the selected timeframe (for example, a configured SMA200 becomes 200 native hourly candles when its plotted timeframe is 1h). Zones use that timeframe's ATR, Bollingers and confirmed turning points. Plot-only calculations never change entries, exits, sizing or PnL.
+
+`candlestick_type=regular` is the default; `heikin_ashi` changes displayed candles only. HA is computed through warmup history before clipping the chart. Moving averages, Bollingers, zones, Ichimoku and trade/signal price markers still use regular prices.
+
+The cloud uses 9/26/52 periods and a 26-native-candle forward displacement, light green for span A above span B and light red below. It includes a projected cloud beyond the last completed candle using the broker calendar, with no future OHLC request. Indicator lines and zone classifications are timestamped when their source candles complete; OHLC bodies retain native interval-start timestamps. The chart axis uses America/New_York time.
+
+Existing `indicators`, `shade_ranging_area`, yellow-zone enablement, trade-symbol and LuxAlgo switches are retained. `indicators=false` hides the cloud, indicator lines and shaded zones. Reversal markers retain their existing separate timeframe setting. Charts keep optional DEMA5 diagnostics on 4h, as before. New chart-data preparation is enabled by the plot endpoint after the simulation; the run endpoint accepts/returns plotting settings without fetching extra chart history.
+
+The supplied runner now states all eight defaults explicitly. For a 1h Heikin-Ashi view, change `plotted_candlesticks=1h` and `candlestick_type=heikin_ashi`; set the other selectors to 1h as desired.
+
+## Compact chart keys and connected indicator lines
+
+Modern charts use smaller 5.5-point keys, split into indicators, zones, trades, LuxAlgo and fast-MA turning-point sections as applicable. Sections are positioned in low-ink chart whitespace while avoiding each other where space permits. Compact labels preserve the same marker/color meanings. The large key below the plotting area is removed.
+
+MA, Bollinger and optional DEMA lines now connect their samples with ordinary line segments instead of step rendering. This is a display change: indicator values still come from regular OHLC on each selected native timeframe. Heikin-Ashi remains display-only, and trading still uses completed-candle values.
+
+Completed 1h Heikin-Ashi entry/liquidation filter: see [configuration and exact wick rules](docs/heikin_ashi_entry_exit_filter.md). Defaults: `heikin_ashi_filter_candles=2`, `exit_on_opposing_heikin_ashi_run=true`.
+
+`do_not_enter_on_opposing_heikin_ashi_run=true` guards normal range entries only. Cross and post-stretch range entries are exempt; `exit_on_opposing_heikin_ashi_run` independently liquidates all three position types.
