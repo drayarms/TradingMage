@@ -102,3 +102,5 @@ MA, Bollinger and optional DEMA lines now connect their samples with ordinary li
 Completed 1h Heikin-Ashi entry/liquidation filter: see [configuration and exact wick rules](docs/heikin_ashi_entry_exit_filter.md). Defaults: `heikin_ashi_filter_candles=2`, `exit_on_opposing_heikin_ashi_run=true`.
 
 `do_not_enter_on_opposing_heikin_ashi_run=true` guards normal range entries only. Cross and post-stretch range entries are exempt; `exit_on_opposing_heikin_ashi_run` independently liquidates all three position types.
+
+Additional entries in an open position must pass the [1h Heikin-Ashi color filter since the last actual fill](docs/heikin_ashi_since_entry.md), separately per ticker, strategy type and side. Full closure resets this filter.

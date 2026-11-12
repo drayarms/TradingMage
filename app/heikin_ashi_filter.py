@@ -8,6 +8,7 @@ EXIT_REASON='opposing_1h_heikin_ashi_run'
 class HeikinAshiRuns:
 	def __init__(self,frames,n,anchors=None):
 		self.index={}
+		self.color_clears={}
 		anchors=anchors or {}
 		for ticker,raw in frames.items():
 			frame=heikin_ashi(raw.sort_index().loc[lambda f:~f.index.duplicated(keep='last')])
@@ -33,6 +34,22 @@ class HeikinAshiRuns:
 				if green==1:green_near=near(row,'short')
 				values.append((red>=n and red_near,green>=n and green_near))
 			self.index[ticker]=(pd.DatetimeIndex(frame.index+pd.Timedelta(hours=1)).asi8,values)
+			times=self.index[ticker][0]
+			valid=np.isfinite(frame.open.to_numpy()) & np.isfinite(frame.close.to_numpy())
+			indices=np.arange(len(frame))
+			long_clear=np.maximum.accumulate(np.where(valid & (frame.close.to_numpy()>=frame.open.to_numpy()),indices,-1))
+			short_clear=np.maximum.accumulate(np.where(valid & (frame.close.to_numpy()<=frame.open.to_numpy()),indices,-1))
+			self.color_clears[ticker]=(times,long_clear,short_clear)
+
+	def only_opposing_since(self,ticker,side,after,when):
+		"""A green/doji clears longs; a red/doji clears shorts, strictly after fill."""
+		if ticker not in self.color_clears:return True
+		times,long_clear,short_clear=self.color_clears[ticker]
+		first=int(np.searchsorted(times,pd.Timestamp(after).value,side='right'))
+		last=int(np.searchsorted(times,pd.Timestamp(when).value,side='right'))-1
+		if last<first:return True
+		return (long_clear if side=='long' else short_clear)[last]<first
+
 
 	def blocks(self,ticker,side,when):
 		if ticker not in self.index:return False

@@ -35,6 +35,7 @@ class StrategyPortfolio:
 		self.exposure=OpenExposureTracker(frames)
 		self.last_range_entry={}
 		self.last_cross_entry={}
+		self.last_heikin_ashi_entry={}
 		self.cross_snapshot_cache={}
 		self.blocked_exit_intents={}
 		self.transition_zone_intervals={}
@@ -47,6 +48,7 @@ class StrategyPortfolio:
 		self.realized_directions=dict.fromkeys(self.direction_reports,0.)
 		self.limit_orders=ExtendedLimitOrders(self)
 		for owner,book in self.books.items():
+			book.on_entry_filled=lambda ticker,side,when,owner=owner:self.record_heikin_ashi_fill(owner,ticker,side,when)
 			book.exit_allowed=lambda event,owner=owner:self.exit_allowed(owner,event)
 			book.on_position_closed=lambda ticker,when,owner=owner:self.position_closed(owner,ticker,when)
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
@@ -68,7 +70,22 @@ class StrategyPortfolio:
 			if self.bt._close_position(book,event):
 				book.trade_events[-1]['exit_reason']=EXIT_REASON;self.sync(owner)
 
+	def record_heikin_ashi_fill(self,owner,ticker,side,when):
+		position=self.books[owner].positions.get(ticker)
+		if position is not None and position.side==side:
+			self.last_heikin_ashi_entry[owner,ticker,side]=(pd.Timestamp(when),position)
+
+	def heikin_ashi_entry_reason(self,owner,ticker,side,when):
+		if not self.settings.do_not_enter_after_only_opposing_heikin_ashi_since_last_entry:return None
+		previous=self.last_heikin_ashi_entry.get((owner,ticker,side))
+		if previous is None:return None
+		after,position=previous
+		if self.books[owner].positions.get(ticker) is not position or position.side!=side:return None
+		if self.heikin_ashi_runs.only_opposing_since(ticker,side,after,when):return 'only_opposing_1h_heikin_ashi_since_last_entry'
+
 	def entry_zone_reason(self,side,ticker,when,owner="cross"):
+		reason=self.heikin_ashi_entry_reason(owner,ticker,side,when)
+		if reason:return reason
 		if owner=="range" and self.settings.do_not_enter_on_opposing_heikin_ashi_run and self.heikin_ashi_runs.blocks(ticker,side,when):return "opposing_1h_heikin_ashi_run"
 		from range_transition_zones import prohibited_entry
 		_,row=self.context(ticker,when)
@@ -121,6 +138,8 @@ class StrategyPortfolio:
 		return False
 
 	def position_closed(self,owner,ticker,when):
+		for key in list(self.last_heikin_ashi_entry):
+			if key[:2]==(owner,ticker):self.last_heikin_ashi_entry.pop(key,None)
 		key=(owner,ticker)
 		self.books[owner].last_exit_time_by_ticker[ticker]=when
 		self.blocked_exit_intents.pop(key,None)

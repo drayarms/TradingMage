@@ -18,8 +18,8 @@ bash ./run_local_endpoint.sh plot \
 	cross_exit_method=fast_moving_average \
 	fast_moving_average_reversed=true \
 	fast_moving_average_reversal_timeframe=4h \
-	start=2026-09-25T04:00:00-04:00 \
-	end=2026-11-10T20:00:00-04:00 \
+	start=2026-05-30T04:00:00-04:00 \
+	end=2026-11-11T20:00:00-04:00 \
 	position_size=6600 \
 	exit_after_turning_point=true \
 	exit_on_confirmatory_candlestick=true \
@@ -52,6 +52,8 @@ bash ./run_local_endpoint.sh plot \
 	plotted_ichimoku_cloud=4h \
 	candlestick_type=heikin_ashi \
 	heikin_ashi_filter_candles=3 \
-	exit_on_opposing_heikin_ashi_run=true \
-	do_not_enter_on_opposing_heikin_ashi_run=true \
+	exit_on_opposing_heikin_ashi_run=false \
+	do_not_enter_on_opposing_heikin_ashi_run=false \
+	do_not_enter_after_only_opposing_heikin_ashi_since_last_entry=false \
 	indicators=true
+

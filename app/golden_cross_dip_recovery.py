@@ -56,6 +56,7 @@ class StrategySettings:
 	shade_ranging_area: bool = True
 	extreme_price_stretch_atr_multiple: float = 2.0
 	heikin_ashi_filter_candles: int = 2
+	do_not_enter_after_only_opposing_heikin_ashi_since_last_entry: bool = True
 	do_not_enter_on_opposing_heikin_ashi_run: bool = True
 	exit_on_opposing_heikin_ashi_run: bool = True
 	entry_trigger: str = 'buy_sell_signal'
@@ -71,6 +72,7 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not isinstance(self.do_not_enter_after_only_opposing_heikin_ashi_since_last_entry,bool):raise ValueError("do_not_enter_after_only_opposing_heikin_ashi_since_last_entry must be boolean")
 		if not isinstance(self.do_not_enter_on_opposing_heikin_ashi_run,bool):raise ValueError("do_not_enter_on_opposing_heikin_ashi_run must be boolean")
 		if type(self.heikin_ashi_filter_candles) is not int or self.heikin_ashi_filter_candles<1:raise ValueError("heikin_ashi_filter_candles must be a positive integer")
 		if not isinstance(self.exit_on_opposing_heikin_ashi_run,bool):raise ValueError("exit_on_opposing_heikin_ashi_run must be boolean")
