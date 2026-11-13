@@ -2,7 +2,7 @@
 import copy
 import numpy as np
 import pandas as pd
-from golden_cross_dip_recovery import STRATEGY_NAME
+from golden_cross_dip_recovery import STRATEGY_NAME,HEIKIN_ASHI_FILTER_FLAGS
 from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction, post_stretch_entry_side
 from open_exposure_report import OpenExposureTracker
 from backtest_limit_orders import ExtendedLimitOrders
@@ -56,8 +56,8 @@ class StrategyPortfolio:
 
 	def process_heikin_ashi_exits(self,ticker,when):
 		from heikin_ashi_filter import EXIT_REASON
-		if not self.settings.exit_on_opposing_heikin_ashi_run:return
 		for owner,book in self.books.items():
+			if not getattr(self.settings,HEIKIN_ASHI_FILTER_FLAGS[owner]['exit']):continue
 			position=book.positions.get(ticker)
 			if not self.active(owner) or position is None or not self.heikin_ashi_runs.blocks(ticker,position.side,when):continue
 			key=(owner,ticker)
@@ -76,7 +76,7 @@ class StrategyPortfolio:
 			self.last_heikin_ashi_entry[owner,ticker,side]=(pd.Timestamp(when),position)
 
 	def heikin_ashi_entry_reason(self,owner,ticker,side,when):
-		if not self.settings.do_not_enter_after_only_opposing_heikin_ashi_since_last_entry:return None
+		if not getattr(self.settings,HEIKIN_ASHI_FILTER_FLAGS[owner]['since_entry']):return None
 		previous=self.last_heikin_ashi_entry.get((owner,ticker,side))
 		if previous is None:return None
 		after,position=previous
@@ -86,7 +86,7 @@ class StrategyPortfolio:
 	def entry_zone_reason(self,side,ticker,when,owner="cross"):
 		reason=self.heikin_ashi_entry_reason(owner,ticker,side,when)
 		if reason:return reason
-		if owner=="range" and self.settings.do_not_enter_on_opposing_heikin_ashi_run and self.heikin_ashi_runs.blocks(ticker,side,when):return "opposing_1h_heikin_ashi_run"
+		if getattr(self.settings,HEIKIN_ASHI_FILTER_FLAGS[owner]['entry']) and self.heikin_ashi_runs.blocks(ticker,side,when):return "opposing_1h_heikin_ashi_run"
 		from range_transition_zones import prohibited_entry
 		_,row=self.context(ticker,when)
 		if row is None:return None

@@ -99,8 +99,4 @@ Modern charts use smaller 5.5-point keys, split into indicators, zones, trades, 
 
 MA, Bollinger and optional DEMA lines now connect their samples with ordinary line segments instead of step rendering. This is a display change: indicator values still come from regular OHLC on each selected native timeframe. Heikin-Ashi remains display-only, and trading still uses completed-candle values.
 
-Completed 1h Heikin-Ashi entry/liquidation filter: see [configuration and exact wick rules](docs/heikin_ashi_entry_exit_filter.md). Defaults: `heikin_ashi_filter_candles=2`, `exit_on_opposing_heikin_ashi_run=true`.
-
-`do_not_enter_on_opposing_heikin_ashi_run=true` guards normal range entries only. Cross and post-stretch range entries are exempt; `exit_on_opposing_heikin_ashi_run` independently liquidates all three position types.
-
-Additional entries in an open position must pass the [1h Heikin-Ashi color filter since the last actual fill](docs/heikin_ashi_since_entry.md), separately per ticker, strategy type and side. Full closure resets this filter.
+Completed 1h Heikin-Ashi filters now have nine independent cross, normal-range and post-stretch-range switches, all defaulting to true. See the [configuration table](docs/heikin_ashi_entry_exit_filter.md) and [color-since-last-fill rules](docs/heikin_ashi_since_entry.md). The shared candle count defaults to 2. `run_range_cross_test.sh` contains the requested mixed-timeframe configuration and per-book switches.

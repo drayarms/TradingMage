@@ -51,9 +51,14 @@ bash ./run_local_endpoint.sh plot \
 	plotted_candlesticks=1h \
 	plotted_ichimoku_cloud=4h \
 	candlestick_type=heikin_ashi \
-	heikin_ashi_filter_candles=3 \
-	exit_on_opposing_heikin_ashi_run=false \
-	do_not_enter_on_opposing_heikin_ashi_run=false \
-	do_not_enter_after_only_opposing_heikin_ashi_since_last_entry=false \
+	heikin_ashi_filter_candles=4 \
+	exit_cross_on_opposing_heikin_ashi_run=false \
+	do_not_enter_cross_on_opposing_heikin_ashi_run=false \
+	do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry=false \
+	exit_range_on_opposing_heikin_ashi_run=false \
+	do_not_enter_range_on_opposing_heikin_ashi_run=false \
+	do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry=false \
+	exit_range_stretch_on_opposing_heikin_ashi_run=true \
+	do_not_enter_range_stretch_on_opposing_heikin_ashi_run=true \
+	do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry=false \
 	indicators=true
-

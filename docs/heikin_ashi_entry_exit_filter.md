@@ -1,34 +1,34 @@
-# Completed 1h Heikin-Ashi filter
+# Per-strategy completed 1h Heikin-Ashi filters
 
-Both `/backtest/run` and `/backtest/plot` accept:
+Both `/backtest/run` and `/backtest/plot` accept nine independent booleans. Every switch defaults to `true`.
 
-| Argument | Default | Meaning |
-|---|---|---|
-| `heikin_ashi_filter_candles` | `2` | Positive integer number of consecutive completed native 1h candles. |
-| `do_not_enter_on_opposing_heikin_ashi_run` | `true` | Guard normal range entries only, including additions and pending fills. |
-| `exit_on_opposing_heikin_ashi_run` | `true` | Liquidate opposing positions when the run qualifies. |
+| Position type | Wickless-run liquidation | Wickless-run entry guard | Color-since-last-fill entry guard |
+|---|---|---|---|
+| Cross | `exit_cross_on_opposing_heikin_ashi_run` | `do_not_enter_cross_on_opposing_heikin_ashi_run` | `do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry` |
+| Normal range | `exit_range_on_opposing_heikin_ashi_run` | `do_not_enter_range_on_opposing_heikin_ashi_run` | `do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry` |
+| Post-stretch range | `exit_range_stretch_on_opposing_heikin_ashi_run` | `do_not_enter_range_stretch_on_opposing_heikin_ashi_run` | `do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry` |
 
-The entry filter applies only to normal range entries, including additions and pending order fills, when `do_not_enter_on_opposing_heikin_ashi_run=true`. Cross and post-stretch range entries are exempt. It blocks longs after n red HA candles, each without an upper wick, and shorts after n green HA candles, each without a lower wick. Doji candles or candles with the specified wick interrupt the run. Wick equality allows a relative floating-point tolerance of 1e-10.
+The three former shared switches have been removed. Each book now checks only its own switches, including disabled-strategy virtual positions. The endpoint label `range_stretch` maps to the existing internal/reporting book `post_stretch_range`.
 
-When liquidation is enabled, the same conditions close existing positions in all three books, bypassing the three-gradient veto. Execution hours, fresh quotes, liquidity and extended-session limit fills still apply. Pending liquidation retains this priority until executed. The entry and liquidation switches are independent. Setting liquidation to false leaves the normal range entry guard enabled unless its own switch is also false.
+## Wickless-run rules
 
-Hourly data is fetched independently of all plotting selectors and chart candle type. HA recursion includes historical warmup, and a candle becomes available only at its completion time. Closed-market periods do not create synthetic candles. The last n available completed native hourly candles define a run.
+`heikin_ashi_filter_candles` remains one shared positive integer (default `2`). Longs are opposed by n red HA candles with no upper wick; shorts by n green HA candles with no lower wick. Wick equality allows relative floating-point tolerance of 1e-10. Doji candles and candles with the specified wick interrupt the run.
 
-Append to your existing command:
+A run qualifies only if its first candle satisfies the existing strict, one-sided Bollinger proximity rule:
 
-```bash
-  heikin_ashi_filter_candles=2 \
-  do_not_enter_on_opposing_heikin_ashi_run=true \
-  exit_on_opposing_heikin_ashi_run=true
-```
+- Red run: first HA low < 4h lower Bollinger + 0.2 × 4h ATR.
+- Green run: first HA high > 4h upper Bollinger − 0.2 × 4h ATR.
 
-## Proximity of the first candle
+The check uses the latest completed 4h context available when the first hourly HA candle closes, including exact simultaneous completion. Prices beyond the band qualify. The origin is the start of the entire uninterrupted run; its qualification remains frozen as the run grows and bands change. Missing/nonfinite context or nonpositive ATR cannot qualify a run.
 
-A wickless run qualifies only if its first candle is close to the relevant 4h band, using the latest completed 4h context available when that first hourly candle closes:
+The entry switch blocks entries and additions in its own book, including pending-order submission and fill revalidation. Unlike earlier versions, crosses and post-stretch ranges can each enable this entry guard too. The independent exit switch liquidates positions in its own book and bypasses the three-gradient veto. Execution calendars, fresh prices, extended-session limits and liquidity rules still apply.
 
-- Red run: first HA low < lower Bollinger + 0.2 × 4h ATR.
-- Green run: first HA high > upper Bollinger − 0.2 × 4h ATR.
+## Color since the last fill
 
-These are the same strict, one-sided thresholds used for normal range proximity; values beyond the band qualify too. The test uses the actual HA low/high. Its result is frozen for the entire uninterrupted wickless same-color run. It does not roll forward to the latest n candles or change as later bands change. A wick or color interruption resets the run. Missing/nonfinite 4h context or nonpositive ATR cannot qualify a run.
+See [the separate color-filter rules](heikin_ashi_since_entry.md). This filter does not require wicklessness or Bollinger proximity and uses its own switch for each position type.
 
-This qualification is shared by the optional normal-range entry guard and optional liquidation of all three position types. Existing switches, candle count and execution rules remain unchanged.
+## Example script
+
+`run_range_cross_test.sh` has the requested configuration: all cross and normal-range HA filters disabled; post-stretch range wickless-run liquidation and entry guard enabled; its color-since-last-fill guard disabled; shared n=4. It plots native 1h HA candles with 4h indicators/zones. The end timestamp is preserved exactly as supplied: `2026-11-11T20:00:00-04:00` (19:00 New York standard time).
+
+All HA decisions use completed native hourly candles with historical warmup, independently of chart selectors or displayed candle type. No synthetic closed-market candles are created.

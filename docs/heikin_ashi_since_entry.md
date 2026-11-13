@@ -9,8 +9,10 @@ An additional filter, enabled by default, applies separately to each ticker, str
 - Every actual entry fill, including an addition or extended-hours fill, restarts the observation interval. Order submission or rejection does not restart it. Pending entries are rechecked before filling.
 - Full closure clears this filter for that book and ticker. A newly opened position does not inherit the previous position's color restriction. Other tickers, books and sides do not share this state.
 
-Existing 4h entry spacing remains in effect. The existing configurable wickless-run filter and liquidation rule also remain independent. The boolean endpoint argument `do_not_enter_after_only_opposing_heikin_ashi_since_last_entry` defaults to `true` on both run and plot. Set it to `false` to disable only this filter. Exit rules are unchanged.
+Existing 4h entry spacing remains in effect. The existing configurable wickless-run filter and liquidation rule also remain independent. Each position type has its own boolean endpoint argument, defaulting to `true` on both run and plot:
 
-```bash
-  do_not_enter_after_only_opposing_heikin_ashi_since_last_entry=false
-```
+- `do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry`
+- `do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry`
+- `do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry`
+
+Set a switch to `false` to disable only this filter for that position type. Wickless-run entry and liquidation switches remain independent; see [the full switch table](heikin_ashi_entry_exit_filter.md).
