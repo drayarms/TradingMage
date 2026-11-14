@@ -36,7 +36,7 @@ def bollinger_cusp_context(frame, turning_points=None):
 		result.append((lower_seen,upper_seen))
 	return result
 
-def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0, max_atr_to_gap_ratio=.5, turning_points=None):
+def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6, min_stretch_gap_atr_multiple=3.0, max_atr_to_gap_ratio=.5, turning_points=None, bollinger_proximity_atr_multiple=.2):
 	frame=frame.copy()
 	if frame.empty: return frame
 	ema=frame.close.ewm(span=9,adjust=False,min_periods=9).mean()
@@ -50,8 +50,8 @@ def annotate_market_conditions(frame, stretch_multiple, gap_similarity_ratio=.6,
 		upper,lower,atr,slow=row.bollinger_upper,row.bollinger_lower,row.atr,row.slow_moving_average
 		gap=upper-lower
 		ready=all(finite(v) for v in (upper,lower,atr,slow)) and gap>0 and atr>0
-		near_upper=ready and row.close>upper-.2*atr
-		near_lower=ready and row.close<lower+.2*atr
+		near_upper=ready and row.close>upper-bollinger_proximity_atr_multiple*atr
+		near_lower=ready and row.close<lower+bollinger_proximity_atr_multiple*atr
 		if near_upper:
 			width_valid=last_lower_gap is not None and gap_similarity_ratio<=gap/last_lower_gap<=1/gap_similarity_ratio
 			last_upper_gap=gap

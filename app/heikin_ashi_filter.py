@@ -6,9 +6,10 @@ from chart_data import heikin_ashi
 EXIT_REASON='opposing_1h_heikin_ashi_run'
 
 class HeikinAshiRuns:
-	def __init__(self,frames,n,anchors=None):
+	def __init__(self,frames,n,anchors=None,bollinger_proximity_atr_multiple=.2):
 		self.index={}
 		self.color_clears={}
+		self.streak_ends={}
 		anchors=anchors or {}
 		for ticker,raw in frames.items():
 			frame=heikin_ashi(raw.sort_index().loc[lambda f:~f.index.duplicated(keep='last')])
@@ -25,7 +26,7 @@ class HeikinAshiRuns:
 				if i<0:return False
 				a=anchor_rows[i];band=a.get('bollinger_lower' if side=='long' else 'bollinger_upper');atr=a.get('atr')
 				if band is None or atr is None or not np.isfinite(band) or not np.isfinite(atr) or atr<=0:return False
-				return row.low<band+.2*atr if side=='long' else row.high>band-.2*atr
+				return row.low<band+bollinger_proximity_atr_multiple*atr if side=='long' else row.high>band-bollinger_proximity_atr_multiple*atr
 			for row in frame.itertuples():
 				tol=max(abs(row.open),abs(row.close),1.)*1e-10
 				red=red+1 if row.close<row.open and abs(row.high-max(row.open,row.close))<=tol else 0
@@ -40,6 +41,20 @@ class HeikinAshiRuns:
 			long_clear=np.maximum.accumulate(np.where(valid & (frame.close.to_numpy()>=frame.open.to_numpy()),indices,-1))
 			short_clear=np.maximum.accumulate(np.where(valid & (frame.close.to_numpy()<=frame.open.to_numpy()),indices,-1))
 			self.color_clears[ticker]=(times,long_clear,short_clear)
+			previous=0;ends={'long':[],'short':[]}
+			for stamp,row in zip(times,frame.itertuples()):
+				if not np.isfinite(row.open) or not np.isfinite(row.close):continue
+				color=1 if row.close>row.open else -1 if row.close<row.open else 0
+				if not color:continue # Dojis neither end nor begin a streak.
+				if previous and color!=previous:ends['long' if previous==1 else 'short'].append(stamp)
+				previous=color
+			self.streak_ends[ticker]={side:np.array(values,dtype=np.int64) for side,values in ends.items()}
+
+	def streak_ended_since(self,ticker,side,after,when):
+		ends=self.streak_ends.get(ticker,{}).get(side,np.array([],dtype=np.int64))
+		i=int(np.searchsorted(ends,pd.Timestamp(when).value,side='right'))-1
+		return i>=0 and ends[i]>pd.Timestamp(after).value
+
 
 	def only_opposing_since(self,ticker,side,after,when):
 		"""A green/doji clears longs; a red/doji clears shorts, strictly after fill."""
@@ -64,4 +79,4 @@ def load_hourly_runs(api,settings,symbols,start,end,anchors):
 	frames={t:loader._fetch(t,pd.Timestamp(start)-pd.Timedelta(days=max(365,settings.heikin_ashi_filter_candles)),pd.Timestamp(end)) for t in symbols}
 	for ticker,frame in frames.items():
 		if frame.empty:raise ValueError('No completed native 1h Heikin-Ashi filter data for '+ticker)
-	return HeikinAshiRuns(frames,settings.heikin_ashi_filter_candles,anchors)
+	return HeikinAshiRuns(frames,settings.heikin_ashi_filter_candles,anchors,settings.bollinger_proximity_atr_multiple)

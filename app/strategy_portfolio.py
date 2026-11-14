@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import pandas as pd
 from golden_cross_dip_recovery import STRATEGY_NAME,HEIKIN_ASHI_FILTER_FLAGS
-from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction, post_stretch_entry_side
+from range_strategy import range_entry_side, range_exit_reason, range_entry_fraction, post_stretch_entry_side, fast_average_streak_exit_reason
 from open_exposure_report import OpenExposureTracker
 from backtest_limit_orders import ExtendedLimitOrders
 
@@ -73,6 +73,13 @@ class StrategyPortfolio:
 	def record_heikin_ashi_fill(self,owner,ticker,side,when):
 		position=self.books[owner].positions.get(ticker)
 		if position is not None and position.side==side:
+			key=(owner,ticker)
+			for intents in (self.blocked_exit_intents,self.limit_orders.closed_exit_intents):
+				intent=intents.get(key)
+				if intent and intent[0].get('exit_reason','').endswith('fast_average_after_heikin_ashi_streak'):intents.pop(key,None)
+			order=self.limit_orders.pending.get(key)
+			if order and order['exit_order'] and order['event'].get('exit_reason','').endswith('fast_average_after_heikin_ashi_streak'):
+				self.limit_orders.finish(key,when,'cancelled_streak_exit_by_new_fill')
 			self.last_heikin_ashi_entry[owner,ticker,side]=(pd.Timestamp(when),position)
 
 	def heikin_ashi_entry_reason(self,owner,ticker,side,when):
@@ -324,7 +331,12 @@ class StrategyPortfolio:
 		if not entries:
 			cross='golden_cross' if position.side=='long' else 'death_cross'
 			native_cross=bool(row.get(cross,False)) and pd.Timestamp(row['completed_at'])==pd.Timestamp(when) and (position.entry_time is None or pd.Timestamp(position.entry_time)<pd.Timestamp(when))
-			reason='range_4h_'+cross if native_cross else range_exit_reason(position.side,market,self.rows[ticker],index,projection_candles=3 if owner=='post_stretch_range' else 1)
+			reason='range_4h_'+cross if native_cross else range_exit_reason(position.side,market,self.rows[ticker],index,projection_candles=3 if owner=='post_stretch_range' else 1,proximity_atr_multiple=self.settings.bollinger_proximity_atr_multiple)
+			if reason is None:
+				enabled=self.settings.exit_range_near_fast_ma_after_heikin_ashi_streak if owner=='range' else self.settings.exit_range_stretch_near_fast_ma_after_heikin_ashi_streak
+				previous=self.last_heikin_ashi_entry.get((owner,ticker,position.side))
+				if enabled and previous and previous[1] is position and self.heikin_ashi_runs.streak_ended_since(ticker,position.side,previous[0],when):
+					reason=fast_average_streak_exit_reason(position.side,market,row,self.settings.fast_ma_proximity_atr_multiple)
 			if reason and owner=='post_stretch_range':reason='post_stretch_'+reason
 			if reason:
 				if self.bt._close_position(book,dict(event,exit_reason=reason)):
@@ -332,7 +344,7 @@ class StrategyPortfolio:
 					book.trade_events[-1]['exit_reason']=reason
 				self.sync(owner)
 			return
-		side=post_stretch_entry_side(market,row) if owner=='post_stretch_range' else range_entry_side(market,row,self.settings.range_min_bollinger_gap_to_peak_since_turning_point_ratio)
+		side=post_stretch_entry_side(market,row) if owner=='post_stretch_range' else range_entry_side(market,row,self.settings.range_min_bollinger_gap_to_peak_since_turning_point_ratio,self.settings.bollinger_proximity_atr_multiple)
 		if side is None: return
 		last=self.last_range_entry.get((ticker,side))
 		if last is not None and index-last<2: return

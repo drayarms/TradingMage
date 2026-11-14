@@ -61,6 +61,10 @@ class StrategySettings:
 	short_post_trough_entry_filter_enabled: bool = True
 	shade_ranging_area: bool = True
 	extreme_price_stretch_atr_multiple: float = 2.0
+	exit_range_near_fast_ma_after_heikin_ashi_streak: bool = True
+	exit_range_stretch_near_fast_ma_after_heikin_ashi_streak: bool = True
+	fast_ma_proximity_atr_multiple: float = 0.1
+	bollinger_proximity_atr_multiple: float = 0.2
 	heikin_ashi_filter_candles: int = 2
 	exit_cross_on_opposing_heikin_ashi_run: bool = True
 	do_not_enter_cross_on_opposing_heikin_ashi_run: bool = True
@@ -84,6 +88,11 @@ class StrategySettings:
 	fast_moving_average_reversal_timeframe: str = '4h'
 
 	def __post_init__(self):
+		if not isinstance(self.exit_range_near_fast_ma_after_heikin_ashi_streak,bool):raise ValueError("exit_range_near_fast_ma_after_heikin_ashi_streak must be boolean")
+		if not isinstance(self.exit_range_stretch_near_fast_ma_after_heikin_ashi_streak,bool):raise ValueError("exit_range_stretch_near_fast_ma_after_heikin_ashi_streak must be boolean")
+		if not math.isfinite(self.fast_ma_proximity_atr_multiple) or self.fast_ma_proximity_atr_multiple<0:raise ValueError("fast_ma_proximity_atr_multiple must be finite and nonnegative")
+		if not math.isfinite(self.bollinger_proximity_atr_multiple) or self.bollinger_proximity_atr_multiple<0:raise ValueError("bollinger_proximity_atr_multiple must be finite and nonnegative")
+
 		for names in HEIKIN_ASHI_FILTER_FLAGS.values():
 			for name in names.values():
 				if not isinstance(getattr(self,name),bool):raise ValueError(name+" must be boolean")
@@ -209,7 +218,7 @@ def build_indicator_frame(bars, settings, bar_duration=None):
 	frame['bollinger_lower'] = band_mid - settings.bollinger_std_dev * band_std
 	frame['completed_at'] = frame.index+(bar_duration if bar_duration is not None else pd.Timedelta(hours=4))
 	from cross_entry_policy import attach_cross_entry_context
-	return attach_cross_entry_context(annotate_market_conditions(attach_entry_cross_references(frame), settings.extreme_price_stretch_atr_multiple, settings.range_bollinger_gap_similarity_ratio, settings.extreme_price_stretch_min_bollinger_gap_atr_multiple, settings.range_max_atr_to_bollinger_gap_ratio))
+	return attach_cross_entry_context(annotate_market_conditions(attach_entry_cross_references(frame), settings.extreme_price_stretch_atr_multiple, settings.range_bollinger_gap_similarity_ratio, settings.extreme_price_stretch_min_bollinger_gap_atr_multiple, settings.range_max_atr_to_bollinger_gap_ratio, bollinger_proximity_atr_multiple=settings.bollinger_proximity_atr_multiple))
 
 
 def attach_entry_cross_references(frame):

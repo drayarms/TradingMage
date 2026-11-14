@@ -24,21 +24,21 @@ def valid(row):
 	values=[row.get(k) for k in ('bollinger_upper','bollinger_lower','atr')]
 	return all(v is not None and math.isfinite(v) and v>0 for v in values) and values[0]>values[1]
 
-def range_entry_side(price,row,min_gap_ratio=.7):
+def range_entry_side(price,row,min_gap_ratio=.7,proximity_atr_multiple=.2):
 	if not valid(row) or not row.get('ranging_market',False): return None
 	peak=row.get(GAP_REFERENCE)
 	if peak is None or not math.isfinite(peak) or peak<=0: return None
 	if row['bollinger_upper']-row['bollinger_lower']<min_gap_ratio*peak: return None
-	if price<row['bollinger_lower']+.2*row['atr']: return 'long'
-	if price>row['bollinger_upper']-.2*row['atr']: return 'short'
+	if price<row['bollinger_lower']+proximity_atr_multiple*row['atr']: return 'long'
+	if price>row['bollinger_upper']-proximity_atr_multiple*row['atr']: return 'short'
 	return None
 
-def range_exit_reason(side,price,rows,index,projection_candles=1):
+def range_exit_reason(side,price,rows,index,projection_candles=1,proximity_atr_multiple=.2):
 	row=rows[index]
 	if not valid(row): return None
 	band='bollinger_upper' if side=='long' else 'bollinger_lower'
 	def near(value):
-		return price>value-.2*row['atr'] if side=='long' else price<value+.2*row['atr']
+		return price>value-proximity_atr_multiple*row['atr'] if side=='long' else price<value+proximity_atr_multiple*row['atr']
 	label='upper' if side=='long' else 'lower'
 	if near(row[band]): return 'range_'+label+'_band'
 	if index>=2:
@@ -76,3 +76,10 @@ def post_stretch_entry_side(price,row):
 	if row.get('post_stretch_direction')=='bullish' and price>fast:return 'short'
 	if row.get('post_stretch_direction')=='bearish' and price<fast:return 'long'
 	return None
+
+
+def fast_average_streak_exit_reason(side,price,row,proximity_atr_multiple=.1):
+	fast,atr=row.get('fast_moving_average'),row.get('atr')
+	if any(v is None or not math.isfinite(v) or v<=0 for v in (price,fast,atr)):return None
+	near=price>fast-proximity_atr_multiple*atr if side=='long' else price<fast+proximity_atr_multiple*atr
+	return 'range_fast_average_after_heikin_ashi_streak' if near else None

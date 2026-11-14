@@ -29,6 +29,6 @@ See [the separate color-filter rules](heikin_ashi_since_entry.md). This filter d
 
 ## Example script
 
-`run_range_cross_test.sh` has the requested configuration: all cross and normal-range HA filters disabled; post-stretch range wickless-run liquidation and entry guard enabled; its color-since-last-fill guard disabled; shared n=4. It plots native 1h HA candles with 4h indicators/zones. The end timestamp is preserved exactly as supplied: `2026-11-11T20:00:00-04:00` (19:00 New York standard time).
+`run_range_cross_test.sh` contains the current configuration, including both new [streak-end fast-MA exits](heikin_ashi_streak_fast_exit.md). `bollinger_proximity_atr_multiple` now configures the Bollinger proximity equations above (default 0.2).
 
 All HA decisions use completed native hourly candles with historical warmup, independently of chart selectors or displayed candle type. No synthetic closed-market candles are created.
