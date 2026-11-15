@@ -7,7 +7,7 @@ def _group(label):
 	if label.startswith('TradingView'):return 'LuxAlgo'
 	if 'reversal' in label:return 'Fast MA turning points'
 	if label.startswith(('Cross ','Post-stretch ')) or label.startswith('Range ') and label.endswith(('entry','exit')):return 'Trades'
-	if label.startswith(('Range','Bullish price stretch','Bearish price stretch')):return 'Zones'
+	if label.startswith(('Range','Bullish price stretch','Bearish price stretch','Strong long trend','Strong short trend','Universal peak','Universal trough')):return 'Zones'
 	return 'Indicators'
 
 

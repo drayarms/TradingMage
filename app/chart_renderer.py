@@ -57,6 +57,40 @@ def draw_chart(ax,ticker,data,entries,exits,signals,entries_and_exits,lux_algo_s
 					ax.add_patch(Rectangle((left,bottom),right-left,top-bottom,facecolor=color,alpha=.45,edgecolor='none',zorder=.3))
 					key=(label,selected,color)
 					if key not in zone_labels:handles.append(Patch(facecolor=color,alpha=.45,label=label+' ('+selected+')'));zone_labels.add(key)
+		if o.get('shade_trend_zones',True):
+			trend_rows=sorted(layers.get('4h',{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
+			for index,row in enumerate(trend_rows):
+				strong=row.get('strong_long_trend') or row.get('strong_short_trend')
+				if not strong:continue
+				upper,lower=row.get('bollinger_upper'),row.get('bollinger_lower')
+				if not all(finite(v) for v in (upper,lower)) or upper<=lower:continue
+				left=max(x(row['completed_at']),x(data['start']))
+				right=min(x(trend_rows[index+1]['completed_at']) if index+1<len(trend_rows) else x(data['end']),x(data['end']))
+				if right<=left:continue
+				styles=[]
+				if row.get('strong_long_trend'):styles.append(('Strong long trend (4h)','#16BDB4','..'))
+				if row.get('strong_short_trend'):styles.append(('Strong short trend (4h)','#E83E8C','.' if styles else '..'))
+				for label,color,hatch in styles:
+					ax.add_patch(Rectangle((left,lower),right-left,upper-lower,facecolor='none',edgecolor=color,hatch=hatch,linewidth=0,alpha=.8,zorder=.7,label=label))
+					if label not in zone_labels:
+						handles.append(Patch(facecolor='none',edgecolor=color,hatch=hatch,linewidth=0,label=label));zone_labels.add(label)
+
+		if o.get('shade_universal_peak_trough_zones',True):
+			from chart_patterns import install_short_dashes
+			install_short_dashes()
+			universal_rows=sorted(layers.get('4h',{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
+			for index,row in enumerate(universal_rows):
+				upper,lower=row.get('bollinger_upper'),row.get('bollinger_lower')
+				if not all(finite(v) for v in (upper,lower)) or upper<=lower:continue
+				left=max(x(row['completed_at']),x(data['start']))
+				right=min(x(universal_rows[index+1]['completed_at']) if index+1<len(universal_rows) else x(data['end']),x(data['end']))
+				if right<=left:continue
+				for field,label,hatch in (('universal_peak','Universal peak (4h)','xxxx'),('universal_trough','Universal trough (4h)','--')):
+					if not row.get(field):continue
+					ax.add_patch(Rectangle((left,lower),right-left,upper-lower,facecolor='none',edgecolor='#555555',hatch=hatch,linewidth=0,alpha=.8,zorder=.7,label=label))
+					if label not in zone_labels:
+						handles.append(Patch(facecolor='none',edgecolor='#555555',hatch=hatch,linewidth=0,label=label));zone_labels.add(label)
+
 		selected=o['plotted_ichimoku_cloud'];cloud=layers.get(selected,{}).get('ichimoku',[])
 		if cloud:
 			cx=np.array([x(r['time']) for r in cloud]);a=np.array([r['span_a'] for r in cloud]);b=np.array([r['span_b'] for r in cloud])

@@ -15,7 +15,23 @@ class PlotOptions:
 	plotted_candlesticks:str='4h'
 	plotted_ichimoku_cloud:str='4h'
 	candlestick_type:str='regular'
+	shade_universal_peak_trough_zones:bool=True
+	universal_zone_gradient_candles:int=2
+	shade_trend_zones:bool=True
+	trend_cloud_fast_ma_band_gap_fraction:float=.4
+	trend_cloud_condition_enabled:bool=True
+	trend_heikin_ashi_streak_condition_enabled:bool=True
+	trend_heikin_ashi_streak_min_candles:int=2
+	trend_heikin_ashi_streak_max_ma_gap_atr_multiple:float=1.2
 	def __post_init__(self):
+		if type(self.universal_zone_gradient_candles) is not int or self.universal_zone_gradient_candles<1:raise ValueError("universal_zone_gradient_candles must be a positive integer")
+		if not isinstance(self.shade_universal_peak_trough_zones,bool):raise ValueError("shade_universal_peak_trough_zones must be boolean")
+		if isinstance(self.trend_cloud_fast_ma_band_gap_fraction,bool) or not math.isfinite(self.trend_cloud_fast_ma_band_gap_fraction) or self.trend_cloud_fast_ma_band_gap_fraction<0:raise ValueError("trend_cloud_fast_ma_band_gap_fraction must be nonnegative and finite")
+		if not isinstance(self.trend_cloud_condition_enabled,bool):raise ValueError("trend_cloud_condition_enabled must be boolean")
+		if not isinstance(self.trend_heikin_ashi_streak_condition_enabled,bool):raise ValueError("trend_heikin_ashi_streak_condition_enabled must be boolean")
+		if type(self.trend_heikin_ashi_streak_min_candles) is not int or self.trend_heikin_ashi_streak_min_candles<1:raise ValueError('trend_heikin_ashi_streak_min_candles must be a positive integer')
+		if isinstance(self.trend_heikin_ashi_streak_max_ma_gap_atr_multiple,bool) or not math.isfinite(self.trend_heikin_ashi_streak_max_ma_gap_atr_multiple) or self.trend_heikin_ashi_streak_max_ma_gap_atr_multiple<=0:raise ValueError('trend_heikin_ashi_streak_max_ma_gap_atr_multiple must be positive and finite')
+		if not isinstance(self.shade_trend_zones,bool):raise ValueError("shade_trend_zones must be boolean")
 		for name in SELECTORS:
 			if getattr(self,name) not in {'1h','4h'}:raise ValueError(name+' must be 1h or 4h')
 		if self.candlestick_type not in {'regular','heikin_ashi'}:raise ValueError('candlestick_type must be regular or heikin_ashi')
@@ -34,10 +50,14 @@ def heikin_ashi(frame):
 	return out
 
 
+def ichimoku_spans(frame):
+	def midpoint(n):return (frame.high.rolling(n,min_periods=n).max()+frame.low.rolling(n,min_periods=n).min())/2
+	return (midpoint(9)+midpoint(26))/2,midpoint(52)
+
+
 def ichimoku_cloud(frame,completed_slots):
 	"""Each cloud value is sourced at its own completed candle, displaced +26 slots."""
-	def midpoint(n):return (frame.high.rolling(n,min_periods=n).max()+frame.low.rolling(n,min_periods=n).min())/2
-	a=(midpoint(9)+midpoint(26))/2;b=midpoint(52);records=[]
+	a,b=ichimoku_spans(frame);records=[]
 	for i in range(len(frame)):
 		if i+26>=len(completed_slots):break
 		if pd.notna(a.iloc[i]) and pd.notna(b.iloc[i]):records.append(dict(time=pd.Timestamp(completed_slots[i+26]),source_time=pd.Timestamp(frame.completed_at.iloc[i]),span_a=float(a.iloc[i]),span_b=float(b.iloc[i])))
@@ -81,7 +101,7 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 	from alpaca_trade_api.rest import TimeFrame,TimeFrameUnit
 	start,end=pd.Timestamp(start),pd.Timestamp(end);result={};cache={}
 	wanted={getattr(options,k) for k in SELECTORS}
-	if settings.cross_exit_method=='dema5':wanted.add('4h')
+	if settings.cross_exit_method=='dema5' or options.shade_trend_zones or options.shade_universal_peak_trough_zones:wanted.add('4h')
 	for ticker,original in frames.items():
 		native={'4h':original.copy()}
 		if '1h' in wanted:
@@ -97,6 +117,12 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 			if frame.empty:continue
 			points=fast_moving_average_reversed(frame,tf)
 			frame=attach_cross_turning_context(frame,points)
+			if tf=="4h" and options.shade_trend_zones:
+				from trend_plot_zones import annotate_trend_zones
+				frame=annotate_trend_zones(frame,points,trend_cloud_condition_enabled=options.trend_cloud_condition_enabled,trend_heikin_ashi_streak_condition_enabled=options.trend_heikin_ashi_streak_condition_enabled,trend_heikin_ashi_streak_min_candles=options.trend_heikin_ashi_streak_min_candles,trend_heikin_ashi_streak_max_ma_gap_atr_multiple=options.trend_heikin_ashi_streak_max_ma_gap_atr_multiple,trend_cloud_fast_ma_band_gap_fraction=options.trend_cloud_fast_ma_band_gap_fraction)
+			if tf=="4h" and options.shade_universal_peak_trough_zones:
+				from universal_plot_zones import annotate_universal_zones
+				frame=annotate_universal_zones(frame,options.universal_zone_gradient_candles,points)
 			visible=frame.loc[(frame.index>=start)&(frame.completed_at<=end)]
 			transformed=heikin_ashi(frame) if options.candlestick_type=='heikin_ashi' and tf==options.plotted_candlesticks else frame
 			candles=transformed.loc[visible.index]
@@ -106,6 +132,12 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 			prior=frame.loc[frame.completed_at<=start].tail(1)
 			indicator_frame=pd.concat([prior,frame.loc[(frame.completed_at>start)&(frame.completed_at<=end)]])
 			names=('close','fast_moving_average','slow_moving_average','bollinger_upper','bollinger_lower','dema5','atr','high','low','ranging_market','extreme_bullish_price_stretch','extreme_bearish_price_stretch')
+			if tf=='4h' and options.shade_trend_zones:
+				from trend_plot_zones import TREND_FIELDS
+				names=names+TREND_FIELDS
+			if tf=="4h" and options.shade_universal_peak_trough_zones:
+				from universal_plot_zones import UNIVERSAL_FIELDS
+				names=names+UNIVERSAL_FIELDS
 			rows=_records(indicator_frame,names)
 			for r,(_,row) in zip(rows,indicator_frame.iterrows()):
 				bull,bear=transition_zones(float(row.close),row,settings);r.update(bullish_transition=bool(bull),bearish_transition=bool(bear))

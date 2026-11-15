@@ -19,7 +19,7 @@ bash ./run_local_endpoint.sh plot \
 	fast_moving_average_reversed=true \
 	fast_moving_average_reversal_timeframe=4h \
 	start=2026-05-30T04:00:00-04:00 \
-	end=2026-11-13T20:00:00-04:00 \
+	end=2026-08-20T20:00:00-04:00 \
 	position_size=6600 \
 	exit_after_turning_point=true \
 	exit_on_confirmatory_candlestick=true \
@@ -48,7 +48,7 @@ bash ./run_local_endpoint.sh plot \
 	plotted_fast_ma=4h \
 	plotted_slow_ma=4h \
 	plotted_bollingers=4h \
-	plotted_candlesticks=1h \
+	plotted_candlesticks=4h \
 	plotted_ichimoku_cloud=4h \
 	candlestick_type=heikin_ashi \
 	heikin_ashi_filter_candles=3 \
@@ -65,4 +65,12 @@ bash ./run_local_endpoint.sh plot \
 	exit_range_stretch_near_fast_ma_after_heikin_ashi_streak=false \
 	fast_ma_proximity_atr_multiple=0.05 \
 	bollinger_proximity_atr_multiple=0.2 \
+	shade_trend_zones=true \
+	trend_cloud_fast_ma_band_gap_fraction=0.4 \
+	trend_cloud_condition_enabled=true \
+	trend_heikin_ashi_streak_condition_enabled=true \
+	trend_heikin_ashi_streak_min_candles=2 \
+	trend_heikin_ashi_streak_max_ma_gap_atr_multiple=1.2 \
+	shade_universal_peak_trough_zones=true \
+	universal_zone_gradient_candles=2 \
 	indicators=true

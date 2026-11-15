@@ -102,3 +102,10 @@ MA, Bollinger and optional DEMA lines now connect their samples with ordinary li
 Completed 1h Heikin-Ashi filters now have nine independent cross, normal-range and post-stretch-range switches, all defaulting to true. See the [configuration table](docs/heikin_ashi_entry_exit_filter.md) and [color-since-last-fill rules](docs/heikin_ashi_since_entry.md). The shared candle count defaults to 2. `run_range_cross_test.sh` contains the requested mixed-timeframe configuration and per-book switches.
 
 Range and post-stretch range positions can [exit near the 4h fast MA after a favorable 1h HA streak ends](docs/heikin_ashi_streak_fast_exit.md). Separate switches default to true; fast-MA proximity defaults to 0.1 ATR, and shared Bollinger proximity is configurable with a default of 0.2 ATR.
+
+Display-only native 4h [trend overlays](docs/trend_plot_zones.md) span the full Bollinger gap: turquoise dots for long trends, pink dots for short trends. `shade_trend_zones=true` is the default. Likely-start zones and their four configuration arguments have been removed. The former gradient branch has been replaced by native 4h Heikin-Ashi streaks: two same-color candles and an MA gap within 1.2×ATR start a trend; it then lasts until the streak ends.
+
+Strong-trend display branches can be independently selected with `trend_cloud_condition_enabled=true` and `trend_heikin_ashi_streak_condition_enabled=true` (both defaults). When both are enabled, either condition qualifies.
+
+
+Universal 4h peak/trough overlays use signed changes between non-overlapping Bollinger gradients: both lower-band acceleration after a negative gradient and upper-band deceleration after a positive gradient are required for either peaks (dark grey crosses) or troughs (dark grey dashes). Peaks additionally require a positive fast-MA net slope from the last confirmed turning point; troughs require a negative slope. Cross dimensions and dash lengths are half their original sizes. Defaults: `shade_universal_peak_trough_zones=true`, `universal_zone_gradient_candles=2`. HA trend startup also requires a correctly signed fast-MA slope anchored to the first candle in its streak.
