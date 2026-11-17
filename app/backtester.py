@@ -4132,6 +4132,8 @@ class BackTester:
 		) as zip_file:
 			if result.get('max_open_positions_report'):
 				zip_file.writestr('max_open_positions_report.txt',result['max_open_positions_report'])
+			if result.get('capital_exposure_basis')=='net_positions':
+				zip_file.writestr('capital_exposure_summary.json',json.dumps(result['max_open_positions_exposure'],indent=2,allow_nan=False))
 			history = result.get(
 				"overall_pnl_history"
 			) or []

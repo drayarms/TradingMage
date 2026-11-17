@@ -1286,6 +1286,9 @@ elif [[ "$OUTPUT_TYPE" == "zip" ]]; then
 			if [[ -f "$OUTPUT_DIRECTORY/max_open_positions_report.txt" ]]; then
 				cp "$OUTPUT_DIRECTORY/max_open_positions_report.txt" "$BACKTEST_CHARTS_DIR/"
 			fi
+			if [[ -f "$OUTPUT_DIRECTORY/capital_exposure_summary.json" ]]; then
+				cp "$OUTPUT_DIRECTORY/capital_exposure_summary.json" "$BACKTEST_CHARTS_DIR/"
+			fi
 
 			echo
 			echo "Fresh backtest charts copied to:"

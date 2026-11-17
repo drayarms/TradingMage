@@ -4,6 +4,7 @@ from strategy_portfolio import StrategyPortfolio
 from range_trend_settings import STRATEGY_NAME
 from trend_strategy import entry_reason,exit_reason,observe_band_visit
 import math
+from capital_exposure_report import NetAndLedgerExposureTracker,position_exposures
 
 class RangeTrendPortfolio(StrategyPortfolio):
 	def __init__(self,bt,settings,state,frames,base):
@@ -19,6 +20,8 @@ class RangeTrendPortfolio(StrategyPortfolio):
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
 			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
 		self.last_trend_reversal={};self.trend_band_visits={}
+		self.exposure=NetAndLedgerExposureTracker(frames)
+		self.aggregate.daily_max_exposure=self.exposure.daily_net
 		self.strategy_reports={k:dict(enabled=v,overall_pnl_history=[]) for k,v in self.enabled.items() if k!='cross'}
 		self.direction_reports={k:dict(overall_pnl_history=[]) for k in ('trend_long','trend_short','range_long','range_short','post_stretch_range_long','post_stretch_range_short')}
 		self.realized_directions=dict.fromkeys(self.direction_reports,0.)
@@ -158,9 +161,15 @@ class RangeTrendPortfolio(StrategyPortfolio):
 		self.cursors[owner]=len(book.trade_events)
 	def open_positions(self,virtual=False):
 		return [dict(row,strategy_type='trend' if row['strategy_type'].startswith('trend_') else row['strategy_type']) for row in super().open_positions(virtual)]
+	def track_exposure(self,when):
+		snapshot=position_exposures(self.books,self.enabled,self.prices)
+		when=pd.Timestamp(when).to_pydatetime().astimezone(self.bt.tvw_helpers.eastern_tz)
+		self.exposure.update(when,snapshot)
+		self.net_positions=snapshot['net_positions']
+		return snapshot
 	def record(self,when):
-		self.track_exposure(when);timestamp=when.isoformat();self.aggregate.realized_by_ticker={}
-		unrealized_by_ticker={};net={};gross=0.
+		snapshot=self.track_exposure(when);timestamp=when.isoformat();self.aggregate.realized_by_ticker={}
+		unrealized_by_ticker={}
 		for owner,book in self.books.items():
 			if not self.enabled[owner]:continue
 			realized=sum(book.realized_by_ticker.values());unrealized=exposure=0.
@@ -168,8 +177,7 @@ class RangeTrendPortfolio(StrategyPortfolio):
 			for ticker,p in book.positions.items():
 				price=self.prices.get(ticker,p.avg_price_per_share);value=(price-p.avg_price_per_share)*p.num_shares*(1 if p.side=='long' else -1)
 				unrealized+=value;exposure+=price*p.num_shares;unrealized_by_ticker[ticker]=unrealized_by_ticker.get(ticker,0.)+value
-				net[ticker]=net.get(ticker,0.)+p.num_shares*(1 if p.side=='long' else -1)
-			gross+=exposure;report=self.strategy_reports[owner];report.update(realized_pnl=realized,unrealized_pnl=unrealized,total_pnl=realized+unrealized)
+			report=self.strategy_reports[owner];report.update(realized_pnl=realized,unrealized_pnl=unrealized,total_pnl=realized+unrealized)
 			report['overall_pnl_history'].append(dict(time=timestamp,overall_total_pnl=realized+unrealized,gross_open_exposure=exposure))
 		for direction,report in self.direction_reports.items():
 			unrealized=exposure=0.
@@ -183,5 +191,4 @@ class RangeTrendPortfolio(StrategyPortfolio):
 		for ticker in set(self.prices)|set(self.aggregate.realized_by_ticker):
 			r=self.aggregate.realized_by_ticker.get(ticker,0.);u=unrealized_by_ticker.get(ticker,0.)
 			self.aggregate.ticker_pnl_history.setdefault(ticker,[]).append(dict(time=timestamp,ticker=ticker,realized_pnl=r,unrealized_pnl=u,total_pnl=r+u))
-		self.aggregate.overall_pnl_history.append(dict(time=timestamp,overall_total_pnl=sum(self.aggregate.realized_by_ticker.values())+sum(unrealized_by_ticker.values()),gross_open_exposure=gross,net_open_exposure=sum(abs(q*self.prices.get(t,0.)) for t,q in net.items())))
-		self.net_positions=net
+		self.aggregate.overall_pnl_history.append(dict(time=timestamp,overall_total_pnl=sum(self.aggregate.realized_by_ticker.values())+sum(unrealized_by_ticker.values()),gross_open_exposure=snapshot['gross_open_exposure'],virtual_ledger_open_exposure=snapshot['gross_open_exposure'],net_open_exposure=snapshot['net_open_exposure'],capital_open_exposure=snapshot['net_open_exposure'],net_long_open_exposure=snapshot['net_long_open_exposure'],net_short_open_exposure=snapshot['net_short_open_exposure']))

@@ -47,6 +47,24 @@ Precedence applies regardless of position side, including same-side holdings in 
 
 All reports retain each strategy's independent inventory/cost basis and PnL. Overall PnL sums those books, including hedged holdings, rather than overwriting one side. Reports expose signed `net_positions` in shares. Gross strategy exposure and net market exposure are distinct values; net zero can still have gross virtual exposure. The chart ZIP includes overall and per-book PnL. No end-of-run forced liquidation is introduced.
 
+## Net capital and virtual-ledger comparison
+
+Capital reporting defaults to net inventory across **enabled** strategies. At each observation, offset long and short shares **within each ticker**, value the residual at its current market price, then sum the absolute ticker values. Long AAPL and short AMD do not offset one another. Disabled-strategy shadow books and pending/unfilled orders do not count in either view. Gross virtual-ledger exposure still values every enabled book before offsets, so fully hedged holdings can show zero net capital and positive ledger exposure.
+
+The existing `max_open_positions_report.txt` now shows the **net-position** and **virtual-ledger gross** simultaneous peaks side by side, with independent first-observed times, each stock's independent peak, holdings at each portfolio peak, the other view's value at the same moment, daily peaks, and daily-peak statistics. Neither portfolio peak is the sum of separate stock peaks. Observe at the existing pre-exit and post-entry-batch boundaries using completed-minute prices; do not invent transient exposure from sequential bookkeeping inside one decision batch.
+
+API outputs:
+
+- `capital_exposure_basis="net_positions"` identifies the default capital calculation.
+- `max_open_positions_exposure.overall` and `.by_ticker` now use **net** values. Explicit `.net_positions` and `.virtual_ledger` contain the two complete peak views. This changes the meaning of the previously unqualified peak fields; consumers requiring the old gross values should read `.virtual_ledger`.
+- `overall_pnl_history` retains `gross_open_exposure` and `net_open_exposure`; adds `virtual_ledger_open_exposure`, `capital_open_exposure` (net), and `net_long_open_exposure`/`net_short_open_exposure`.
+- `daily_max_open_exposure` includes `daily_max_net_open_exposure`, `daily_max_capital_open_exposure` (net), and the preserved `daily_max_gross_open_exposure`. Daily maxima in the two columns can occur at different moments.
+- `daily_max_open_exposure_summary` uses net capital for its default mean, sample standard deviation, maximum and minimum; explicit `.net_positions` and `.virtual_ledger` preserve both sets. Statistics use days with positive exposure in the respective view, with zero-safe empty results and a separate observed-day count.
+
+The chart ZIP includes both the text report and `capital_exposure_summary.json`. The local runner copies both alongside the charts and prints the existing text report; the run endpoint returns the report first so the runner can extract it without reading large history arrays. No additional endpoint argument is required.
+
+These are net target inventory **market values**, before broker margin/buying-power requirements, rounding and execution differences. They do not model cash balances, short-sale collateral or actual broker fills. Independent strategy PnL, entries, exits and sizing limits remain strategy-ledger calculations; offsetting inventory changes aggregate capital reporting rather than erasing holdings or trading rules.
+
 ## Trade markers
 
 Every strategy initial entry/addition is turquoise (#16BDB4); every exit is pink (#E83E8C). Shape is the same for entry and exit:
