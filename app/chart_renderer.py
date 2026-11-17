@@ -1,3 +1,4 @@
+from strategy_trade_markers import trade_marker,legend_styles,ENTRY_COLOR,EXIT_COLOR
 """Independent chart layers on a shared session-time axis; no execution logic."""
 from zoneinfo import ZoneInfo
 import math
@@ -105,17 +106,17 @@ def draw_chart(ax,ticker,data,entries,exits,signals,entries_and_exits,lux_algo_s
 	if entries_and_exits:
 		for event in entries:
 			long=event['side']=='long';owner=event.get('strategy_type','cross')
-			marker='D' if owner=='post_stretch_range' else ('2' if long else '1') if owner=='range' else ('^' if long else 'v')
-			color='#7B2CBF' if long else '#00A6A6';when=x(event['time']);price=float(event['price'])
+			marker=trade_marker(event)
+			color=ENTRY_COLOR;when=x(event['time']);price=float(event['price'])
 			ax.scatter(when,price,marker=marker,s=180 if owner=='range' else 90,color=color,edgecolors=None if owner=='range' else 'black',linewidths=2.6 if owner=='range' else .5,zorder=5)
 			ax.annotate(f"${abs(price*float(event['num_shares'])):,.2f}",(when,price),xytext=(0,10),textcoords='offset points',ha='center',fontsize=7)
 		for event in exits or []:
 			price=event.get('price') or fallback_price(event['time'])
 			if price is None:continue
 			owner=event.get('strategy_type','cross');when=x(event['time'])
-			ax.scatter(when,price,marker='P' if owner=='post_stretch_range' else '*' if owner=='range' else 's',s=150 if owner=='range' else 70,facecolors='#FF00CC',edgecolors='#FF00CC',linewidths=1.2,zorder=5)
+			ax.scatter(when,price,marker=trade_marker(event),s=150 if owner=='range' else 70,facecolors=EXIT_COLOR,edgecolors=EXIT_COLOR,linewidths=1.2,zorder=5)
 			ax.annotate('EXIT',(when,price),xytext=(0,9),textcoords='offset points',ha='center',fontsize=7)
-		for label,marker,color in [('Cross long entry','^','#7B2CBF'),('Cross short entry','v','#00A6A6'),('Cross exit','s','#FF00CC'),('Range long entry','2','#7B2CBF'),('Range short entry','1','#00A6A6'),('Range exit','*','#FF00CC'),('Post-stretch range long entry','D','#7B2CBF'),('Post-stretch range short entry','D','#00A6A6'),('Post-stretch range exit','P','#FF00CC')]:handles.append(Line2D([0],[0],marker=marker,linestyle='None',color=color,label=label))
+		for label,marker,color in legend_styles():handles.append(Line2D([0],[0],marker=marker,linestyle='None',color=color,label=label))
 	if lux_algo_symbols:
 		for event in signals or []:
 			price=event.get('price')

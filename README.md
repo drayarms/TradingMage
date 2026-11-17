@@ -1,4 +1,6 @@
-# TradingMage cross-entry and exit filters
+# TradingMage range and trend strategies
+
+The current public family is **`range_trend_4h`**, replacing the cross strategy. See [the range/trend rules, configuration, precedence and live netting notes](docs/range_trend_strategy.md). The example script has been updated; older cross-family commands below are historical release notes.
 
 Full replacement files for an existing TradingMage project. Copy the included app/ files into your project app/ directory and the shell scripts into the project root. Keep the rest of your project. This is not a standalone application.
 
@@ -109,3 +111,9 @@ Strong-trend display branches can be independently selected with `trend_cloud_co
 
 
 Universal 4h peak/trough overlays use signed changes between non-overlapping Bollinger gradients: both lower-band acceleration after a negative gradient and upper-band deceleration after a positive gradient are required for either peaks (dark grey crosses) or troughs (dark grey dashes). Peaks additionally require a positive fast-MA net slope from the last confirmed turning point; troughs require a negative slope. Cross dimensions and dash lengths are half their original sizes. Defaults: `shade_universal_peak_trough_zones=true`, `universal_zone_gradient_candles=2`. HA trend startup also requires a correctly signed fast-MA slope anchored to the first candle in its streak.
+
+Universal zones now also require a fast-MA change from the last confirmed turning point of at least `universal_zone_min_fast_ma_change_atr_multiple=2` times the latest completed 4h ATR (upward for peaks, downward for troughs). The example script matches the supplied trend-only, no-precedence, regular-candle command.
+
+Trend initial entries and additions now respect `trend_entry_opposing_universal_zone_cooldown_candles=2`: longs wait through the next two native 4h candles after the last universal peak candle, and shorts after the last universal trough candle. Candle three is eligible again; 0 disables this additional cooldown.
+
+Trend trading now uses completed 4h HA dips/lifts after universal troughs/peaks, with minute-price proximity and per-side decreasing fill sizes (full, half, quarter...). The new `trend_exit_bollinger_gap_contraction_divisor=2` controls the contraction exit; repeated Bollinger approaches compare first prices of separate visits. Old trend-end/opposite-trend exits and zone-only additions are replaced. See the current [range/trend rules](docs/range_trend_strategy.md). The example now enables both families and ends November 13.

@@ -1,6 +1,6 @@
 # Display-only 4h trend overlays
 
-Classification runs on copied native 4h indicator data after trading is complete. It does not affect entries, exits, sizing, fills or PnL. All observations use completed candles and causally available turning-point confirmations.
+The range/trend engine and chart overlays share causal native 4h classifications. Zone flags drive trend decisions independently of chart visibility. All observations use completed candles and causally available turning-point confirmations.
 
 ## Heikin-Ashi streak condition
 
@@ -54,11 +54,16 @@ Both universal zones require **both** Bollinger conditions simultaneously:
 - Lower Bollinger: previous gradient < 0 AND latest gradient > previous gradient (for example -2 → -1).
 - Upper Bollinger: previous gradient > 0 AND latest gradient < previous gradient (for example +2 → +1).
 
-In addition, a **universal peak** requires fast MA strictly above its value at the last confirmed turning point's evaluation candle, while a **universal trough** requires fast MA strictly below that reference. Neither latest band gradient needs to cross zero.
+In addition, let `delta = current fast MA - fast MA at the last confirmed turning point's evaluation candle`:
+
+- **Universal peak:** delta > 0 AND delta >= `universal_zone_min_fast_ma_change_atr_multiple` × current completed 4h ATR.
+- **Universal trough:** delta < 0 AND -delta >= that multiple × current completed 4h ATR.
+
+The new multiple defaults to **2**, is finite and nonnegative, and accepts an exact equality at the threshold. It applies to the signed change in MA value (delta y), not change per candle or the Bollinger acceleration interval. Use the latest completed 4h ATR, not the ATR at the reference. A zero multiple retains strict slope signs while disabling the magnitude floor; missing, zero, negative or nonfinite ATR cannot qualify either zone. Both existing Bollinger conditions and their previous-gradient sign constraints remain required. Neither latest band gradient needs to cross zero.
 
 Comparisons are on the signed number line, never absolute magnitude. Equal gradients and zero previous gradients fail. Both full intervals require finite samples; incomplete history cannot qualify. The rolling samples may extend before the last MA turning point and are not truncated or reset by turning points. The Bollinger samples remain rolling, but the additional fast-MA net slope uses the latest causally confirmed turning-point reference. No confirmed reference, a flat fast MA, or a missing fast-MA value prevents both zones. Newly confirmed turns reset only the MA reference, without changing the rolling Bollinger intervals.
 
-Reevaluate on every completed 4h candle, without latching: a zone ends as soon as its condition fails. They have no dependency on trend direction, candle color, MA order or other zones. Peak and trough classifications are now mutually exclusive because their fast-MA slope signs oppose each other; either can overlap existing fills/trend patterns without priority. Peaks use dark grey (#555555) crosses at half their previous width/height (twice the hatch density); troughs use dark grey separated short dashes at half their previous stroke length. Both span the full 4h Bollinger gap, have matching legend entries, and respect the `indicators` master visibility switch. These are display-only and do not affect trading.
+Reevaluate on every completed 4h candle, without latching: a zone ends as soon as its condition fails. They have no dependency on trend direction, candle color, MA order or other zones. Peak and trough classifications are now mutually exclusive because their fast-MA slope signs oppose each other; either can overlap existing fills/trend patterns without priority. Peaks use dark grey (#555555) crosses at half their previous width/height (twice the hatch density); troughs use dark grey separated short dashes at half their previous stroke length. Both span the full 4h Bollinger gap, have matching legend entries, and respect the `indicators` master visibility switch. These flags also govern trend exits/additions; shading and `indicators` control visibility only.
 
 ## Rendering and configuration
 
@@ -83,7 +88,8 @@ The example script retains these display settings:
   trend_heikin_ashi_streak_min_candles=2 \
   trend_heikin_ashi_streak_max_ma_gap_atr_multiple=1.2 \
   shade_universal_peak_trough_zones=true \
-  universal_zone_gradient_candles=2
+  universal_zone_gradient_candles=2 \
+  universal_zone_min_fast_ma_change_atr_multiple=2
 ```
 
 The example script enables both cloud and HA streak trend conditions and the universal peak/trough overlays, matching the supplied command. Other settings remain unchanged.

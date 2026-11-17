@@ -1,11 +1,12 @@
-"""Display-only completed 4h Bollinger curvature zones."""
+"""Causal completed 4h universal zones shared by trading and chart overlays."""
 import math
 import pandas as pd
 
 UNIVERSAL_FIELDS=('universal_peak','universal_trough')
 
-def annotate_universal_zones(frame,gradient_candles=2,points=()):
+def annotate_universal_zones(frame,gradient_candles=2,points=(),universal_zone_min_fast_ma_change_atr_multiple=2.):
 	if type(gradient_candles) is not int or gradient_candles<1:raise ValueError('universal_zone_gradient_candles must be a positive integer')
+	if isinstance(universal_zone_min_fast_ma_change_atr_multiple,bool) or not math.isfinite(universal_zone_min_fast_ma_change_atr_multiple) or universal_zone_min_fast_ma_change_atr_multiple<0:raise ValueError('universal_zone_min_fast_ma_change_atr_multiple must be nonnegative and finite')
 	out=frame.copy();n=gradient_candles
 	rows=list(frame.itertuples());events=[]
 	for point in points:
@@ -27,7 +28,10 @@ def annotate_universal_zones(frame,gradient_candles=2,points=()):
 		valid=values.map(lambda v:pd.notna(v) and math.isfinite(v))
 		valid=valid & valid.shift(n,fill_value=False) & valid.shift(2*n,fill_value=False)
 		band_conditions.append(valid & (sign*previous<0) & (sign*(latest-previous)>0))
-	shared=band_conditions[0] & band_conditions[1]
-	out['universal_peak']=(shared & (fast_change>0)).fillna(False).astype(bool)
-	out['universal_trough']=(shared & (fast_change<0)).fillna(False).astype(bool)
+	atr=frame.get('atr',pd.Series(float('nan'),index=frame.index))
+	valid_atr=atr.map(lambda v:pd.notna(v) and math.isfinite(v) and v>0)
+	threshold=universal_zone_min_fast_ma_change_atr_multiple*atr
+	shared=band_conditions[0] & band_conditions[1] & valid_atr
+	out['universal_peak']=(shared & (fast_change>0) & (fast_change>=threshold)).fillna(False).astype(bool)
+	out['universal_trough']=(shared & (fast_change<0) & (-fast_change>=threshold)).fillna(False).astype(bool)
 	return out

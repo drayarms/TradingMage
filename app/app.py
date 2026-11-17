@@ -4,6 +4,7 @@ Date Created: Feb 12, 2026
 """
 
 import os
+import json
 from golden_cross_dip_recovery import STRATEGY_NAME, StrategySettings
 from golden_cross_history import GoldenCrossHistory
 from golden_cross_execution import GoldenCrossExecutor
@@ -163,8 +164,9 @@ trading_view_webhook_helpers_instance = trading_view_webhook_helpers.TradingView
 trade_records_instance = trade_records.TradeRecords(trading_view_webhook_helpers_instance)
 strategies_instance = strategies.Strategies(trading_view_webhook_helpers_instance, trade_records_instance)
 # Select the investment strategy; preserve legacy code and broker credentials.
-ACTIVE_LIVE_STRATEGY = os.getenv("ACTIVE_LIVE_STRATEGY", STRATEGY_NAME)
-GOLDEN_CROSS_LIVE_ORDERS_ENABLED = os.getenv("GOLDEN_CROSS_LIVE_ORDERS_ENABLED", "false").lower() in {"true", "1", "yes"}
+ACTIVE_LIVE_STRATEGY = os.getenv("ACTIVE_LIVE_STRATEGY", "range_trend_4h")
+RANGE_TREND_LIVE_ORDERS_ENABLED = os.getenv("RANGE_TREND_LIVE_ORDERS_ENABLED", "false").lower() in {"true","1","yes"}
+GOLDEN_CROSS_LIVE_ORDERS_ENABLED = False # Retired family; use range_trend_4h.
 golden_cross_settings = StrategySettings(
 	entry_trigger="buy_sell_signal",
 	cross_exit_method=os.getenv("CROSS_EXIT_METHOD", "price"),
@@ -198,6 +200,10 @@ backtester_instance = backtester.BackTester(
 	strategies_instance,
 	trade_records_instance,
 )
+from range_trend_settings import RangeTrendSettings
+from chart_data import PlotOptions
+from range_trend_live import RangeTrendLive
+range_trend_live = RangeTrendLive(backtester_instance,MARKET_DATA_API,ALPACA_APIS["strategy4_1h_anchor"],trading_view_webhook_helpers_instance.require_redis(),RangeTrendSettings(**json.loads(os.getenv("RANGE_TREND_SETTINGS_JSON",'{"strategy_mode":"both"}'))),PlotOptions(**json.loads(os.getenv("RANGE_TREND_ANALYSIS_JSON",'{}'))),POSITION_SIZE_1H,enabled=RANGE_TREND_LIVE_ORDERS_ENABLED,tickers=[t.strip().upper() for t in os.getenv("RANGE_TREND_TICKERS","").split(",") if t.strip()])
 backtest_research_instance = backtester_instance.research
 plot_instance = plot.Plot()
 
@@ -427,6 +433,10 @@ def run_live_trailing_stop_exit_monitor() -> None:
 		if trailing_stop_exit_stop_event.is_set():
 			break
 
+		if ACTIVE_LIVE_STRATEGY == "range_trend_4h":
+			try:range_trend_live.reconcile_exits()
+			except Exception:logger.exception("Range/trend net reconciliation failed")
+			continue
 		if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME:
 			try:
 				golden_cross_executor.reconcile_exits()
@@ -510,7 +520,7 @@ def _startup():
 
 	global trailing_stop_exit_thread
 
-	if (GOLDEN_CROSS_LIVE_ORDERS_ENABLED if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME else TRAILING_STOP_EXIT_ENABLED):
+	if (RANGE_TREND_LIVE_ORDERS_ENABLED if ACTIVE_LIVE_STRATEGY == "range_trend_4h" else GOLDEN_CROSS_LIVE_ORDERS_ENABLED if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME else TRAILING_STOP_EXIT_ENABLED):
 		trailing_stop_exit_thread = threading.Thread(
 			target=run_live_trailing_stop_exit_monitor,
 			name="live-trailing-stop-exit-monitor",
@@ -561,6 +571,10 @@ def process_trading_signal(symbol: str, tf: str, signal: str, event: Optional[di
 	the request/response path. Alpaca calls, market-price lookup, and strategy
 	execution happen here after the HTTP 200 response has been prepared.
 	"""
+	if ACTIVE_LIVE_STRATEGY == "range_trend_4h":
+		if event is not None:range_trend_live.process(event)
+		trailing_stop_exit_wake_event.set()
+		return
 	if ACTIVE_LIVE_STRATEGY == STRATEGY_NAME:
 		try:
 			if event is None:
@@ -1520,7 +1534,7 @@ async def webhook_tradingview(payload: TradingViewWebhook, background_tasks: Bac
 
 @app.get("/backtest/run")
 def run_backtest(
-	strategy_name: str = Query(..., min_length=1),
+	strategy_name: str = Query(default="range_trend_4h", min_length=1),
 	start: str = Query(..., min_length=1),
 	end: str = Query(..., min_length=1),
 	tickers: Optional[str] = Query(default=None, description="Optional comma-separated ticker list"),
@@ -1589,12 +1603,11 @@ def run_backtest(
 			"run in the same research experiment"
 		),
 	),
-	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
-	cross_point_time_decay_candles: int = Query(default=20, ge=1),
-	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
-	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
-	strategy_mode: str = Query(default="golden_cross"),
-	cross_strategy_enabled: bool = Query(default=True),
+	strategy_mode: str = Query(default="both"),
+	trend_strategy_enabled: bool = Query(default=True),
+	trend_exit_bollinger_atr_multiple: float = Query(default=1., ge=0),
+	trend_exit_bollinger_gap_contraction_divisor: float = Query(default=2., gt=0),
+	trend_entry_opposing_universal_zone_cooldown_candles: int = Query(default=2, ge=0),
 	range_strategy_enabled: bool = Query(default=True),
 	entry_strategy_precedence: str = Query(default="range"),
 	disabled_strategy_virtual_positions_enabled: bool = Query(default=True),
@@ -1619,26 +1632,18 @@ def run_backtest(
 	fast_ma_proximity_atr_multiple: float = Query(default=0.1, ge=0),
 	bollinger_proximity_atr_multiple: float = Query(default=0.2, ge=0),
 	heikin_ashi_filter_candles: int = Query(default=2, ge=1),
-	exit_cross_on_opposing_heikin_ashi_run: bool = Query(default=True),
-	do_not_enter_cross_on_opposing_heikin_ashi_run: bool = Query(default=True),
-	do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
 	exit_range_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
 	exit_range_stretch_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_stretch_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
-	entry_trigger: str = Query(default="buy_sell_signal"),
 	range_transition_zones_enabled: bool = Query(default=True),
 	range_transition_band_speed_multiple: float = Query(default=2.0, gt=0),
 	range_transition_price_speed_multiple: float = Query(default=3.0, gt=0, description="Deprecated compatibility argument; ignored by yellow-zone analysis"),
-	cross_entry_bollinger_gap_atr_divisor: float = Query(default=2.0, gt=0),
-	enforce_atr_invalidation: bool = Query(default=False),
-	exit_on_confirmatory_candlestick: bool = Query(default=False),
-	exit_after_turning_point: bool = Query(default=False),
-	cross_exit_method: str = Query(default="price"),
 	shade_universal_peak_trough_zones: bool = Query(default=True),
 	universal_zone_gradient_candles: int = Query(default=2, ge=1),
+	universal_zone_min_fast_ma_change_atr_multiple: float = Query(default=2., ge=0),
 	shade_trend_zones: bool = Query(default=True),
 	trend_cloud_fast_ma_band_gap_fraction: float = Query(default=0.4, ge=0),
 	trend_cloud_condition_enabled: bool = Query(default=True),
@@ -1655,41 +1660,25 @@ def run_backtest(
 	candlestick_type: str = Query(default="regular"),
 	fast_moving_average_reversed: bool = Query(default=True),
 	fast_moving_average_reversal_timeframe: str = Query(default="4h"),
-	bearish_exit_below_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
 	bollinger_period: int = Query(default=20, ge=1),
 	bollinger_std_dev: float = Query(default=2.0, gt=0),
-	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
-	profit_protection_enabled: bool = Query(default=False),
-	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
-	profit_trailing_atr_multiple: float = Query(default=3.0, gt=0),
-	fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
-	require_entry_confirmation: bool = Query(default=False),
-	slow_average_to_price_weight: float = Query(default=0.1, ge=0, le=1),
-	cross_point_to_price_weight: float = Query(default=0.7, ge=0, le=1),
 	max_exposure_multiple: float = Query(default=3.0, gt=0),
-	invalidation_atr_multiple: float = Query(default=1.0, ge=0),
 	fast_moving_average_type: str = Query(default="ema"),
 	fast_moving_average_period: int = Query(default=9, ge=1),
 	slow_moving_average_type: str = Query(default="sma"),
 	slow_moving_average_period: int = Query(default=200, ge=1),
 
 ):
-	"""
-	Run an isolated Redis-signal backtest and return JSON results.
+	"""Run or plot range_trend_4h with independent trend/range books.
 
-	This endpoint reads historical TradingView signal streams from Redis, simulates
-	strategy decisions in chronological order, keeps positions/PnL/exposure in memory,
-	prints the simulated daily max exposure table, and does not touch live Alpaca or
-	live Redis trade/PnL/position state.
-
-	Example:
-		curl "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"
-	Or
-		curl -s "http://localhost:8000/backtest/run?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000" \
-> local_backtest_output/backtest.json	
+	Trend entries use completed 4h classifications and minute-price proximity.
+	entry_strategy_precedence accepts range, trend or none. Cross-family
+	arguments are retired; use trend_strategy_enabled and
+	trend_exit_bollinger_atr_multiple for the replacement trend book.
 	"""
 	try:
 		ticker_list = [item.strip() for item in tickers.split(",")] if tickers else None
+		if strategy_name == "golden_cross_dip_recovery_4h":raise ValueError("Cross strategy removed; use strategy_name=range_trend_4h")
 		return backtester_instance.run(
 			alpaca_api=MARKET_DATA_API,
 			strategy_name=strategy_name,
@@ -1707,12 +1696,11 @@ def run_backtest(
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
 			research_group_id=research_group_id,
-			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
-			cross_point_time_decay_candles=cross_point_time_decay_candles,
-			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
-			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
 			strategy_mode=strategy_mode,
-			cross_strategy_enabled=cross_strategy_enabled,
+			trend_strategy_enabled=trend_strategy_enabled,
+			trend_exit_bollinger_atr_multiple=trend_exit_bollinger_atr_multiple,
+			trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor,
+			trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles,
 			range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence,
 			disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled,
 			range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio,
@@ -1736,26 +1724,18 @@ def run_backtest(
 			fast_ma_proximity_atr_multiple=fast_ma_proximity_atr_multiple,
 			bollinger_proximity_atr_multiple=bollinger_proximity_atr_multiple,
 			heikin_ashi_filter_candles=heikin_ashi_filter_candles,
-			exit_cross_on_opposing_heikin_ashi_run=exit_cross_on_opposing_heikin_ashi_run,
-			do_not_enter_cross_on_opposing_heikin_ashi_run=do_not_enter_cross_on_opposing_heikin_ashi_run,
-			do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry,
 			exit_range_on_opposing_heikin_ashi_run=exit_range_on_opposing_heikin_ashi_run,
 			do_not_enter_range_on_opposing_heikin_ashi_run=do_not_enter_range_on_opposing_heikin_ashi_run,
 			do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry,
 			exit_range_stretch_on_opposing_heikin_ashi_run=exit_range_stretch_on_opposing_heikin_ashi_run,
 			do_not_enter_range_stretch_on_opposing_heikin_ashi_run=do_not_enter_range_stretch_on_opposing_heikin_ashi_run,
 			do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry,
-			entry_trigger=entry_trigger,
 			range_transition_zones_enabled=range_transition_zones_enabled,
 			range_transition_band_speed_multiple=range_transition_band_speed_multiple,
 			range_transition_price_speed_multiple=range_transition_price_speed_multiple,
-			cross_entry_bollinger_gap_atr_divisor=cross_entry_bollinger_gap_atr_divisor,
-			enforce_atr_invalidation=enforce_atr_invalidation,
-			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
-			exit_after_turning_point=exit_after_turning_point,
-			cross_exit_method=cross_exit_method,
 			shade_universal_peak_trough_zones=shade_universal_peak_trough_zones,
 			universal_zone_gradient_candles=universal_zone_gradient_candles,
+			universal_zone_min_fast_ma_change_atr_multiple=universal_zone_min_fast_ma_change_atr_multiple,
 			shade_trend_zones=shade_trend_zones,
 			trend_cloud_fast_ma_band_gap_fraction=trend_cloud_fast_ma_band_gap_fraction,
 			trend_cloud_condition_enabled=trend_cloud_condition_enabled,
@@ -1772,17 +1752,8 @@ def run_backtest(
 			candlestick_type=candlestick_type,
 			fast_moving_average_reversed=fast_moving_average_reversed,
 			fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe,
-			bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple,
 			bollinger_period=bollinger_period,
 			bollinger_std_dev=bollinger_std_dev,
-			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
-			profit_protection_enabled=profit_protection_enabled,
-			profit_activation_atr_multiple=profit_activation_atr_multiple,
-			profit_trailing_atr_multiple=profit_trailing_atr_multiple,
-			fast_average_exit_atr_multiple=fast_average_exit_atr_multiple,
-			require_entry_confirmation=require_entry_confirmation,
-			slow_average_to_price_weight=slow_average_to_price_weight, cross_point_to_price_weight=cross_point_to_price_weight,
-			max_exposure_multiple=max_exposure_multiple, invalidation_atr_multiple=invalidation_atr_multiple,
 			fast_moving_average_type=fast_moving_average_type, fast_moving_average_period=fast_moving_average_period,
 			slow_moving_average_type=slow_moving_average_type, slow_moving_average_period=slow_moving_average_period,
 
@@ -1796,7 +1767,7 @@ def run_backtest(
 
 @app.get("/backtest/plot")
 def plot_backtest(
-	strategy_name: str = Query(..., min_length=1),
+	strategy_name: str = Query(default="range_trend_4h", min_length=1),
 	start: str = Query(..., min_length=1),
 	end: str = Query(..., min_length=1),
 	tickers: Optional[str] = Query(
@@ -1876,12 +1847,11 @@ def plot_backtest(
 		default=True,
 		description="Plot Lux Algo / TradingView signal markers.",
 	),
-	cross_point_to_current_moment_weight: float = Query(default=0.2, ge=0, le=1),
-	cross_point_time_decay_candles: int = Query(default=20, ge=1),
-	confirmatory_fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
-	bullish_exit_above_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
-	strategy_mode: str = Query(default="golden_cross"),
-	cross_strategy_enabled: bool = Query(default=True),
+	strategy_mode: str = Query(default="both"),
+	trend_strategy_enabled: bool = Query(default=True),
+	trend_exit_bollinger_atr_multiple: float = Query(default=1., ge=0),
+	trend_exit_bollinger_gap_contraction_divisor: float = Query(default=2., gt=0),
+	trend_entry_opposing_universal_zone_cooldown_candles: int = Query(default=2, ge=0),
 	range_strategy_enabled: bool = Query(default=True),
 	entry_strategy_precedence: str = Query(default="range"),
 	disabled_strategy_virtual_positions_enabled: bool = Query(default=True),
@@ -1906,26 +1876,18 @@ def plot_backtest(
 	fast_ma_proximity_atr_multiple: float = Query(default=0.1, ge=0),
 	bollinger_proximity_atr_multiple: float = Query(default=0.2, ge=0),
 	heikin_ashi_filter_candles: int = Query(default=2, ge=1),
-	exit_cross_on_opposing_heikin_ashi_run: bool = Query(default=True),
-	do_not_enter_cross_on_opposing_heikin_ashi_run: bool = Query(default=True),
-	do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
 	exit_range_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
 	exit_range_stretch_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_stretch_on_opposing_heikin_ashi_run: bool = Query(default=True),
 	do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry: bool = Query(default=True),
-	entry_trigger: str = Query(default="buy_sell_signal"),
 	range_transition_zones_enabled: bool = Query(default=True),
 	range_transition_band_speed_multiple: float = Query(default=2.0, gt=0),
 	range_transition_price_speed_multiple: float = Query(default=3.0, gt=0, description="Deprecated compatibility argument; ignored by yellow-zone analysis"),
-	cross_entry_bollinger_gap_atr_divisor: float = Query(default=2.0, gt=0),
-	enforce_atr_invalidation: bool = Query(default=False),
-	exit_on_confirmatory_candlestick: bool = Query(default=False),
-	exit_after_turning_point: bool = Query(default=False),
-	cross_exit_method: str = Query(default="price"),
 	shade_universal_peak_trough_zones: bool = Query(default=True),
 	universal_zone_gradient_candles: int = Query(default=2, ge=1),
+	universal_zone_min_fast_ma_change_atr_multiple: float = Query(default=2., ge=0),
 	shade_trend_zones: bool = Query(default=True),
 	trend_cloud_fast_ma_band_gap_fraction: float = Query(default=0.4, ge=0),
 	trend_cloud_condition_enabled: bool = Query(default=True),
@@ -1942,19 +1904,9 @@ def plot_backtest(
 	candlestick_type: str = Query(default="regular"),
 	fast_moving_average_reversed: bool = Query(default=True),
 	fast_moving_average_reversal_timeframe: str = Query(default="4h"),
-	bearish_exit_below_fast_average_atr_multiple: float = Query(default=1.0, ge=0),
 	bollinger_period: int = Query(default=20, ge=1),
 	bollinger_std_dev: float = Query(default=2.0, gt=0),
-	bearish_exit_confirmation_window_candles: int = Query(default=0, ge=0),
-	profit_protection_enabled: bool = Query(default=False),
-	profit_activation_atr_multiple: float = Query(default=3.0, gt=0),
-	profit_trailing_atr_multiple: float = Query(default=3.0, gt=0),
-	fast_average_exit_atr_multiple: Optional[float] = Query(default=None, ge=0),
-	require_entry_confirmation: bool = Query(default=False),
-	slow_average_to_price_weight: float = Query(default=0.1, ge=0, le=1),
-	cross_point_to_price_weight: float = Query(default=0.7, ge=0, le=1),
 	max_exposure_multiple: float = Query(default=3.0, gt=0),
-	invalidation_atr_multiple: float = Query(default=1.0, ge=0),
 	fast_moving_average_type: str = Query(default="ema"),
 	fast_moving_average_period: int = Query(default=9, ge=1),
 	slow_moving_average_type: str = Query(default="sma"),
@@ -1973,27 +1925,12 @@ def plot_backtest(
 	lux_algo_symbols1d: Optional[bool] = Query(default=None, description="Override Lux Algo 1d markers; omitted inherits lux_algo_symbols"),
 
 ):
-	"""
-	Run an isolated Redis-signal backtest and stream separate chart PNGs as a ZIP archive.
+	"""Run or plot range_trend_4h with independent trend/range books.
 
-	The simulation is recomputed in memory for this request. It reads Redis signal
-	streams only and does not write simulated positions, trade events, PnL, or exposure
-	into the live Redis keys.
-
-	Example:
-		In laptop
-
-			cd ~/Documents/GitHub/TradingMage
-			source .venv/bin/activate		
-
-			ssh -i ~/.ssh/my-aws-ec2-key ubuntu@54.176.151.9 \
-			'curl -sS --fail "http://localhost:8000/backtest/plot?strategy_name=strategy1_15m_anchor&start=2026-06-01T04:00:00-04:00&end=2026-06-01T20:00:00-04:00&position_size=5000"' \
-			> local_backtest_output/backtest_charts.zip
-
-			rm -rf backtest_charts
-			mkdir backtest_charts
-			unzip -q backtest_charts.zip -d backtest_charts
-			python3 show_backtest_charts.py	
+	Trend entries use completed 4h classifications and minute-price proximity.
+	entry_strategy_precedence accepts range, trend or none. Cross-family
+	arguments are retired; use trend_strategy_enabled and
+	trend_exit_bollinger_atr_multiple for the replacement trend book.
 	"""
 	try:
 		ticker_list = (
@@ -2002,6 +1939,7 @@ def plot_backtest(
 			else None
 		)
 
+		if strategy_name == "golden_cross_dip_recovery_4h":raise ValueError("Cross strategy removed; use strategy_name=range_trend_4h")
 		result = backtester_instance.run(
 			alpaca_api=MARKET_DATA_API,
 			strategy_name=strategy_name,
@@ -2019,12 +1957,11 @@ def plot_backtest(
 			run_exit_strategy=run_exit_strategy,
 			record_factor_research=record_factor_research,
 			research_group_id=research_group_id,
-			cross_point_to_current_moment_weight=cross_point_to_current_moment_weight,
-			cross_point_time_decay_candles=cross_point_time_decay_candles,
-			confirmatory_fast_average_exit_atr_multiple=confirmatory_fast_average_exit_atr_multiple,
-			bullish_exit_above_fast_average_atr_multiple=bullish_exit_above_fast_average_atr_multiple,
 			strategy_mode=strategy_mode,
-			cross_strategy_enabled=cross_strategy_enabled,
+			trend_strategy_enabled=trend_strategy_enabled,
+			trend_exit_bollinger_atr_multiple=trend_exit_bollinger_atr_multiple,
+			trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor,
+			trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles,
 			range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence,
 			disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled,
 			range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio,
@@ -2048,26 +1985,18 @@ def plot_backtest(
 			fast_ma_proximity_atr_multiple=fast_ma_proximity_atr_multiple,
 			bollinger_proximity_atr_multiple=bollinger_proximity_atr_multiple,
 			heikin_ashi_filter_candles=heikin_ashi_filter_candles,
-			exit_cross_on_opposing_heikin_ashi_run=exit_cross_on_opposing_heikin_ashi_run,
-			do_not_enter_cross_on_opposing_heikin_ashi_run=do_not_enter_cross_on_opposing_heikin_ashi_run,
-			do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry,
 			exit_range_on_opposing_heikin_ashi_run=exit_range_on_opposing_heikin_ashi_run,
 			do_not_enter_range_on_opposing_heikin_ashi_run=do_not_enter_range_on_opposing_heikin_ashi_run,
 			do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry,
 			exit_range_stretch_on_opposing_heikin_ashi_run=exit_range_stretch_on_opposing_heikin_ashi_run,
 			do_not_enter_range_stretch_on_opposing_heikin_ashi_run=do_not_enter_range_stretch_on_opposing_heikin_ashi_run,
 			do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry,
-			entry_trigger=entry_trigger,
 			range_transition_zones_enabled=range_transition_zones_enabled,
 			range_transition_band_speed_multiple=range_transition_band_speed_multiple,
 			range_transition_price_speed_multiple=range_transition_price_speed_multiple,
-			cross_entry_bollinger_gap_atr_divisor=cross_entry_bollinger_gap_atr_divisor,
-			enforce_atr_invalidation=enforce_atr_invalidation,
-			exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick,
-			exit_after_turning_point=exit_after_turning_point,
-			cross_exit_method=cross_exit_method,
 			shade_universal_peak_trough_zones=shade_universal_peak_trough_zones,
 			universal_zone_gradient_candles=universal_zone_gradient_candles,
+			universal_zone_min_fast_ma_change_atr_multiple=universal_zone_min_fast_ma_change_atr_multiple,
 			shade_trend_zones=shade_trend_zones,
 			trend_cloud_fast_ma_band_gap_fraction=trend_cloud_fast_ma_band_gap_fraction,
 			trend_cloud_condition_enabled=trend_cloud_condition_enabled,
@@ -2085,17 +2014,8 @@ def plot_backtest(
 			prepare_plot_data=True,
 			fast_moving_average_reversed=fast_moving_average_reversed,
 			fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe,
-			bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple,
 			bollinger_period=bollinger_period,
 			bollinger_std_dev=bollinger_std_dev,
-			bearish_exit_confirmation_window_candles=bearish_exit_confirmation_window_candles,
-			profit_protection_enabled=profit_protection_enabled,
-			profit_activation_atr_multiple=profit_activation_atr_multiple,
-			profit_trailing_atr_multiple=profit_trailing_atr_multiple,
-			fast_average_exit_atr_multiple=fast_average_exit_atr_multiple,
-			require_entry_confirmation=require_entry_confirmation,
-			slow_average_to_price_weight=slow_average_to_price_weight, cross_point_to_price_weight=cross_point_to_price_weight,
-			max_exposure_multiple=max_exposure_multiple, invalidation_atr_multiple=invalidation_atr_multiple,
 			fast_moving_average_type=fast_moving_average_type, fast_moving_average_period=fast_moving_average_period,
 			slow_moving_average_type=slow_moving_average_type, slow_moving_average_period=slow_moving_average_period,
 

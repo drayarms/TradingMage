@@ -1,3 +1,4 @@
+from strategy_trade_markers import trade_marker,legend_styles,ENTRY_COLOR,EXIT_COLOR
 import io
 from backtest_progress import BacktestProgress
 from backtest_sessions import BacktestSessions
@@ -255,6 +256,10 @@ class BackTester:
 		confirmatory_fast_average_exit_atr_multiple: Optional[float] = None,
 		bullish_exit_above_fast_average_atr_multiple: float = 1.0,
 		strategy_mode: str = "golden_cross",
+		trend_strategy_enabled: bool = True,
+		trend_exit_bollinger_atr_multiple: float = 1.,
+		trend_exit_bollinger_gap_contraction_divisor: float = 2.,
+		trend_entry_opposing_universal_zone_cooldown_candles: int = 2,
 		cross_strategy_enabled: bool = True,
 		range_strategy_enabled: bool = True,
 		entry_strategy_precedence: str = "range",
@@ -300,6 +305,7 @@ class BackTester:
 		cross_exit_method: str = "price",
 		shade_universal_peak_trough_zones: bool = True,
 		universal_zone_gradient_candles: int = 2,
+		universal_zone_min_fast_ma_change_atr_multiple: float = 2.,
 		shade_trend_zones: bool = True,
 		trend_cloud_fast_ma_band_gap_fraction: float = .4,
 		trend_cloud_condition_enabled: bool = True,
@@ -360,6 +366,19 @@ class BackTester:
 			Dictionary containing only the requested reporting window, while preserving
 			open positions and signal context created during warm-up.
 		"""
+		if strategy_name == 'range_trend_4h':
+			from range_trend_settings import RangeTrendSettings,RANGE_FIELDS
+			from range_trend_simulation import run_simulation as run_range_trend
+			from chart_data import PlotOptions
+			from dataclasses import fields
+			values=locals().copy()
+			aliases=dict(fast_type=fast_moving_average_type,fast_period=fast_moving_average_period,slow_type=slow_moving_average_type,slow_period=slow_moving_average_period,atr_period=ATR_period)
+			settings=RangeTrendSettings(trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor,trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles,trend_strategy_enabled=trend_strategy_enabled,trend_exit_bollinger_atr_multiple=trend_exit_bollinger_atr_multiple,**{k:aliases[k] if k in aliases else values[k] for k in RANGE_FIELDS if k in values or k in aliases})
+			options=PlotOptions(**{f.name:values[f.name] for f in fields(PlotOptions) if f.name in values})
+			if liquidate_before_market_close or exit_strategy is not None or not run_exit_strategy or warmup_sessions not in (None,0):raise ValueError('range_trend_4h uses its own exits and historical indicator warmup')
+			result=run_range_trend(copy.copy(self),alpaca_api,start,end,tickers,position_size,settings,plot_options=options,prepare_plot_data=prepare_plot_data)
+			result['plot_settings']=options.to_dict()
+			return result
 		if strategy_name == STRATEGY_NAME:
 			if liquidate_before_market_close or exit_strategy is not None or not run_exit_strategy or record_factor_research or loss_liquidation_atr_factor is not None or profit_expansion_atr_factor is not None:
 				raise ValueError("golden_cross_dip_recovery_4h uses its configured exits; legacy liquidation, exit overrides, entry-only mode and liquidation-factor research are incompatible")
@@ -369,7 +388,7 @@ class BackTester:
 				raise ValueError("Previous exit experiments were replaced by the three-path exit rule")
 			settings = StrategySettings(slow_average_to_price_weight, cross_point_to_price_weight, max_exposure_multiple, invalidation_atr_multiple, fast_moving_average_type, fast_moving_average_period, slow_moving_average_type, slow_moving_average_period, ATR_period, require_entry_confirmation, fast_average_exit_atr_multiple, cross_point_to_current_moment_weight, cross_point_time_decay_candles, (confirmatory_fast_average_exit_atr_multiple if confirmatory_fast_average_exit_atr_multiple is not None else fast_average_exit_atr_multiple if fast_average_exit_atr_multiple is not None else 2.0), bearish_exit_confirmation_window_candles, profit_protection_enabled, profit_activation_atr_multiple, profit_trailing_atr_multiple, bullish_exit_above_fast_average_atr_multiple, cross_strategy_enabled=cross_strategy_enabled, range_strategy_enabled=range_strategy_enabled, entry_strategy_precedence=entry_strategy_precedence, disabled_strategy_virtual_positions_enabled=disabled_strategy_virtual_positions_enabled, range_sizing_low_atr_price_ratio=range_sizing_low_atr_price_ratio, range_sizing_high_atr_price_ratio=range_sizing_high_atr_price_ratio, range_sizing_min_entry_fraction=range_sizing_min_entry_fraction, range_sizing_max_entry_fraction=range_sizing_max_entry_fraction, range_min_bollinger_gap_to_peak_since_turning_point_ratio=range_min_bollinger_gap_to_peak_since_turning_point_ratio, range_max_atr_to_bollinger_gap_ratio=range_max_atr_to_bollinger_gap_ratio, range_bollinger_gap_similarity_ratio=range_bollinger_gap_similarity_ratio, extreme_price_stretch_min_bollinger_gap_atr_multiple=extreme_price_stretch_min_bollinger_gap_atr_multiple, long_range_entry_filter_enabled=long_range_entry_filter_enabled, short_range_entry_filter_enabled=short_range_entry_filter_enabled, long_extreme_stretch_entry_filter_enabled=long_extreme_stretch_entry_filter_enabled, short_extreme_stretch_entry_filter_enabled=short_extreme_stretch_entry_filter_enabled, long_post_peak_entry_filter_enabled=long_post_peak_entry_filter_enabled, short_post_trough_entry_filter_enabled=short_post_trough_entry_filter_enabled, shade_ranging_area=shade_ranging_area, extreme_price_stretch_atr_multiple=extreme_price_stretch_atr_multiple, exit_range_near_fast_ma_after_heikin_ashi_streak=exit_range_near_fast_ma_after_heikin_ashi_streak, exit_range_stretch_near_fast_ma_after_heikin_ashi_streak=exit_range_stretch_near_fast_ma_after_heikin_ashi_streak, fast_ma_proximity_atr_multiple=fast_ma_proximity_atr_multiple, bollinger_proximity_atr_multiple=bollinger_proximity_atr_multiple, heikin_ashi_filter_candles=heikin_ashi_filter_candles, exit_cross_on_opposing_heikin_ashi_run=exit_cross_on_opposing_heikin_ashi_run, do_not_enter_cross_on_opposing_heikin_ashi_run=do_not_enter_cross_on_opposing_heikin_ashi_run, do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_cross_after_only_opposing_heikin_ashi_since_last_entry, exit_range_on_opposing_heikin_ashi_run=exit_range_on_opposing_heikin_ashi_run, do_not_enter_range_on_opposing_heikin_ashi_run=do_not_enter_range_on_opposing_heikin_ashi_run, do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_after_only_opposing_heikin_ashi_since_last_entry, exit_range_stretch_on_opposing_heikin_ashi_run=exit_range_stretch_on_opposing_heikin_ashi_run, do_not_enter_range_stretch_on_opposing_heikin_ashi_run=do_not_enter_range_stretch_on_opposing_heikin_ashi_run, do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry=do_not_enter_range_stretch_after_only_opposing_heikin_ashi_since_last_entry, entry_trigger=entry_trigger, range_transition_zones_enabled=range_transition_zones_enabled, range_transition_band_speed_multiple=range_transition_band_speed_multiple, range_transition_price_speed_multiple=range_transition_price_speed_multiple, cross_entry_bollinger_gap_atr_divisor=cross_entry_bollinger_gap_atr_divisor, enforce_atr_invalidation=enforce_atr_invalidation, exit_on_confirmatory_candlestick=exit_on_confirmatory_candlestick, exit_after_turning_point=exit_after_turning_point, cross_exit_method=cross_exit_method, fast_moving_average_reversed=fast_moving_average_reversed, fast_moving_average_reversal_timeframe=fast_moving_average_reversal_timeframe, strategy_mode=strategy_mode, bearish_exit_below_fast_average_atr_multiple=bearish_exit_below_fast_average_atr_multiple, bollinger_period=bollinger_period, bollinger_std_dev=bollinger_std_dev)
 			from chart_data import PlotOptions
-			plot_options=PlotOptions(shade_universal_peak_trough_zones=shade_universal_peak_trough_zones,universal_zone_gradient_candles=universal_zone_gradient_candles,trend_cloud_fast_ma_band_gap_fraction=trend_cloud_fast_ma_band_gap_fraction,trend_cloud_condition_enabled=trend_cloud_condition_enabled,trend_heikin_ashi_streak_condition_enabled=trend_heikin_ashi_streak_condition_enabled,trend_heikin_ashi_streak_min_candles=trend_heikin_ashi_streak_min_candles,trend_heikin_ashi_streak_max_ma_gap_atr_multiple=trend_heikin_ashi_streak_max_ma_gap_atr_multiple,shade_trend_zones=shade_trend_zones,plotted_range_zone=plotted_range_zone,plotted_stretch_zones=plotted_stretch_zones,plotted_fast_ma=plotted_fast_ma,plotted_slow_ma=plotted_slow_ma,plotted_bollingers=plotted_bollingers,plotted_candlesticks=plotted_candlesticks,plotted_ichimoku_cloud=plotted_ichimoku_cloud,candlestick_type=candlestick_type)
+			plot_options=PlotOptions(universal_zone_min_fast_ma_change_atr_multiple=universal_zone_min_fast_ma_change_atr_multiple,shade_universal_peak_trough_zones=shade_universal_peak_trough_zones,universal_zone_gradient_candles=universal_zone_gradient_candles,trend_cloud_fast_ma_band_gap_fraction=trend_cloud_fast_ma_band_gap_fraction,trend_cloud_condition_enabled=trend_cloud_condition_enabled,trend_heikin_ashi_streak_condition_enabled=trend_heikin_ashi_streak_condition_enabled,trend_heikin_ashi_streak_min_candles=trend_heikin_ashi_streak_min_candles,trend_heikin_ashi_streak_max_ma_gap_atr_multiple=trend_heikin_ashi_streak_max_ma_gap_atr_multiple,shade_trend_zones=shade_trend_zones,plotted_range_zone=plotted_range_zone,plotted_stretch_zones=plotted_stretch_zones,plotted_fast_ma=plotted_fast_ma,plotted_slow_ma=plotted_slow_ma,plotted_bollingers=plotted_bollingers,plotted_candlesticks=plotted_candlesticks,plotted_ichimoku_cloud=plotted_ichimoku_cloud,candlestick_type=candlestick_type)
 			result=run_simulation(copy.copy(self), alpaca_api, start, end, tickers, position_size, settings,plot_options=plot_options if prepare_plot_data else None)
 			result["plot_settings"]=plot_options.to_dict()
 			return result
@@ -3673,9 +3692,9 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="D" if entry.get("strategy_type")=="post_stretch_range" else "2" if entry.get("strategy_type")=="range" else "^",
+					marker=trade_marker(dict(entry,position_side="long")),
 					s=180 if entry.get("strategy_type")=="range" else 90,
-					color="#7B2CBF",
+					color=ENTRY_COLOR,
 					edgecolors=None if entry.get("strategy_type")=="range" else "black",
 					linewidths=2.6 if entry.get("strategy_type")=="range" else 0.5,
 					zorder=5,
@@ -3694,9 +3713,9 @@ class BackTester:
 				ax.scatter(
 					nearest_bar_index,
 					entry_price,
-					marker="D" if entry.get("strategy_type")=="post_stretch_range" else "1" if entry.get("strategy_type")=="range" else "v",
+					marker=trade_marker(dict(entry,position_side="short")),
 					s=180 if entry.get("strategy_type")=="range" else 90,
-					color="#00A6A6",
+					color=ENTRY_COLOR,
 					edgecolors=None if entry.get("strategy_type")=="range" else "black",
 					linewidths=2.6 if entry.get("strategy_type")=="range" else 0.5,
 					zorder=5,
@@ -3732,10 +3751,10 @@ class BackTester:
 			ax.scatter(
 				nearest_bar_index,
 				exit_price,
-				marker="P" if exit_event.get("strategy_type")=="post_stretch_range" else "*" if exit_event.get("strategy_type")=="range" else "s",
+				marker=trade_marker(exit_event),
 				s=150 if exit_event.get("strategy_type")=="range" else 70,
-				facecolors="#FF00CC",
-				edgecolors="#FF00CC",
+				facecolors=EXIT_COLOR,
+				edgecolors=EXIT_COLOR,
 				linewidths=1.2,
 				zorder=5,
 			)
@@ -3875,17 +3894,7 @@ class BackTester:
 				])
 		legend_handles = list(indicator_handles)
 		if entries_and_exits:
-			legend_handles.extend([
-				Line2D([0], [0], marker="^", linestyle="None", markersize=8, markerfacecolor="#7B2CBF", markeredgecolor="black", label="Cross long entry"),
-				Line2D([0], [0], marker="v", linestyle="None", markersize=8, markerfacecolor="#00A6A6", markeredgecolor="black", label="Cross short entry"),
-				Line2D([0], [0], marker="s", linestyle="None", markersize=7, markerfacecolor="#FF00CC", markeredgecolor="#FF00CC", label="Cross exit"),
-				Line2D([0],[0],marker="2",linestyle="None",markersize=11,markeredgewidth=2.6,color="#7B2CBF",label="Range long entry"),
-				Line2D([0],[0],marker="1",linestyle="None",markersize=11,markeredgewidth=2.6,color="#00A6A6",label="Range short entry"),
-				Line2D([0],[0],marker="*",linestyle="None",markersize=11,color="#FF00CC",label="Range exit"),
-				Line2D([0],[0],marker="D",linestyle="None",markersize=8,color="#7B2CBF",label="Post-stretch range long entry"),
-				Line2D([0],[0],marker="D",linestyle="None",markersize=8,color="#00A6A6",label="Post-stretch range short entry"),
-				Line2D([0],[0],marker="P",linestyle="None",markersize=8,color="#FF00CC",label="Post-stretch range exit"),
-			])
+			legend_handles.extend(Line2D([0],[0],marker=marker,linestyle='None',color=color,label=label) for label,marker,color in legend_styles())
 		if lux_algo_symbols:
 			legend_handles.extend([
 				Line2D([0], [0], marker="^", linestyle="None", markersize=6, color="green", alpha=0.45, label="TradingView buy signal (TV)"),

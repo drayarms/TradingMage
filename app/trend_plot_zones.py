@@ -1,4 +1,4 @@
-"""Causal native 4h trend classifications used exclusively for chart overlays."""
+"""Causal native 4h trend classifications shared by trading and chart overlays."""
 import math
 import pandas as pd
 from chart_data import ichimoku_spans,heikin_ashi

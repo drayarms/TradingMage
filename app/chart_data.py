@@ -17,6 +17,7 @@ class PlotOptions:
 	candlestick_type:str='regular'
 	shade_universal_peak_trough_zones:bool=True
 	universal_zone_gradient_candles:int=2
+	universal_zone_min_fast_ma_change_atr_multiple:float=2.
 	shade_trend_zones:bool=True
 	trend_cloud_fast_ma_band_gap_fraction:float=.4
 	trend_cloud_condition_enabled:bool=True
@@ -24,6 +25,7 @@ class PlotOptions:
 	trend_heikin_ashi_streak_min_candles:int=2
 	trend_heikin_ashi_streak_max_ma_gap_atr_multiple:float=1.2
 	def __post_init__(self):
+		if isinstance(self.universal_zone_min_fast_ma_change_atr_multiple,bool) or not math.isfinite(self.universal_zone_min_fast_ma_change_atr_multiple) or self.universal_zone_min_fast_ma_change_atr_multiple<0:raise ValueError("universal_zone_min_fast_ma_change_atr_multiple must be nonnegative and finite")
 		if type(self.universal_zone_gradient_candles) is not int or self.universal_zone_gradient_candles<1:raise ValueError("universal_zone_gradient_candles must be a positive integer")
 		if not isinstance(self.shade_universal_peak_trough_zones,bool):raise ValueError("shade_universal_peak_trough_zones must be boolean")
 		if isinstance(self.trend_cloud_fast_ma_band_gap_fraction,bool) or not math.isfinite(self.trend_cloud_fast_ma_band_gap_fraction) or self.trend_cloud_fast_ma_band_gap_fraction<0:raise ValueError("trend_cloud_fast_ma_band_gap_fraction must be nonnegative and finite")
@@ -122,7 +124,7 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 				frame=annotate_trend_zones(frame,points,trend_cloud_condition_enabled=options.trend_cloud_condition_enabled,trend_heikin_ashi_streak_condition_enabled=options.trend_heikin_ashi_streak_condition_enabled,trend_heikin_ashi_streak_min_candles=options.trend_heikin_ashi_streak_min_candles,trend_heikin_ashi_streak_max_ma_gap_atr_multiple=options.trend_heikin_ashi_streak_max_ma_gap_atr_multiple,trend_cloud_fast_ma_band_gap_fraction=options.trend_cloud_fast_ma_band_gap_fraction)
 			if tf=="4h" and options.shade_universal_peak_trough_zones:
 				from universal_plot_zones import annotate_universal_zones
-				frame=annotate_universal_zones(frame,options.universal_zone_gradient_candles,points)
+				frame=annotate_universal_zones(frame,options.universal_zone_gradient_candles,points,universal_zone_min_fast_ma_change_atr_multiple=options.universal_zone_min_fast_ma_change_atr_multiple)
 			visible=frame.loc[(frame.index>=start)&(frame.completed_at<=end)]
 			transformed=heikin_ashi(frame) if options.candlestick_type=='heikin_ashi' and tf==options.plotted_candlesticks else frame
 			candles=transformed.loc[visible.index]
