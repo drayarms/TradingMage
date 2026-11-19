@@ -9,6 +9,7 @@ from cross_strategy_indicators import fast_moving_average_reversed
 from cross_entry_policy import attach_cross_turning_context
 from range_strategy import attach_turning_point_gap_reference,attach_post_stretch_context
 from trend_strategy import prepare_strategy_frame
+from trend_entry_guard import restore_live_cycle_ids
 from range_trend_portfolio import RangeTrendPortfolio
 from range_trend_netting import NetBroker
 
@@ -82,7 +83,7 @@ class RangeTrendLive:
 		f=history.get_frame(ticker,now-pd.Timedelta(days=1),now)
 		if f.empty:return None
 		points=fast_moving_average_reversed(f,'4h');f=attach_cross_turning_context(attach_turning_point_gap_reference(attach_post_stretch_context(f),points),points)
-		f=prepare_strategy_frame(f,points,self.options)
+		f=restore_live_cycle_ids(prepare_strategy_frame(f,points,self.options),saved.get('trend_entry_guard',{}))
 		# Preserve zone identity across rolling-history refreshes and process restarts.
 		zones=saved.get('zone_state',{})
 		for field in ('universal_peak','universal_trough'):
@@ -112,6 +113,7 @@ class RangeTrendLive:
 			book.realized_by_ticker[ticker]=data.get('realized',0.)
 			if data.get('last_exit'):book.last_exit_time_by_ticker[ticker]=pd.Timestamp(data['last_exit']).to_pydatetime()
 			if data.get('last_fill') and ticker in book.positions:p.last_heikin_ashi_entry[owner,ticker,book.positions[ticker].side]=(pd.Timestamp(data['last_fill']),book.positions[ticker])
+		for owner,state in saved.get('trend_entry_guard',{}).items():p.trend_entry_guard.states[owner,ticker]=state
 		for name,identity in saved.get('last_trend_reversal',{}).items():p.last_trend_reversal[name,ticker]=identity
 		for name,visit in saved.get('trend_band_visits',{}).items():
 			if name in p.books and ticker in p.books[name].positions:p.trend_band_visits[name,ticker]=visit
@@ -135,7 +137,7 @@ class RangeTrendLive:
 			if owner=='cross':continue
 			position=book.positions.get(ticker);last=p.last_heikin_ashi_entry.get((owner,ticker,position.side)) if position else None
 			books[owner]=dict(position=asdict(position) if position else None,realized=book.realized_by_ticker.get(ticker,0.),last_exit=book.last_exit_time_by_ticker.get(ticker),last_fill=last[0] if last else None)
-		payload=dict(blocked_exits={owner:event for (owner,t),(event,position) in p.blocked_exit_intents.items()},books=books,net_target=p.net_positions.get(ticker,0.),evaluated_minute=completed.isoformat(),zone_state=zones,last_trend_reversal={owner:value for (owner,t),value in p.last_trend_reversal.items()},trend_band_visits={owner:value for (owner,t),value in p.trend_band_visits.items()},last_range_entry={side:p.rows[ticker][index]['completed_at'] for (t,side),index in p.last_range_entry.items() if 0<=index<len(p.rows[ticker])})
+		payload=dict(trend_entry_guard={owner:state for (owner,t),state in p.trend_entry_guard.states.items()},blocked_exits={owner:event for (owner,t),(event,position) in p.blocked_exit_intents.items()},books=books,net_target=p.net_positions.get(ticker,0.),evaluated_minute=completed.isoformat(),zone_state=zones,last_trend_reversal={owner:value for (owner,t),value in p.last_trend_reversal.items()},trend_band_visits={owner:value for (owner,t),value in p.trend_band_visits.items()},last_range_entry={side:p.rows[ticker][index]['completed_at'] for (t,side),index in p.last_range_entry.items() if 0<=index<len(p.rows[ticker])})
 		check();self.r.set(key,json.dumps(payload,default=lambda v:v.isoformat() if hasattr(v,'isoformat') else str(v),allow_nan=False))
 		for event in p.aggregate.trade_events:self.r.xadd(prefix+'virtual_fills',{k:json.dumps(v,default=str) for k,v in event.items()})
 		return payload['net_target']

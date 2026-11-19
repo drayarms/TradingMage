@@ -4,6 +4,7 @@ import pandas as pd
 from trend_plot_zones import annotate_trend_zones
 from universal_plot_zones import annotate_universal_zones
 from chart_data import heikin_ashi
+from trend_entry_guard import attach_trend_cycles
 
 def finite(*values):return all(v is not None and math.isfinite(v) for v in values)
 
@@ -22,7 +23,7 @@ def prepare_strategy_frame(frame,points,options):
 
 def attach_entry_exit_context(frame,points):
 	"""Native completed-candle reversal windows and causally confirmed gap history."""
-	frame=frame.copy()
+	frame=attach_trend_cycles(frame)
 	ha=heikin_ashi(frame) if all(k in frame for k in ('open','high','low','close')) else pd.DataFrame(index=frame.index,columns=['open','close'],dtype=float)
 	colors=(ha.close>ha.open).astype(int)-(ha.close<ha.open).astype(int)
 	last_zone=None;setups={'long':[],'short':[]}

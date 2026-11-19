@@ -3,10 +3,16 @@ bash ./run_local_endpoint.sh plot \
 	strategy_name=range_trend_4h \
 	strategy_mode=both \
 	trend_strategy_enabled=true \
+	block_potential_unprofitable_trend_entry=true \
+	exit_potential_unprofitable_trend_entry=false \
+	potential_unprofitable_trend_entry_atr_multiple=0.1 \
+	potential_unprofitable_trend_entry_exit_attempts=2 \
 	trend_exit_bollinger_atr_multiple=2.2 \
 	trend_exit_bollinger_gap_contraction_divisor=2 \
 	trend_entry_opposing_universal_zone_cooldown_candles=2 \
 	range_strategy_enabled=true \
+	block_range_entries_on_opposing_trend_filter_enabled=false \
+	force_range_exits_on_opposing_trend_filter_enabled=false \
 	disabled_strategy_virtual_positions_enabled=true \
 	entry_strategy_precedence=none \
 	range_sizing_low_atr_price_ratio=0.01 \
@@ -18,7 +24,7 @@ bash ./run_local_endpoint.sh plot \
 	fast_moving_average_reversed=true \
 	fast_moving_average_reversal_timeframe=4h \
 	start=2026-05-30T04:00:00-04:00 \
-	end=2026-11-13T20:00:00-04:00 \
+	end=2026-11-18T20:00:00-04:00 \
 	position_size=6600 \
 	shade_ranging_area=true \
 	range_max_atr_to_bollinger_gap_ratio=0.5 \

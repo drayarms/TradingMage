@@ -258,7 +258,13 @@ class BackTester:
 		strategy_mode: str = "golden_cross",
 		trend_strategy_enabled: bool = True,
 		trend_exit_bollinger_atr_multiple: float = 1.,
+		block_potential_unprofitable_trend_entry: bool = True,
+		exit_potential_unprofitable_trend_entry: bool = False,
+		potential_unprofitable_trend_entry_atr_multiple: float = 0.1,
+		potential_unprofitable_trend_entry_exit_attempts: int = 2,
 		trend_exit_bollinger_gap_contraction_divisor: float = 2.,
+		block_range_entries_on_opposing_trend_filter_enabled: bool = True,
+		force_range_exits_on_opposing_trend_filter_enabled: bool = True,
 		trend_entry_opposing_universal_zone_cooldown_candles: int = 2,
 		cross_strategy_enabled: bool = True,
 		range_strategy_enabled: bool = True,
@@ -373,7 +379,7 @@ class BackTester:
 			from dataclasses import fields
 			values=locals().copy()
 			aliases=dict(fast_type=fast_moving_average_type,fast_period=fast_moving_average_period,slow_type=slow_moving_average_type,slow_period=slow_moving_average_period,atr_period=ATR_period)
-			settings=RangeTrendSettings(trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor,trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles,trend_strategy_enabled=trend_strategy_enabled,trend_exit_bollinger_atr_multiple=trend_exit_bollinger_atr_multiple,**{k:aliases[k] if k in aliases else values[k] for k in RANGE_FIELDS if k in values or k in aliases})
+			settings=RangeTrendSettings(block_potential_unprofitable_trend_entry=block_potential_unprofitable_trend_entry,exit_potential_unprofitable_trend_entry=exit_potential_unprofitable_trend_entry,potential_unprofitable_trend_entry_atr_multiple=potential_unprofitable_trend_entry_atr_multiple,potential_unprofitable_trend_entry_exit_attempts=potential_unprofitable_trend_entry_exit_attempts,block_range_entries_on_opposing_trend_filter_enabled=block_range_entries_on_opposing_trend_filter_enabled, force_range_exits_on_opposing_trend_filter_enabled=force_range_exits_on_opposing_trend_filter_enabled,trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor,trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles,trend_strategy_enabled=trend_strategy_enabled,trend_exit_bollinger_atr_multiple=trend_exit_bollinger_atr_multiple,**{k:aliases[k] if k in aliases else values[k] for k in RANGE_FIELDS if k in values or k in aliases})
 			options=PlotOptions(**{f.name:values[f.name] for f in fields(PlotOptions) if f.name in values})
 			if liquidate_before_market_close or exit_strategy is not None or not run_exit_strategy or warmup_sessions not in (None,0):raise ValueError('range_trend_4h uses its own exits and historical indicator warmup')
 			result=run_range_trend(copy.copy(self),alpaca_api,start,end,tickers,position_size,settings,plot_options=options,prepare_plot_data=prepare_plot_data)

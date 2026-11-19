@@ -8,11 +8,22 @@ CROSS_ONLY=set('slow_average_to_price_weight cross_point_to_price_weight cross_p
 RANGE_FIELDS={f.name for f in fields(StrategySettings)}-CROSS_ONLY
 
 class RangeTrendSettings:
-	def __init__(self,trend_strategy_enabled=True,trend_exit_bollinger_atr_multiple=1.,trend_entry_opposing_universal_zone_cooldown_candles=2,trend_exit_bollinger_gap_contraction_divisor=2.,**kwargs):
+	def __init__(self,trend_strategy_enabled=True,trend_exit_bollinger_atr_multiple=1.,trend_entry_opposing_universal_zone_cooldown_candles=2,trend_exit_bollinger_gap_contraction_divisor=2.,block_range_entries_on_opposing_trend_filter_enabled=True,force_range_exits_on_opposing_trend_filter_enabled=True,block_potential_unprofitable_trend_entry=True,exit_potential_unprofitable_trend_entry=False,potential_unprofitable_trend_entry_atr_multiple=0.1,potential_unprofitable_trend_entry_exit_attempts=2,**kwargs):
 		if type(trend_entry_opposing_universal_zone_cooldown_candles) is not int or trend_entry_opposing_universal_zone_cooldown_candles<0:raise ValueError('trend_entry_opposing_universal_zone_cooldown_candles must be a nonnegative integer')
 		self.trend_entry_opposing_universal_zone_cooldown_candles=trend_entry_opposing_universal_zone_cooldown_candles
 		if isinstance(trend_exit_bollinger_gap_contraction_divisor,bool) or not math.isfinite(trend_exit_bollinger_gap_contraction_divisor) or trend_exit_bollinger_gap_contraction_divisor<=0:raise ValueError('trend_exit_bollinger_gap_contraction_divisor must be positive and finite')
 		self.trend_exit_bollinger_gap_contraction_divisor=trend_exit_bollinger_gap_contraction_divisor
+		for name,value in (('block_range_entries_on_opposing_trend_filter_enabled',block_range_entries_on_opposing_trend_filter_enabled),('force_range_exits_on_opposing_trend_filter_enabled',force_range_exits_on_opposing_trend_filter_enabled)):
+			if type(value) is not bool:raise ValueError(name+' must be boolean')
+			setattr(self,name,value)
+		if type(block_potential_unprofitable_trend_entry) is not bool:raise ValueError('block_potential_unprofitable_trend_entry must be boolean')
+		self.block_potential_unprofitable_trend_entry=block_potential_unprofitable_trend_entry
+		if type(exit_potential_unprofitable_trend_entry) is not bool:raise ValueError('exit_potential_unprofitable_trend_entry must be boolean')
+		self.exit_potential_unprofitable_trend_entry=exit_potential_unprofitable_trend_entry
+		if isinstance(potential_unprofitable_trend_entry_atr_multiple,bool) or not math.isfinite(potential_unprofitable_trend_entry_atr_multiple) or potential_unprofitable_trend_entry_atr_multiple<=0:raise ValueError('potential_unprofitable_trend_entry_atr_multiple must be positive and finite')
+		self.potential_unprofitable_trend_entry_atr_multiple=potential_unprofitable_trend_entry_atr_multiple
+		if type(potential_unprofitable_trend_entry_exit_attempts) is not int or potential_unprofitable_trend_entry_exit_attempts<1:raise ValueError('potential_unprofitable_trend_entry_exit_attempts must be a positive integer')
+		self.potential_unprofitable_trend_entry_exit_attempts=potential_unprofitable_trend_entry_exit_attempts
 		unknown=set(kwargs)-RANGE_FIELDS
 		if unknown:raise ValueError('Unsupported range/trend arguments: '+', '.join(sorted(unknown)))
 		if not isinstance(trend_strategy_enabled,bool):raise ValueError('trend_strategy_enabled must be boolean')
@@ -25,4 +36,4 @@ class RangeTrendSettings:
 		kwargs.setdefault('strategy_mode','both')
 		self._legacy=StrategySettings(cross_strategy_enabled=False,entry_strategy_precedence='range',**kwargs)
 	def __getattr__(self,name):return getattr(self._legacy,name)
-	def to_dict(self):return {**{k:getattr(self,k) for k in RANGE_FIELDS},'trend_exit_bollinger_gap_contraction_divisor':self.trend_exit_bollinger_gap_contraction_divisor,'trend_strategy_enabled':self.trend_strategy_enabled,'trend_exit_bollinger_atr_multiple':self.trend_exit_bollinger_atr_multiple,'trend_entry_opposing_universal_zone_cooldown_candles':self.trend_entry_opposing_universal_zone_cooldown_candles}
+	def to_dict(self):return {**{k:getattr(self,k) for k in RANGE_FIELDS},'trend_exit_bollinger_gap_contraction_divisor':self.trend_exit_bollinger_gap_contraction_divisor,'block_range_entries_on_opposing_trend_filter_enabled':self.block_range_entries_on_opposing_trend_filter_enabled,'force_range_exits_on_opposing_trend_filter_enabled':self.force_range_exits_on_opposing_trend_filter_enabled,'block_potential_unprofitable_trend_entry':self.block_potential_unprofitable_trend_entry,'exit_potential_unprofitable_trend_entry':self.exit_potential_unprofitable_trend_entry,'potential_unprofitable_trend_entry_atr_multiple':self.potential_unprofitable_trend_entry_atr_multiple,'potential_unprofitable_trend_entry_exit_attempts':self.potential_unprofitable_trend_entry_exit_attempts,'trend_strategy_enabled':self.trend_strategy_enabled,'trend_exit_bollinger_atr_multiple':self.trend_exit_bollinger_atr_multiple,'trend_entry_opposing_universal_zone_cooldown_candles':self.trend_entry_opposing_universal_zone_cooldown_candles}

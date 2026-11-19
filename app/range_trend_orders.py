@@ -39,6 +39,8 @@ class RangeTrendLimitOrders(ExtendedLimitOrders):
 				_,row=self.p.context(ticker,when)
 				if row is None or row.get(owner+'_reversal_id')!=order['event'].get('_trend_reversal_id'):
 					self.finish(key,when,'cancelled_reversal_window_ended');continue
+			if not order['exit_order'] and self.p.range_entry_opposing_trend(owner,ticker,order['side'],when):
+				self.finish(key,when,'cancelled_range_opposing_trend');continue
 			bar=bars.get(ticker)
 			if bar is None:continue
 			start=pd.Timestamp(bar['source_bar_time'])
@@ -61,7 +63,8 @@ class RangeTrendLimitOrders(ExtendedLimitOrders):
 			if order['exit_order']:filled=self.p.bt._close_position(book,event)
 			else:
 				if not self.p.prepare_entry(owner,ticker,order['side'],event):
-					self.finish(key,when,'cancelled_entry_no_longer_valid');continue
+					if self.pending.get(key) is order:self.finish(key,when,'cancelled_entry_no_longer_valid')
+					continue
 				filled=self.p.bt._open_or_add_position(book,event,order['side'],qty)
 				if filled and not owner.startswith('trend_'):
 					index,_=self.p.context(ticker,when);self.p.last_range_entry[ticker,order['side']]=index

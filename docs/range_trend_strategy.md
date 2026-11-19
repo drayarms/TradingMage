@@ -47,6 +47,39 @@ Precedence applies regardless of position side, including same-side holdings in 
 
 All reports retain each strategy's independent inventory/cost basis and PnL. Overall PnL sums those books, including hedged holdings, rather than overwriting one side. Reports expose signed `net_positions` in shares. Gross strategy exposure and net market exposure are distinct values; net zero can still have gross virtual exposure. The chart ZIP includes overall and per-book PnL. No end-of-run forced liquidation is introduced.
 
+### Potentially unprofitable trend-entry filter
+
+The new arguments are independent:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `block_potential_unprofitable_trend_entry` | `true` | Block a qualifying adverse long/short trend entry. |
+| `exit_potential_unprofitable_trend_entry` | `false` | Liquidate all trend inventory of the attempted side when its adverse-attempt count reaches the limit. |
+| `potential_unprofitable_trend_entry_atr_multiple` | `0.1` | Positive finite m; adverse distance is **m × latest completed 4h ATR**, inclusive. |
+| `potential_unprofitable_trend_entry_exit_attempts` | `2` | Positive integer n; count includes blocked and filled adverse attempts. |
+
+Long cycles start at a new universal trough zone and end at the next new trough or peak zone. Short cycles start at a new peak zone and end at the next new peak or trough. Consecutive candles inside one uninterrupted zone are one event. At each new cycle, clear the old reference and count, even when trend inventory remains open. No unconfirmed/future candle affects cycle identity. The default command enables blocking and leaves attempt-triggered liquidation off for independent testing.
+
+The reference is the most recent **actual trend entry fill price**, not the average cost of aggregated holdings and not a profitability judgment. Long attempts are adverse when `reference_fill - candidate_entry_price >= m * ATR`; shorts when `candidate_entry_price - reference_fill >= m * ATR`. Candidate prices are executable entry prices (the actual entry limit when revalidating a pending order). Missing reference/valid ATR or absence of an applicable cycle disables these comparisons. A new cycle needs its own first fill before it has a reference.
+
+Count one attempt per distinct otherwise-qualifying dip/lift, after the established entry conditions, session checks and precedence eligibility, before this filter is enforced. Repeated minute checks, repeated submission validation and fill validation do not inflate counts. Invalid distance/opposing trend/cooldown or a nonpreferred strategy blocked by existing holdings does not count. Preferred entries blocked by this new filter do not preempt range holdings. Pending/failed attempts do not change the successful-fill reference. An initially blocked dip/lift can still fill later in its existing eligibility window if its price recovers; that does not erase its already-counted adverse attempt.
+
+At n adverse attempts (or later qualifying adverse attempts in the same cycle), an enabled liquidation switch skips the triggering entry and requests liquidation of **all** long trend fills or all short trend fills respectively. It does not liquidate range positions or the opposite trend side. The triggering dip/lift cannot immediately reenter after liquidation. This adds no blanket lock through the rest of the cycle: a later otherwise-valid, nonadverse dip/lift may enter. Counts and the reference survive ordinary position closes until a cycle boundary; successful later fills move the reference without clearing the count.
+
+While `ranging_market` is true in the latest completed 4h context, bypass both new rules: neither block nor count attempts nor trigger this liquidation. Existing trend entry/exit rules continue to apply. Actual trend fills during a range still become the last successful-fill reference in the same cycle, without increasing or resetting the attempt count. Previously submitted exits retain the established execution/session handling. Normal and stretch range strategies themselves are outside this feature.
+
+Attempt-based trend exits bypass range gradient suppression and obey supported sessions and extended-hours DAY-limit fills. An entry limit cannot act as the liquidation's exit price. Backtest JSON includes `trend_entry_guard_events` (adverse-attempt diagnostics) and `trend_entry_guard_state` (cycle/reference/count state). Live virtual-ledger state persists this data across restarts, including per-dip/lift deduplication and continuing cycle identities across rolling history refreshes. It refers to virtual strategy fills; actual broker net execution remains separate.
+
+The current `run_range_cross_test.sh` adds all four arguments and preserves the supplied `false` settings for the two opposing-trend range switches. Live configuration can supply these arguments in `RANGE_TREND_SETTINGS_JSON`.
+
+### Opposing-trend range filter
+
+`block_range_entries_on_opposing_trend_filter_enabled=true` governs entries/additions and pending entry cancellation. Independently, `force_range_exits_on_opposing_trend_filter_enabled=true` governs forced exits. Both default to true and apply to **both normal and post-stretch ranges**. The old combined argument is removed. A completed native 4h short trend blocks long range entries and exits all open long range holdings; a completed long trend blocks short entries and exits short holdings. Either enabled classification branch can establish the trend; chart shading and `trend_strategy_enabled` do not control the analysis. If both trend directions are present, both range sides are blocked and open ranges exit. Same-side trends do not trigger this filter.
+
+The filter runs before entry precedence can close another book and is checked again before pending entries fill. Untouched pending entries are canceled when their side becomes prohibited. Required exits use reason `range_opposing_trend`, bypass three-gradient suppression, clear old blocked exit intents, and supersede ordinary pending range exits. Once requested, these exits retain priority over other range exits and follow the existing session/calendar and later-bar extended-hours limit execution rules. Disabling the entry switch permits entries under the existing range rules; disabling the exit switch stops new opposing-trend exit triggers. All four combinations are supported, including allowing entries while enforcing exits on subsequent evaluations. Already requested exits retain their existing execution priority. Enabled and disabled-strategy shadow range books follow the same decision policy; shadow trades remain outside actual PnL and capital.
+
+The supplied `run_range_cross_test.sh` includes `block_range_entries_on_opposing_trend_filter_enabled=true` and `force_range_exits_on_opposing_trend_filter_enabled=true`; its other arguments and dates are retained. Live configuration may set these flags in `RANGE_TREND_SETTINGS_JSON`.
+
 ## Net capital and virtual-ledger comparison
 
 Capital reporting defaults to net inventory across **enabled** strategies. At each observation, offset long and short shares **within each ticker**, value the residual at its current market price, then sum the absolute ticker values. Long AAPL and short AMD do not offset one another. Disabled-strategy shadow books and pending/unfilled orders do not count in either view. Gross virtual-ledger exposure still values every enabled book before offsets, so fully hedged holdings can show zero net capital and positive ledger exposure.
