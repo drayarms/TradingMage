@@ -72,13 +72,50 @@ Attempt-based trend exits bypass range gradient suppression and obey supported s
 
 The current `run_range_cross_test.sh` adds all four arguments and preserves the supplied `false` settings for the two opposing-trend range switches. Live configuration can supply these arguments in `RANGE_TREND_SETTINGS_JSON`.
 
-### Opposing-trend range filter
+### Exit range positions outside the range zone
 
-`block_range_entries_on_opposing_trend_filter_enabled=true` governs entries/additions and pending entry cancellation. Independently, `force_range_exits_on_opposing_trend_filter_enabled=true` governs forced exits. Both default to true and apply to **both normal and post-stretch ranges**. The old combined argument is removed. A completed native 4h short trend blocks long range entries and exits all open long range holdings; a completed long trend blocks short entries and exits short holdings. Either enabled classification branch can establish the trend; chart shading and `trend_strategy_enabled` do not control the analysis. If both trend directions are present, both range sides are blocked and open ranges exit. Same-side trends do not trigger this filter.
+`exit_range_position_outside_range_zone=true` (default) adds an exit to **both normal and post-stretch range positions**. Directly below it, `exit_range_position_outside_range_zone_candles=2` selects a positive integer n of **consecutive completed native 4h Heikin-Ashi candles**. This replaces the previous single completed 1h candle confirmation; 1h HA data no longer confirms this exit.
 
-The filter runs before entry precedence can close another book and is checked again before pending entries fill. Untouched pending entries are canceled when their side becomes prohibited. Required exits use reason `range_opposing_trend`, bypass three-gradient suppression, clear old blocked exit intents, and supersede ordinary pending range exits. Once requested, these exits retain priority over other range exits and follow the existing session/calendar and later-bar extended-hours limit execution rules. Disabling the entry switch permits entries under the existing range rules; disabling the exit switch stops new opposing-trend exit triggers. All four combinations are supported, including allowing entries while enforcing exits on subsequent evaluations. Already requested exits retain their existing execution priority. Enabled and disabled-strategy shadow range books follow the same decision policy; shadow trades remain outside actual PnL and capital.
+The latest completed native 4h context must explicitly be non-ranging, and:
 
-The supplied `run_range_cross_test.sh` includes `block_range_entries_on_opposing_trend_filter_enabled=true` and `force_range_exits_on_opposing_trend_filter_enabled=true`; its other arguments and dates are retained. Live configuration may set these flags in `RANGE_TREND_SETTINGS_JSON`.
+- Long: the most recent n 4h HA candles must all be red with no upper wick; the **latest** HA candle's low must be **strictly below** the latest completed 4h lower Bollinger.
+- Short: the most recent n 4h HA candles must all be green with no lower wick; the **latest** HA candle's high must be **strictly above** the latest completed 4h upper Bollinger.
+
+Use the established wick tolerance (`1e-10 * max(abs(open), abs(close), 1)`). A wick, opposing color, doji or invalid candle interrupts the consecutive confirmation count; insufficient history cannot qualify. The prior candles need to satisfy color/wick requirements, while the existing band-breach and outside-range checks apply to the latest completed 4h context. The count does not require all confirmation candles to have formed outside the range zone or after entry. Count observed native candles rather than elapsed clock hours across nights/weekends.
+
+All data comes from regular native 4h OHLC transformed to HA, regardless of plotted timeframe or display candle type. `heikin_ashi_filter_candles` and other 1h HA-run switches remain independent. Equal band touches and incomplete candles do not qualify. The shared simulation/live portfolio prepares the same causal confirmation context.
+
+All prior exit behavior remains in place. This exit uses reason `range_position_outside_range_zone` and **does not bypass three-gradient suppression**. Blocked exits follow the existing remembered-intent/retry logic and execute when suppression clears. Existing higher-priority exits, session/calendar restrictions and later-bar extended-hours DAY-limit execution rules remain effective. Disabled-strategy shadow range positions use the same decision rule without entering actual PnL/capital. It does not affect trend positions or entry eligibility.
+
+The command places the new count immediately below the exit switch, retains the supplied `true` settings for both potential-unprofitable-trend switches, and uses the supplied end value `2026-11-18T20:00:00-04:00`. Live configuration can set both outside-range arguments in `RANGE_TREND_SETTINGS_JSON`.
+
+### Opposing-trend filters for normal and stretch ranges
+
+Four independent switches now default to **true**:
+
+| Argument | Scope |
+|---|---|
+| `block_range_entries_on_opposing_trend_filter_enabled` | Block normal range entries/additions and cancel opposing pending normal range entries. |
+| `block_range_stretch_entries_on_opposing_trend_filter_enabled` | Block post-stretch range entries/additions and cancel opposing pending post-stretch entries. |
+| `force_range_exits_on_opposing_trend_filter_enabled` | Force existing normal range holdings out of an opposing trend. |
+| `force_range_stretch_exits_on_opposing_trend_filter_enabled` | Force existing post-stretch range holdings out of an opposing trend. |
+
+The two previously shared `range` switches now apply **only to normal ranges**. Set the new `range_stretch` switches explicitly when preserving a previous configuration that disabled both classes. All 16 combinations work independently; one range class's switch does not govern the other class or trend inventory.
+
+A completed native 4h short trend blocks long entries and triggers exits when the corresponding class/action switch is on; a completed long trend does the reverse. Either enabled trend-classification branch can establish the direction. Chart shading and `trend_strategy_enabled` do not control the analysis. If both directions are present, either side is opposing; same-side-only trends do not trigger these filters. Enabled and disabled-strategy shadow books follow their class's policy, with shadows excluded from actual PnL/capital.
+
+Entry filters run before precedence replacement and before pending fills; untouched pending entries are canceled only when their own class's entry switch is enabled. Required exits retain reason `range_opposing_trend`, bypass three-gradient suppression, clear old blocked exit intents and supersede ordinary pending exits. Previously requested exits keep their execution priority. Session/calendar and extended-hours DAY-limit rules remain in place. These changes do not alter the separate `exit_range_position_outside_range_zone` feature or other range exits.
+
+The supplied command uses:
+
+```bash
+block_range_entries_on_opposing_trend_filter_enabled=false \
+block_range_stretch_entries_on_opposing_trend_filter_enabled=true \
+force_range_exits_on_opposing_trend_filter_enabled=false \
+force_range_stretch_exits_on_opposing_trend_filter_enabled=false \
+```
+
+The remaining supplied settings are retained, including `exit_range_position_outside_range_zone=false`. Live configuration can supply the same four switches in `RANGE_TREND_SETTINGS_JSON`.
 
 ## Net capital and virtual-ledger comparison
 
@@ -142,3 +179,59 @@ Net orders use a renewable account lock, fresh quotes, supported sessions, DAY l
 Existing unmanaged holdings or unrelated open orders are not silently taken over. Use exclusively managed symbols in the selected shared account; manual/other-program trading in an owned symbol is outside this executor's inventory model. A submission whose existence cannot be resolved after a target change fails closed (`awaiting_uncertain_order_resolution`) rather than guessing. Do not erase Redis ledger/order state while positions or orders remain outstanding.
 
 Before activating orders, apply the source files and validate the configuration against the intended paper account. Turning the enable flag on is an operator deployment choice; this update leaves it off.
+
+## Calendar lookup recovery
+
+The simulation now checks the authenticated Alpaca trading calendar before loading price/indicator history. It retries temporary network/timeouts and HTTP 408/425/429/5xx failures with bounded backoff. Legacy SDK helper/entity conversion failures can use the same client's authenticated raw `/calendar` endpoint. The application can recover through the other already configured trading clients if the primary client fails. No weekday-only or locally guessed holiday calendar is substituted.
+
+Successfully parsed calendars are held in a per-client, date-coverage-checked six-hour in-process cache, reducing repeated live lookups. This cache is not persisted across runner restarts; stale/out-of-coverage data is not used on failure. Invalid calendar payloads are rejected before caching. Holiday and early-close execution gates remain authoritative.
+
+If all configured clients fail, the API still stops the run, now with sanitized exception type, upstream HTTP status when available, requested dates and error text. API credentials and URL query/auth components are redacted. This addresses recoverable failures and exposes the cause of persistent failures; no real Alpaca account connectivity was tested in the offline suite.
+
+
+### Native 1h trend guards and overlay timeframe
+
+`plotted_trend_and_universal_zones=4h` selects a single native timeframe
+(`1h` or `4h`) for trend, universal peak, and universal trough shading. It is
+independent of the candlestick, moving average, Bollinger, and other selectors;
+for example, 1h trend zones can coexist with 4h candles and bands. All three
+zone types use the selected timeframe's own indicators, confirmed turning
+points, ATR, Heikin-Ashi candles, and visually aligned Ichimoku cloud (26 native
+candles of displacement). Their hatching spans that timeframe's Bollinger gap.
+
+`block_range_entries_on_opposing_1h_trend_filter_enabled=true` and
+`block_range_stretch_entries_on_opposing_1h_trend_filter_enabled=true` separately
+block normal and post-stretch range entries, including additions, against the
+latest completed native 1h trend. An hourly short trend blocks long range
+entries; an hourly long trend blocks short range entries. These guards apply
+to pending orders as well as new signals and do not force exits. They remain
+active independently of chart visibility, the plotting timeframe, and whether
+the trend trading strategy is enabled. Existing 4h guards and forced exits
+remain independently configurable. Both hourly guards default to true.
+
+
+`block_trend_entries_on_opposing_1h_trend_filter_enabled=true` independently
+blocks initial trend entries and additions against the latest completed 1h
+trend. It also cancels pending trend entry orders when that hourly trend
+opposes their side. It does not force exits. This setting defaults to true
+and is placed after the two hourly range entry guards in the command script.
+Hourly-blocked signals do not count toward the potentially unprofitable entry
+attempt counter or trigger strategy-precedence replacement.
+
+
+Three independent flags, all defaulting to true, force exits on opposing
+completed native 1h trends:
+
+- `force_range_exits_on_opposing_1h_trend_filter_enabled`
+- `force_range_stretch_exits_on_opposing_1h_trend_filter_enabled`
+- `force_trend_exits_on_opposing_1h_trend_filter_enabled`
+
+A short 1h trend exits the selected class's longs; a long 1h trend exits its
+shorts. These exits bypass the three-gradient veto while retaining trading
+session and execution rules, including pending DAY limits in extended hours.
+They supersede ordinary pending exits and clear remembered gradient-blocked
+exit intents. They apply independently of entry-blocking flags, 4h trend exit
+flags, chart settings, and whether trend trading itself is enabled. Disabled
+strategy shadow positions follow the same flags. The test command keeps all
+three hourly entry blockers false and places these three true exit flags
+immediately after them.

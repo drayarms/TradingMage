@@ -1,4 +1,4 @@
-"""Causal native 4h trend classifications shared by trading and chart overlays."""
+"""Causal native-timeframe trend classifications shared by trading and chart overlays."""
 import math
 import pandas as pd
 from chart_data import ichimoku_spans,heikin_ashi
@@ -52,7 +52,7 @@ def annotate_trend_zones(frame,points,trend_cloud_condition_enabled=True,trend_h
 	a,b=ichimoku_spans(frame);a,b=a.shift(26),b.shift(26)
 	rows=list(frame.itertuples());events=[]
 	for point in points:
-		confirmed=pd.Timestamp(point['confirmed_at']);evaluation=pd.Timestamp(point.get('time',confirmed-pd.Timedelta(hours=4)))
+		confirmed=pd.Timestamp(point['confirmed_at']);evaluation=pd.Timestamp(point.get('time',confirmed-(pd.Timestamp(frame.completed_at.iloc[0])-frame.index[0])))
 		if evaluation not in frame.index:continue
 		index=frame.index.get_loc(evaluation)
 		if pd.Timestamp(rows[index].completed_at)<=confirmed:events.append((confirmed.value,index))

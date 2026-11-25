@@ -35,12 +35,16 @@ class RangeTrendLimitOrders(ExtendedLimitOrders):
 			owner,ticker=key;book=self.p.books[owner];calendar=book.market_data['execution_sessions'];position=book.positions.get(ticker)
 			if pd.Timestamp(when)>=order['expires']:self.finish(key,when,'expired');continue
 			if order['exit_order'] and position is not order['position']:self.finish(key,when,'cancelled_stale_position');continue
+			if not order['exit_order'] and self.p.trend_entry_opposing_1h_trend(owner,ticker,order['side'],when):
+				self.finish(key,when,'cancelled_trend_opposing_1h_trend');continue
 			if not order['exit_order'] and owner.startswith('trend_'):
 				_,row=self.p.context(ticker,when)
 				if row is None or row.get(owner+'_reversal_id')!=order['event'].get('_trend_reversal_id'):
 					self.finish(key,when,'cancelled_reversal_window_ended');continue
 			if not order['exit_order'] and self.p.range_entry_opposing_trend(owner,ticker,order['side'],when):
 				self.finish(key,when,'cancelled_range_opposing_trend');continue
+			if not order['exit_order'] and self.p.range_entry_opposing_1h_trend(owner,ticker,order['side'],when):
+				self.finish(key,when,'cancelled_range_opposing_1h_trend');continue
 			bar=bars.get(ticker)
 			if bar is None:continue
 			start=pd.Timestamp(bar['source_bar_time'])

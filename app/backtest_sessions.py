@@ -2,6 +2,8 @@
 from datetime import datetime,time,timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
+import logging
+from alpaca_calendar_loader import fetch_calendar
 
 EASTERN=ZoneInfo('America/New_York')
 
@@ -20,7 +22,10 @@ class BacktestSessions:
 	def __init__(self,rows):
 		self.days={}
 		for row in rows:
-			day=pd.Timestamp(field(row,'date')).date()
+			if any(field(row,name) is None for name in ('date','open','close')):raise ValueError('Invalid Alpaca calendar response: missing date/open/close')
+			stamp=pd.Timestamp(field(row,'date'))
+			if pd.isna(stamp):raise ValueError('Invalid Alpaca calendar response: missing date')
+			day=stamp.date()
 			if day.weekday()>=5: continue
 			core_open=at(day,field(row,'open'));core_close=at(day,field(row,'close'))
 			# Alpaca's legacy calendar includes the actual extended session bounds.
@@ -31,10 +36,23 @@ class BacktestSessions:
 			self.days[day]=(start,core_open,core_close,end)
 
 	@classmethod
-	def load(cls,api,start,end):
-		try: rows=api.get_calendar(start=(pd.Timestamp(start).date()-timedelta(days=1)).isoformat(),end=(pd.Timestamp(end).date()+timedelta(days=1)).isoformat())
-		except Exception as exc: raise ValueError('Cannot enforce trading hours: Alpaca calendar unavailable') from exc
-		return cls(rows)
+	def load(cls,api,start,end,fallback_apis=()):
+		def local_day(value):
+			t=pd.Timestamp(value)
+			return (t.tz_convert(EASTERN) if t.tzinfo is not None else t).date()
+		first=(local_day(start)-timedelta(days=1)).isoformat();last=(local_day(end)+timedelta(days=1)).isoformat()
+		failures=[];seen=set()
+		for source in (api,*fallback_apis):
+			if source is None or id(source) in seen:continue
+			seen.add(id(source))
+			try:
+				calendar=fetch_calendar(source,first,last,cls)
+				if failures:logging.getLogger('tv-webhook').warning('Alpaca calendar recovered using configured trading client %s for %s..%s',len(seen),first,last)
+				return calendar
+			except ValueError as exc:failures.append('client '+str(len(seen))+': '+str(exc))
+		message='Cannot enforce trading hours: Alpaca calendar unavailable for '+first+'..'+last+' ('+'; '.join(failures)+'). Check the configured trading API base URL, credentials and connectivity; trading-hour checks remain enforced.'
+		logging.getLogger('tv-webhook').error('%s',message)
+		raise ValueError(message) from None
 
 	def bounds(self,when):
 		t=pd.Timestamp(when)

@@ -5,12 +5,16 @@ from range_trend_settings import STRATEGY_NAME
 from trend_strategy import entry_reason,exit_reason,observe_band_visit
 import math
 from trend_entry_guard import PotentialUnprofitableTrendGuard
+from range_outside_zone import annotate_outside_range_candles,outside_range_exit
 from capital_exposure_report import NetAndLedgerExposureTracker,position_exposures
+
+FORCED_TREND_EXIT_REASONS=frozenset({'range_opposing_trend','range_opposing_1h_trend','trend_opposing_1h_trend'})
 
 class RangeTrendPortfolio(StrategyPortfolio):
 	def __init__(self,bt,settings,state,frames,base):
 		from backtester import SimState
 		super().__init__(bt,settings,state,frames,base)
+		self.rows={t:annotate_outside_range_candles(f).to_dict('records') for t,f in frames.items()}
 		self.enabled['cross']=False
 		for side in ('long','short'):
 			owner='trend_'+side;book=SimState();book.market_data=state.market_data;book.last_price_by_ticker=self.prices;book.execution_price_index=state.execution_price_index
@@ -20,6 +24,7 @@ class RangeTrendPortfolio(StrategyPortfolio):
 			book.on_entry_filled=lambda ticker,side,when,owner=owner:self.trend_filled(owner,ticker,when)
 			book.defer_exit=lambda event,side,owner=owner:self.limit_orders.submit(owner,event,side,exit_order=True)
 			book.defer_closed_exit=lambda event,owner=owner:self.limit_orders.defer_closed_exit(owner,event)
+		self.hourly_trend_context={};self.hourly_trend_indexes={}
 		self.last_trend_reversal={};self.trend_band_visits={}
 		self.trend_entry_guard=PotentialUnprofitableTrendGuard();self.trend_entry_guard_events=[]
 		self.exposure=NetAndLedgerExposureTracker(frames)
@@ -36,22 +41,60 @@ class RangeTrendPortfolio(StrategyPortfolio):
 	def range_event(self,ticker,when):return dict(super().range_event(ticker,when),strategy_name=STRATEGY_NAME)
 	def range_exposure(self,ticker,price,side=None):
 		return sum(book.positions[ticker].num_shares*price for owner,book in self.books.items() if owner in {'range','post_stretch_range'} and self.active(owner) and ticker in book.positions and (side is None or book.positions[ticker].side==side))
+	def set_hourly_trends(self,runs,options=None):
+		from hourly_trend_context import build_hourly_trends
+		self.hourly_trend_context=build_hourly_trends(getattr(runs,'raw_frames',{}),self.settings,options)
+		self.hourly_trend_indexes={t:(pd.DatetimeIndex(f.completed_at),f.strong_long_trend.to_numpy(dtype=bool),f.strong_short_trend.to_numpy(dtype=bool)) for t,f in self.hourly_trend_context.items() if not f.empty}
+	def range_entry_opposing_1h_trend(self,owner,ticker,side,when):
+		if owner not in {'range','post_stretch_range'}:return False
+		flag='block_range_stretch_entries_on_opposing_1h_trend_filter_enabled' if owner=='post_stretch_range' else 'block_range_entries_on_opposing_1h_trend_filter_enabled'
+		if not getattr(self.settings,flag):return False
+		return self.opposing_1h_trend(ticker,side,when)
+	def trend_entry_opposing_1h_trend(self,owner,ticker,side,when):
+		return owner in {'trend_long','trend_short'} and self.settings.block_trend_entries_on_opposing_1h_trend_filter_enabled and self.opposing_1h_trend(ticker,side,when)
+	def opposing_1h_trend(self,ticker,side,when):
+		cached=self.hourly_trend_indexes.get(ticker)
+		if cached is not None:
+			times,longs,shorts=cached;i=times.searchsorted(pd.Timestamp(when),side='right')-1
+			return i>=0 and bool((shorts if side=='long' else longs)[i])
+		frame=self.hourly_trend_context.get(ticker)
+		if frame is None or frame.empty:return False
+		i=pd.DatetimeIndex(frame.completed_at).searchsorted(pd.Timestamp(when),side='right')-1
+		return i>=0 and bool(frame.iloc[i]['strong_'+('short' if side=='long' else 'long')+'_trend'])
 	def range_opposing_trend(self,owner,ticker,side,when):
 		if owner not in {'range','post_stretch_range'}:return False
 		_,row=self.context(ticker,when)
 		return row is not None and bool(row.get('strong_'+('short' if side=='long' else 'long')+'_trend',False))
 	def range_entry_opposing_trend(self,owner,ticker,side,when):
-		return self.settings.block_range_entries_on_opposing_trend_filter_enabled and self.range_opposing_trend(owner,ticker,side,when)
+		flag='block_range_stretch_entries_on_opposing_trend_filter_enabled' if owner=='post_stretch_range' else 'block_range_entries_on_opposing_trend_filter_enabled'
+		return getattr(self.settings,flag) and self.range_opposing_trend(owner,ticker,side,when)
 	def entry_zone_reason(self,side,ticker,when,owner='range'):
-		if owner.startswith('trend_'):return None
+		if owner.startswith('trend_'):return 'trend_opposing_1h_trend' if self.trend_entry_opposing_1h_trend(owner,ticker,side,when) else None
 		if self.range_entry_opposing_trend(owner,ticker,side,when):return 'range_opposing_trend'
+		if self.range_entry_opposing_1h_trend(owner,ticker,side,when):return 'range_opposing_1h_trend'
 		return super().entry_zone_reason(side,ticker,when,owner)
 	def exit_allowed(self,owner,event):
-		if owner.startswith('trend_') or event.get('exit_reason','').startswith('replaced_by_qualifying_') or event.get('exit_reason')=='range_opposing_trend':return True
+		if event.get('exit_reason') in FORCED_TREND_EXIT_REASONS:return True
 		key=(owner,event['ticker']);pending=self.limit_orders.pending.get(key);closed=self.limit_orders.closed_exit_intents.get(key)
-		# Once requested, a forced trend exit cannot be canceled by ordinary range exits.
-		if (pending and pending['exit_order'] and pending['event'].get('exit_reason')=='range_opposing_trend') or (closed and closed[0].get('exit_reason')=='range_opposing_trend'):return False
+		# Preserve a forced exit's reason and intent until it can execute.
+		if (pending and pending['exit_order'] and pending['event'].get('exit_reason') in FORCED_TREND_EXIT_REASONS) or (closed and closed[0].get('exit_reason') in FORCED_TREND_EXIT_REASONS):return False
+		if owner.startswith('trend_') or event.get('exit_reason','').startswith('replaced_by_qualifying_'):return True
 		return super().exit_allowed(owner,event)
+	def process_opposing_1h_trend_exits(self,ticker,when):
+		flags={'range':'force_range_exits_on_opposing_1h_trend_filter_enabled','post_stretch_range':'force_range_stretch_exits_on_opposing_1h_trend_filter_enabled','trend_long':'force_trend_exits_on_opposing_1h_trend_filter_enabled','trend_short':'force_trend_exits_on_opposing_1h_trend_filter_enabled'}
+		for owner,flag in flags.items():
+			book=self.books[owner];key=(owner,ticker);position=book.positions.get(ticker)
+			if not self.active(owner) or position is None or not getattr(self.settings,flag) or not self.opposing_1h_trend(ticker,position.side,when):continue
+			self.blocked_exit_intents.pop(key,None)
+			pending=self.limit_orders.pending.get(key);closed=self.limit_orders.closed_exit_intents.get(key)
+			if pending and pending['exit_order'] and pending['event'].get('exit_reason') in FORCED_TREND_EXIT_REASONS:continue
+			if closed and closed[0].get('exit_reason') in FORCED_TREND_EXIT_REASONS:continue
+			reason='trend_opposing_1h_trend' if owner.startswith('trend_') else 'range_opposing_1h_trend'
+			if pending:self.limit_orders.finish(key,when,'superseded_by_'+reason)
+			self.limit_orders.closed_exit_intents.pop(key,None)
+			event=dict(self.range_event(ticker,when),exit_reason=reason)
+			if self.bt._close_position(book,event):
+				book.trade_events[-1]['exit_reason']=reason;self.sync(owner)
 	def process_range_opposing_trend_exits(self,ticker,when):
 		for owner in ('range','post_stretch_range'):
 			if not self.active(owner):continue
@@ -59,7 +102,10 @@ class RangeTrendPortfolio(StrategyPortfolio):
 			pending=self.limit_orders.pending.get(key)
 			if pending and not pending['exit_order'] and self.range_entry_opposing_trend(owner,ticker,pending['side'],when):
 				self.limit_orders.finish(key,when,'cancelled_range_opposing_trend');pending=None
-			if position is None or not self.settings.force_range_exits_on_opposing_trend_filter_enabled or not self.range_opposing_trend(owner,ticker,position.side,when):continue
+			if pending and not pending['exit_order'] and self.range_entry_opposing_1h_trend(owner,ticker,pending['side'],when):
+				self.limit_orders.finish(key,when,'cancelled_range_opposing_1h_trend');pending=None
+			flag='force_range_stretch_exits_on_opposing_trend_filter_enabled' if owner=='post_stretch_range' else 'force_range_exits_on_opposing_trend_filter_enabled'
+			if position is None or not getattr(self.settings,flag) or not self.range_opposing_trend(owner,ticker,position.side,when):continue
 			self.blocked_exit_intents.pop(key,None)
 			if pending and pending['exit_order']:
 				if pending['event'].get('exit_reason')=='range_opposing_trend':continue
@@ -68,7 +114,17 @@ class RangeTrendPortfolio(StrategyPortfolio):
 			event=dict(self.range_event(ticker,when),exit_reason='range_opposing_trend')
 			if self.bt._close_position(book,event):
 				book.trade_events[-1]['exit_reason']='range_opposing_trend';self.sync(owner)
+	def process_outside_range_exits(self,ticker,when):
+		if not self.settings.exit_range_position_outside_range_zone:return
+		_,row=self.context(ticker,when)
+		for owner in ('range','post_stretch_range'):
+			book=self.books[owner];position=book.positions.get(ticker)
+			if not self.active(owner) or position is None or not outside_range_exit(position.side,row,self.settings.exit_range_position_outside_range_zone_candles):continue
+			event=dict(self.range_event(ticker,when),exit_reason='range_position_outside_range_zone')
+			if self.bt._close_position(book,event):
+				book.trade_events[-1]['exit_reason']='range_position_outside_range_zone';self.sync(owner)
 	def process_heikin_ashi_exits(self,ticker,when):
+		self.process_outside_range_exits(ticker,when)
 		# Legacy 1h filters apply only to the two range books.
 		from heikin_ashi_filter import EXIT_REASON
 		from golden_cross_dip_recovery import HEIKIN_ASHI_FILTER_FLAGS
@@ -79,6 +135,7 @@ class RangeTrendPortfolio(StrategyPortfolio):
 				if self.bt._close_position(book,dict(self.range_event(ticker,when),exit_reason=EXIT_REASON)):self.sync(owner)
 	def process_zone_exits(self,ticker,when,record_zone=False):
 		self.process_range_opposing_trend_exits(ticker,when)
+		self.process_opposing_1h_trend_exits(ticker,when)
 		# Transition exits remain range-only. Trend exits use their own policy.
 		trend_positions={o:b.positions for o,b in self.books.items() if o.startswith('trend_')}
 		try:
@@ -126,6 +183,7 @@ class RangeTrendPortfolio(StrategyPortfolio):
 		if self.books[owner].last_exit_time_by_ticker.get(ticker)==event['received_dt']:return False
 		own=self.books[owner].positions.get(ticker)
 		if own and own.side!=side:return False
+		if self.trend_entry_opposing_1h_trend(owner,ticker,side,event['received_dt']):return False
 		if owner.startswith('trend_'):
 			_,row=self.context(ticker,event['received_dt']);price=event.get('_decision_price',event.get('_execution_fill_price',event.get('price')))
 			if self.trend_exit_reason(owner,ticker,price,row):return False

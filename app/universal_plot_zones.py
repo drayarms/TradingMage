@@ -1,4 +1,4 @@
-"""Causal completed 4h universal zones shared by trading and chart overlays."""
+"""Causal completed native-timeframe universal zones shared by trading and chart overlays."""
 import math
 import pandas as pd
 
@@ -10,7 +10,7 @@ def annotate_universal_zones(frame,gradient_candles=2,points=(),universal_zone_m
 	out=frame.copy();n=gradient_candles
 	rows=list(frame.itertuples());events=[]
 	for point in points:
-		confirmed=pd.Timestamp(point['confirmed_at']);evaluation=pd.Timestamp(point.get('time',confirmed-pd.Timedelta(hours=4)))
+		confirmed=pd.Timestamp(point['confirmed_at']);evaluation=pd.Timestamp(point.get('time',confirmed-(pd.Timestamp(frame.completed_at.iloc[0])-frame.index[0])))
 		if evaluation not in frame.index:continue
 		index=frame.index.get_loc(evaluation)
 		if pd.Timestamp(rows[index].completed_at)<=confirmed:events.append((confirmed.value,index))

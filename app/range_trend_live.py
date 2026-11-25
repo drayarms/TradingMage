@@ -126,6 +126,7 @@ class RangeTrendLive:
 				p.blocked_exit_intents[owner,ticker]=(event,position)
 		from heikin_ashi_filter import load_hourly_runs
 		p.heikin_ashi_runs=load_hourly_runs(self.data_api,self.settings,[ticker],now-pd.Timedelta(days=7),now,{ticker:f})
+		p.set_hourly_trends(p.heikin_ashi_runs,self.options)
 		when=now.to_pydatetime();p.process_heikin_ashi_exits(ticker,when);p.process_zone_exits(ticker,when)
 		p.process_exit_intents(when);p.process_range(ticker,when,False);p.process_trend(ticker,when,False)
 		for family in (('trend','range') if self.settings.entry_strategy_precedence=='trend' else ('range','trend')):

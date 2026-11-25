@@ -1,53 +1,47 @@
 {
   "overall": {
-    "max_open_market_value": 265478.9205879442,
-    "time": "2026-08-25T08:05:00-04:00",
+    "max_open_market_value": 199569.26682536767,
+    "time": "2026-06-25T09:37:00-04:00",
     "by_ticker_at_peak": {
-      "AMAT": 16286.721498266485,
-      "INTC": 22694.30931530435,
-      "NVDA": 15531.373634326112,
-      "CRM": 29199.615061769375,
-      "GS": 23492.748383042213,
-      "ADBE": 22540.864312974372,
-      "JPM": 30236.657487081287,
-      "GOOGL": 19930.79111949999,
-      "META": 12299.226387184011,
-      "MS": 6760.082509424568,
-      "AMZN": 6622.6208157203255,
-      "AMD": 6618.6208660075,
-      "TSLA": 13029.765094925204,
-      "NFLX": 10184.843113547377,
-      "DIS": 7041.229168673538,
-      "AAPL": 9891.192282909571,
-      "SNOW": 6518.66801210898,
-      "MSFT": 6599.591525178966
+      "AMZN": 30564.289098222464,
+      "META": 22151.68248900175,
+      "AMD": 10962.207393575138,
+      "MSFT": 17187.800657370528,
+      "XOM": 11792.953066319265,
+      "CRM": 4460.656908898991,
+      "NFLX": 11916.303640741096,
+      "INTC": 12519.566924421186,
+      "NVDA": 18462.831655452443,
+      "TSLA": 16905.78246319237,
+      "CVX": 6273.5792236805355,
+      "GOOGL": 6412.964728312679,
+      "AMAT": 16765.84294848134,
+      "JPM": 6710.071849768667,
+      "DIS": 6482.733777929222
     },
-    "virtual_ledger_market_value_at_peak": 265478.9205879442,
+    "virtual_ledger_market_value_at_peak": 199569.26682536767,
     "signed_shares_by_ticker_at_peak": {
-      "AMAT": 32.88585865374353,
-      "INTC": 250.9044700420602,
-      "NVDA": 73.61189456526903,
-      "CRM": -142.30525396836774,
-      "GS": 22.39537500766655,
-      "ADBE": -82.87387151356437,
-      "JPM": 84.30686598935254,
-      "GOOGL": -56.94999891276392,
-      "META": 21.795545609044858,
-      "MS": 31.296678284373,
-      "AMZN": 25.1342396892494,
-      "AMD": 14.064098192976473,
-      "TSLA": -37.14300198097264,
-      "NFLX": -127.54969459671105,
-      "DIS": -63.57769001059628,
-      "AAPL": -31.886499944905133,
-      "SNOW": -20.181634712411704,
-      "MSFT": -13.61582736781301
+      "AMZN": 134.5199995520552,
+      "META": 40.586457225309644,
+      "AMD": -19.99493915005996,
+      "MSFT": 47.528034226141074,
+      "XOM": 87.07141956821667,
+      "CRM": 29.44619539161627,
+      "NFLX": 166.0114745157578,
+      "INTC": -89.60468740639269,
+      "NVDA": 92.62909720776864,
+      "TSLA": 45.18169111262714,
+      "CVX": 36.86121195196872,
+      "GOOGL": 19.065776930409914,
+      "AMAT": -26.647556222453932,
+      "JPM": -19.958269073754877,
+      "DIS": -64.25546414837171
     }
   },
   "by_ticker": {
     "AAPL": {
-      "max_open_market_value": 32475.48346490379,
-      "time": "2026-10-29T19:34:00-04:00"
+      "max_open_market_value": 18216.79820656306,
+      "time": "2026-06-08T13:35:00-04:00"
     },
     "ADBE": {
       "max_open_market_value": 30292.751564343453,
@@ -58,125 +52,119 @@
       "time": "2026-06-17T10:25:00-04:00"
     },
     "AMD": {
-      "max_open_market_value": 29273.391305718582,
-      "time": "2026-10-16T10:39:00-04:00"
+      "max_open_market_value": 17413.916440914058,
+      "time": "2026-06-12T05:46:00-04:00"
     },
     "AMZN": {
       "max_open_market_value": 32402.785357093748,
       "time": "2026-06-29T04:01:00-04:00"
     },
     "CRM": {
-      "max_open_market_value": 29869.87280796039,
-      "time": "2026-08-25T09:46:00-04:00"
+      "max_open_market_value": 26182.950718386175,
+      "time": "2026-07-08T04:05:00-04:00"
     },
     "CVX": {
-      "max_open_market_value": 32228.96501975764,
-      "time": "2026-08-17T10:34:00-04:00"
+      "max_open_market_value": 13348.457718071068,
+      "time": "2026-07-02T09:50:00-04:00"
     },
     "DIS": {
-      "max_open_market_value": 30373.665855385894,
-      "time": "2026-09-11T10:20:00-04:00"
+      "max_open_market_value": 10178.41198463805,
+      "time": "2026-06-22T10:00:00-04:00"
     },
     "GOOGL": {
-      "max_open_market_value": 27438.038143300695,
-      "time": "2026-09-14T07:06:00-04:00"
+      "max_open_market_value": 16366.161171806489,
+      "time": "2026-06-09T09:35:00-04:00"
     },
     "GS": {
-      "max_open_market_value": 31958.45768095978,
-      "time": "2026-11-05T06:25:00-05:00"
+      "max_open_market_value": 27662.71819393178,
+      "time": "2026-07-02T10:17:00-04:00"
     },
     "INTC": {
-      "max_open_market_value": 27039.217445124883,
-      "time": "2026-08-25T09:49:00-04:00"
+      "max_open_market_value": 12595.73090871662,
+      "time": "2026-06-25T09:36:00-04:00"
     },
     "JPM": {
-      "max_open_market_value": 31837.268163470224,
-      "time": "2026-08-26T08:29:00-04:00"
+      "max_open_market_value": 23394.847347346225,
+      "time": "2026-07-07T09:14:00-04:00"
     },
     "META": {
       "max_open_market_value": 23075.430255449795,
       "time": "2026-06-24T09:39:00-04:00"
     },
     "MS": {
-      "max_open_market_value": 31897.856556898867,
-      "time": "2026-07-16T09:30:00-04:00"
+      "max_open_market_value": 22361.523140131925,
+      "time": "2026-07-02T16:07:00-04:00"
     },
     "MSFT": {
-      "max_open_market_value": 32523.54445163405,
-      "time": "2026-10-16T09:31:00-04:00"
+      "max_open_market_value": 18001.23821034751,
+      "time": "2026-06-24T09:39:00-04:00"
     },
     "NFLX": {
       "max_open_market_value": 22913.26961355621,
       "time": "2026-07-08T14:05:00-04:00"
     },
     "NVDA": {
-      "max_open_market_value": 24207.11324848432,
-      "time": "2026-09-08T12:03:00-04:00"
+      "max_open_market_value": 29348.862549748912,
+      "time": "2026-06-30T09:36:00-04:00"
     },
     "SNOW": {
-      "max_open_market_value": 27227.096185872804,
-      "time": "2026-09-23T16:09:00-04:00"
+      "max_open_market_value": 9508.993007933304,
+      "time": "2026-06-05T05:54:00-04:00"
     },
     "TSLA": {
-      "max_open_market_value": 31181.030716413567,
-      "time": "2026-10-02T09:40:00-04:00"
+      "max_open_market_value": 29979.76267571008,
+      "time": "2026-06-29T11:31:00-04:00"
     },
     "XOM": {
-      "max_open_market_value": 33566.62307749561,
-      "time": "2026-09-15T13:58:00-04:00"
+      "max_open_market_value": 29731.87549596695,
+      "time": "2026-06-17T12:49:00-04:00"
     }
   },
   "capital_basis": "net_positions",
   "net_positions": {
     "overall": {
-      "max_open_market_value": 265478.9205879442,
-      "time": "2026-08-25T08:05:00-04:00",
+      "max_open_market_value": 199569.26682536767,
+      "time": "2026-06-25T09:37:00-04:00",
       "by_ticker_at_peak": {
-        "AMAT": 16286.721498266485,
-        "INTC": 22694.30931530435,
-        "NVDA": 15531.373634326112,
-        "CRM": 29199.615061769375,
-        "GS": 23492.748383042213,
-        "ADBE": 22540.864312974372,
-        "JPM": 30236.657487081287,
-        "GOOGL": 19930.79111949999,
-        "META": 12299.226387184011,
-        "MS": 6760.082509424568,
-        "AMZN": 6622.6208157203255,
-        "AMD": 6618.6208660075,
-        "TSLA": 13029.765094925204,
-        "NFLX": 10184.843113547377,
-        "DIS": 7041.229168673538,
-        "AAPL": 9891.192282909571,
-        "SNOW": 6518.66801210898,
-        "MSFT": 6599.591525178966
+        "AMZN": 30564.289098222464,
+        "META": 22151.68248900175,
+        "AMD": 10962.207393575138,
+        "MSFT": 17187.800657370528,
+        "XOM": 11792.953066319265,
+        "CRM": 4460.656908898991,
+        "NFLX": 11916.303640741096,
+        "INTC": 12519.566924421186,
+        "NVDA": 18462.831655452443,
+        "TSLA": 16905.78246319237,
+        "CVX": 6273.5792236805355,
+        "GOOGL": 6412.964728312679,
+        "AMAT": 16765.84294848134,
+        "JPM": 6710.071849768667,
+        "DIS": 6482.733777929222
       },
-      "virtual_ledger_market_value_at_peak": 265478.9205879442,
+      "virtual_ledger_market_value_at_peak": 199569.26682536767,
       "signed_shares_by_ticker_at_peak": {
-        "AMAT": 32.88585865374353,
-        "INTC": 250.9044700420602,
-        "NVDA": 73.61189456526903,
-        "CRM": -142.30525396836774,
-        "GS": 22.39537500766655,
-        "ADBE": -82.87387151356437,
-        "JPM": 84.30686598935254,
-        "GOOGL": -56.94999891276392,
-        "META": 21.795545609044858,
-        "MS": 31.296678284373,
-        "AMZN": 25.1342396892494,
-        "AMD": 14.064098192976473,
-        "TSLA": -37.14300198097264,
-        "NFLX": -127.54969459671105,
-        "DIS": -63.57769001059628,
-        "AAPL": -31.886499944905133,
-        "SNOW": -20.181634712411704,
-        "MSFT": -13.61582736781301
+        "AMZN": 134.5199995520552,
+        "META": 40.586457225309644,
+        "AMD": -19.99493915005996,
+        "MSFT": 47.528034226141074,
+        "XOM": 87.07141956821667,
+        "CRM": 29.44619539161627,
+        "NFLX": 166.0114745157578,
+        "INTC": -89.60468740639269,
+        "NVDA": 92.62909720776864,
+        "TSLA": 45.18169111262714,
+        "CVX": 36.86121195196872,
+        "GOOGL": 19.065776930409914,
+        "AMAT": -26.647556222453932,
+        "JPM": -19.958269073754877,
+        "DIS": -64.25546414837171
       }
     },
     "by_ticker": {
       "AAPL": {
-        "max_open_market_value": 32475.48346490379,
-        "time": "2026-10-29T19:34:00-04:00"
+        "max_open_market_value": 18216.79820656306,
+        "time": "2026-06-08T13:35:00-04:00"
       },
       "ADBE": {
         "max_open_market_value": 30292.751564343453,
@@ -187,105 +175,102 @@
         "time": "2026-06-17T10:25:00-04:00"
       },
       "AMD": {
-        "max_open_market_value": 29273.391305718582,
-        "time": "2026-10-16T10:39:00-04:00"
+        "max_open_market_value": 17413.916440914058,
+        "time": "2026-06-12T05:46:00-04:00"
       },
       "AMZN": {
         "max_open_market_value": 32402.785357093748,
         "time": "2026-06-29T04:01:00-04:00"
       },
       "CRM": {
-        "max_open_market_value": 29869.87280796039,
-        "time": "2026-08-25T09:46:00-04:00"
+        "max_open_market_value": 26182.950718386175,
+        "time": "2026-07-08T04:05:00-04:00"
       },
       "CVX": {
-        "max_open_market_value": 32228.96501975764,
-        "time": "2026-08-17T10:34:00-04:00"
+        "max_open_market_value": 13348.457718071068,
+        "time": "2026-07-02T09:50:00-04:00"
       },
       "DIS": {
-        "max_open_market_value": 30373.665855385894,
-        "time": "2026-09-11T10:20:00-04:00"
+        "max_open_market_value": 10178.41198463805,
+        "time": "2026-06-22T10:00:00-04:00"
       },
       "GOOGL": {
-        "max_open_market_value": 27438.038143300695,
-        "time": "2026-09-14T07:06:00-04:00"
+        "max_open_market_value": 16366.161171806489,
+        "time": "2026-06-09T09:35:00-04:00"
       },
       "GS": {
-        "max_open_market_value": 31958.45768095978,
-        "time": "2026-11-05T06:25:00-05:00"
+        "max_open_market_value": 27662.71819393178,
+        "time": "2026-07-02T10:17:00-04:00"
       },
       "INTC": {
-        "max_open_market_value": 27039.217445124883,
-        "time": "2026-08-25T09:49:00-04:00"
+        "max_open_market_value": 12595.73090871662,
+        "time": "2026-06-25T09:36:00-04:00"
       },
       "JPM": {
-        "max_open_market_value": 31837.268163470224,
-        "time": "2026-08-26T08:29:00-04:00"
+        "max_open_market_value": 23394.847347346225,
+        "time": "2026-07-07T09:14:00-04:00"
       },
       "META": {
         "max_open_market_value": 23075.430255449795,
         "time": "2026-06-24T09:39:00-04:00"
       },
       "MS": {
-        "max_open_market_value": 31897.856556898867,
-        "time": "2026-07-16T09:30:00-04:00"
+        "max_open_market_value": 22361.523140131925,
+        "time": "2026-07-02T16:07:00-04:00"
       },
       "MSFT": {
-        "max_open_market_value": 32523.54445163405,
-        "time": "2026-10-16T09:31:00-04:00"
+        "max_open_market_value": 18001.23821034751,
+        "time": "2026-06-24T09:39:00-04:00"
       },
       "NFLX": {
         "max_open_market_value": 22913.26961355621,
         "time": "2026-07-08T14:05:00-04:00"
       },
       "NVDA": {
-        "max_open_market_value": 24207.11324848432,
-        "time": "2026-09-08T12:03:00-04:00"
+        "max_open_market_value": 29348.862549748912,
+        "time": "2026-06-30T09:36:00-04:00"
       },
       "SNOW": {
-        "max_open_market_value": 27227.096185872804,
-        "time": "2026-09-23T16:09:00-04:00"
+        "max_open_market_value": 9508.993007933304,
+        "time": "2026-06-05T05:54:00-04:00"
       },
       "TSLA": {
-        "max_open_market_value": 31181.030716413567,
-        "time": "2026-10-02T09:40:00-04:00"
+        "max_open_market_value": 29979.76267571008,
+        "time": "2026-06-29T11:31:00-04:00"
       },
       "XOM": {
-        "max_open_market_value": 33566.62307749561,
-        "time": "2026-09-15T13:58:00-04:00"
+        "max_open_market_value": 29731.87549596695,
+        "time": "2026-06-17T12:49:00-04:00"
       }
     }
   },
   "virtual_ledger": {
     "overall": {
-      "max_open_market_value": 274271.7046669435,
-      "time": "2026-07-09T04:04:00-04:00",
+      "max_open_market_value": 232645.209217114,
+      "time": "2026-07-08T09:41:00-04:00",
       "by_ticker_at_peak": {
-        "AMZN": 26206.26704789277,
-        "CRM": 25489.056264718696,
-        "GOOGL": 15912.365481492943,
-        "ADBE": 30073.446154843958,
-        "AMAT": 10291.1670147974,
-        "NFLX": 22700.848740180227,
-        "MSFT": 12116.625775955486,
-        "GS": 23877.823919274328,
-        "JPM": 24287.041433629744,
-        "NVDA": 5691.689019552725,
-        "MS": 15817.741112739537,
-        "DIS": 12246.593893013567,
-        "INTC": 6516.21432323586,
-        "META": 10079.078121626408,
-        "TSLA": 9799.553600756613,
-        "AAPL": 6670.547327752738,
-        "SNOW": 9913.678862257426,
-        "XOM": 6581.966573223094
+        "AMZN": 22855.096147392294,
+        "CRM": 25826.273549324338,
+        "GOOGL": 12713.202762359937,
+        "ADBE": 30114.71916048268,
+        "AMAT": 3316.432949716579,
+        "NFLX": 21006.80573241261,
+        "MSFT": 12125.451851600712,
+        "GS": 24119.38710325158,
+        "JPM": 12965.136748256964,
+        "NVDA": 18910.652917226427,
+        "AAPL": 12719.354670192744,
+        "MS": 15966.44499828075,
+        "META": 6794.976859025662,
+        "TSLA": 6595.19578313253,
+        "SNOW": 6616.0779844581775
       },
-      "net_market_value_at_peak": 220121.1987263539
+      "net_market_value_at_peak": 184880.63331810446
     },
     "by_ticker": {
       "AAPL": {
-        "max_open_market_value": 32475.48346490379,
-        "time": "2026-10-29T19:34:00-04:00"
+        "max_open_market_value": 18216.798206563064,
+        "time": "2026-06-08T13:35:00-04:00"
       },
       "ADBE": {
         "max_open_market_value": 30292.751564343453,
@@ -296,802 +281,256 @@
         "time": "2026-06-17T10:25:00-04:00"
       },
       "AMD": {
-        "max_open_market_value": 29273.391305718582,
-        "time": "2026-10-16T10:39:00-04:00"
+        "max_open_market_value": 17413.916440914054,
+        "time": "2026-06-12T05:46:00-04:00"
       },
       "AMZN": {
         "max_open_market_value": 32402.78535709375,
         "time": "2026-06-29T04:01:00-04:00"
       },
       "CRM": {
-        "max_open_market_value": 29869.872807960386,
-        "time": "2026-08-25T09:46:00-04:00"
+        "max_open_market_value": 26182.950718386175,
+        "time": "2026-07-08T04:05:00-04:00"
       },
       "CVX": {
-        "max_open_market_value": 32228.96501975764,
-        "time": "2026-08-17T10:34:00-04:00"
+        "max_open_market_value": 13348.457718071068,
+        "time": "2026-07-02T09:50:00-04:00"
       },
       "DIS": {
-        "max_open_market_value": 30373.665855385894,
-        "time": "2026-09-11T10:20:00-04:00"
+        "max_open_market_value": 16987.093276018964,
+        "time": "2026-06-18T13:45:00-04:00"
       },
       "GOOGL": {
-        "max_open_market_value": 29770.772815850498,
-        "time": "2026-09-04T15:30:00-04:00"
+        "max_open_market_value": 16366.161171806489,
+        "time": "2026-06-09T09:35:00-04:00"
       },
       "GS": {
-        "max_open_market_value": 31958.45768095978,
-        "time": "2026-11-05T06:25:00-05:00"
+        "max_open_market_value": 27662.718193931778,
+        "time": "2026-07-02T10:17:00-04:00"
       },
       "INTC": {
-        "max_open_market_value": 27039.217445124883,
-        "time": "2026-08-25T09:49:00-04:00"
+        "max_open_market_value": 13520.743772607602,
+        "time": "2026-07-07T05:05:00-04:00"
       },
       "JPM": {
-        "max_open_market_value": 31837.268163470224,
-        "time": "2026-08-26T08:29:00-04:00"
+        "max_open_market_value": 23394.84734734623,
+        "time": "2026-07-07T09:14:00-04:00"
       },
       "META": {
         "max_open_market_value": 23075.430255449795,
         "time": "2026-06-24T09:39:00-04:00"
       },
       "MS": {
-        "max_open_market_value": 31897.85655689887,
-        "time": "2026-07-16T09:30:00-04:00"
+        "max_open_market_value": 22361.52314013193,
+        "time": "2026-07-02T16:07:00-04:00"
       },
       "MSFT": {
-        "max_open_market_value": 32523.544451634054,
-        "time": "2026-10-16T09:31:00-04:00"
+        "max_open_market_value": 18001.23821034751,
+        "time": "2026-06-24T09:39:00-04:00"
       },
       "NFLX": {
-        "max_open_market_value": 31559.92368606897,
-        "time": "2026-08-03T09:42:00-04:00"
+        "max_open_market_value": 22913.269613556207,
+        "time": "2026-07-08T14:05:00-04:00"
       },
       "NVDA": {
-        "max_open_market_value": 24207.11324848432,
-        "time": "2026-09-08T12:03:00-04:00"
+        "max_open_market_value": 29348.862549748916,
+        "time": "2026-06-30T09:36:00-04:00"
       },
       "SNOW": {
-        "max_open_market_value": 27227.096185872804,
-        "time": "2026-09-23T16:09:00-04:00"
+        "max_open_market_value": 9508.993007933304,
+        "time": "2026-06-05T05:54:00-04:00"
       },
       "TSLA": {
-        "max_open_market_value": 31181.030716413567,
-        "time": "2026-10-02T09:40:00-04:00"
+        "max_open_market_value": 29979.76267571008,
+        "time": "2026-06-29T11:31:00-04:00"
       },
       "XOM": {
-        "max_open_market_value": 33566.62307749561,
-        "time": "2026-09-15T13:58:00-04:00"
+        "max_open_market_value": 29731.875495966946,
+        "time": "2026-06-17T12:49:00-04:00"
       }
     }
   },
   "daily_max_open_exposure": [
     {
       "date": "2026-06-01",
-      "daily_max_capital_open_exposure": 52315.93523981473,
-      "daily_max_net_open_exposure": 52315.93523981473,
-      "daily_max_gross_open_exposure": 52315.93523981473
+      "daily_max_capital_open_exposure": 58958.86999535051,
+      "daily_max_net_open_exposure": 58958.86999535051,
+      "daily_max_gross_open_exposure": 58958.86999535051
     },
     {
       "date": "2026-06-02",
-      "daily_max_capital_open_exposure": 80333.27586668945,
-      "daily_max_net_open_exposure": 80333.27586668945,
-      "daily_max_gross_open_exposure": 81128.37411731352
+      "daily_max_capital_open_exposure": 87151.89412422827,
+      "daily_max_net_open_exposure": 87151.89412422827,
+      "daily_max_gross_open_exposure": 87945.42975158167
     },
     {
       "date": "2026-06-03",
-      "daily_max_capital_open_exposure": 99227.42121645676,
-      "daily_max_net_open_exposure": 99227.42121645676,
-      "daily_max_gross_open_exposure": 117304.04745892211
+      "daily_max_capital_open_exposure": 112096.37171047145,
+      "daily_max_net_open_exposure": 112096.37171047145,
+      "daily_max_gross_open_exposure": 130093.4870483815
     },
     {
       "date": "2026-06-04",
-      "daily_max_capital_open_exposure": 154478.80170446183,
-      "daily_max_net_open_exposure": 154478.80170446183,
-      "daily_max_gross_open_exposure": 179120.0130254414
+      "daily_max_capital_open_exposure": 158156.9933652144,
+      "daily_max_net_open_exposure": 158156.9933652144,
+      "daily_max_gross_open_exposure": 182798.204686194
     },
     {
       "date": "2026-06-05",
-      "daily_max_capital_open_exposure": 175122.54139519756,
-      "daily_max_net_open_exposure": 175122.54139519756,
-      "daily_max_gross_open_exposure": 191730.56728271893
+      "daily_max_capital_open_exposure": 178860.5422973183,
+      "daily_max_net_open_exposure": 178860.5422973183,
+      "daily_max_gross_open_exposure": 195489.0463556075
     },
     {
       "date": "2026-06-08",
-      "daily_max_capital_open_exposure": 165231.63267670237,
-      "daily_max_net_open_exposure": 165231.63267670237,
-      "daily_max_gross_open_exposure": 165231.63267670237
+      "daily_max_capital_open_exposure": 168955.5295858303,
+      "daily_max_net_open_exposure": 168955.5295858303,
+      "daily_max_gross_open_exposure": 168955.5295858303
     },
     {
       "date": "2026-06-09",
-      "daily_max_capital_open_exposure": 174159.40484570825,
-      "daily_max_net_open_exposure": 174159.40484570825,
-      "daily_max_gross_open_exposure": 180444.85752201278
+      "daily_max_capital_open_exposure": 169494.06108948038,
+      "daily_max_net_open_exposure": 169494.06108948038,
+      "daily_max_gross_open_exposure": 175779.51376578494
     },
     {
       "date": "2026-06-10",
-      "daily_max_capital_open_exposure": 130841.710282377,
-      "daily_max_net_open_exposure": 130841.710282377,
-      "daily_max_gross_open_exposure": 143897.04409429373
+      "daily_max_capital_open_exposure": 128409.55034485851,
+      "daily_max_net_open_exposure": 128409.55034485851,
+      "daily_max_gross_open_exposure": 133749.65321293642
     },
     {
       "date": "2026-06-11",
-      "daily_max_capital_open_exposure": 155182.7127216587,
-      "daily_max_net_open_exposure": 155182.7127216587,
-      "daily_max_gross_open_exposure": 178757.8109846832
+      "daily_max_capital_open_exposure": 150505.19332134278,
+      "daily_max_net_open_exposure": 150505.19332134278,
+      "daily_max_gross_open_exposure": 167076.99530096218
     },
     {
       "date": "2026-06-12",
-      "daily_max_capital_open_exposure": 142396.5180184719,
-      "daily_max_net_open_exposure": 142396.5180184719,
-      "daily_max_gross_open_exposure": 168707.19708229584
+      "daily_max_capital_open_exposure": 148598.56954332412,
+      "daily_max_net_open_exposure": 148598.56954332412,
+      "daily_max_gross_open_exposure": 174932.03419440426
     },
     {
       "date": "2026-06-15",
-      "daily_max_capital_open_exposure": 142216.63706343845,
-      "daily_max_net_open_exposure": 142216.63706343845,
-      "daily_max_gross_open_exposure": 142216.63706343845
+      "daily_max_capital_open_exposure": 139084.49285782452,
+      "daily_max_net_open_exposure": 139084.49285782452,
+      "daily_max_gross_open_exposure": 148533.5653028932
     },
     {
       "date": "2026-06-16",
-      "daily_max_capital_open_exposure": 154750.97869355112,
-      "daily_max_net_open_exposure": 154750.97869355112,
-      "daily_max_gross_open_exposure": 154750.97869355115
+      "daily_max_capital_open_exposure": 161999.55623289768,
+      "daily_max_net_open_exposure": 161999.55623289768,
+      "daily_max_gross_open_exposure": 161999.55623289768
     },
     {
       "date": "2026-06-17",
-      "daily_max_capital_open_exposure": 162135.68504306808,
-      "daily_max_net_open_exposure": 162135.68504306808,
-      "daily_max_gross_open_exposure": 175275.59597824866
+      "daily_max_capital_open_exposure": 165526.9408402062,
+      "daily_max_net_open_exposure": 165526.9408402062,
+      "daily_max_gross_open_exposure": 178837.83271653706
     },
     {
       "date": "2026-06-18",
-      "daily_max_capital_open_exposure": 150651.27165808284,
-      "daily_max_net_open_exposure": 150651.27165808284,
-      "daily_max_gross_open_exposure": 188778.46997880307
+      "daily_max_capital_open_exposure": 167280.87677342817,
+      "daily_max_net_open_exposure": 167280.87677342817,
+      "daily_max_gross_open_exposure": 186265.56882303592
     },
     {
       "date": "2026-06-22",
-      "daily_max_capital_open_exposure": 171664.12815054003,
-      "daily_max_net_open_exposure": 171664.12815054003,
-      "daily_max_gross_open_exposure": 211016.13432169537
+      "daily_max_capital_open_exposure": 172737.5916752493,
+      "daily_max_net_open_exposure": 172737.5916752493,
+      "daily_max_gross_open_exposure": 198834.39358721397
     },
     {
       "date": "2026-06-23",
-      "daily_max_capital_open_exposure": 174675.65021174506,
-      "daily_max_net_open_exposure": 174675.65021174506,
-      "daily_max_gross_open_exposure": 174675.65021174506
+      "daily_max_capital_open_exposure": 175263.86543829303,
+      "daily_max_net_open_exposure": 175263.86543829303,
+      "daily_max_gross_open_exposure": 175263.86543829303
     },
     {
       "date": "2026-06-24",
-      "daily_max_capital_open_exposure": 183520.9039708951,
-      "daily_max_net_open_exposure": 183520.9039708951,
-      "daily_max_gross_open_exposure": 183520.9039708951
+      "daily_max_capital_open_exposure": 184556.0485302218,
+      "daily_max_net_open_exposure": 184556.0485302218,
+      "daily_max_gross_open_exposure": 191641.94024220342
     },
     {
       "date": "2026-06-25",
-      "daily_max_capital_open_exposure": 175612.2239152762,
-      "daily_max_net_open_exposure": 175612.2239152762,
-      "daily_max_gross_open_exposure": 184301.266805159
+      "daily_max_capital_open_exposure": 199569.26682536767,
+      "daily_max_net_open_exposure": 199569.26682536767,
+      "daily_max_gross_open_exposure": 203429.83573615833
     },
     {
       "date": "2026-06-26",
-      "daily_max_capital_open_exposure": 140383.6385103005,
-      "daily_max_net_open_exposure": 140383.6385103005,
-      "daily_max_gross_open_exposure": 151002.9601318864
+      "daily_max_capital_open_exposure": 191837.2521743499,
+      "daily_max_net_open_exposure": 191837.2521743499,
+      "daily_max_gross_open_exposure": 191837.2521743499
     },
     {
       "date": "2026-06-29",
-      "daily_max_capital_open_exposure": 151047.96744655675,
-      "daily_max_net_open_exposure": 151047.96744655675,
-      "daily_max_gross_open_exposure": 151047.96744655675
+      "daily_max_capital_open_exposure": 193923.47096656088,
+      "daily_max_net_open_exposure": 193923.47096656088,
+      "daily_max_gross_open_exposure": 193923.47096656088
     },
     {
       "date": "2026-06-30",
-      "daily_max_capital_open_exposure": 114151.27880581826,
-      "daily_max_net_open_exposure": 114151.27880581826,
-      "daily_max_gross_open_exposure": 114151.27880581826
+      "daily_max_capital_open_exposure": 118628.45630746691,
+      "daily_max_net_open_exposure": 118628.45630746691,
+      "daily_max_gross_open_exposure": 118628.45630746691
     },
     {
       "date": "2026-07-01",
-      "daily_max_capital_open_exposure": 150805.8776788809,
-      "daily_max_net_open_exposure": 150805.8776788809,
-      "daily_max_gross_open_exposure": 163401.80610466495
+      "daily_max_capital_open_exposure": 150371.90746187986,
+      "daily_max_net_open_exposure": 150371.90746187986,
+      "daily_max_gross_open_exposure": 162964.68468092754
     },
     {
       "date": "2026-07-02",
-      "daily_max_capital_open_exposure": 196555.88956214464,
-      "daily_max_net_open_exposure": 196555.88956214464,
-      "daily_max_gross_open_exposure": 218056.89980256392
+      "daily_max_capital_open_exposure": 191423.84152893518,
+      "daily_max_net_open_exposure": 191423.84152893518,
+      "daily_max_gross_open_exposure": 212976.6078898466
     },
     {
       "date": "2026-07-06",
-      "daily_max_capital_open_exposure": 197271.78306713008,
-      "daily_max_net_open_exposure": 197271.78306713008,
-      "daily_max_gross_open_exposure": 226344.39537366762
+      "daily_max_capital_open_exposure": 192052.16736158665,
+      "daily_max_net_open_exposure": 192052.16736158665,
+      "daily_max_gross_open_exposure": 221098.49637142176
     },
     {
       "date": "2026-07-07",
-      "daily_max_capital_open_exposure": 191517.84847897294,
-      "daily_max_net_open_exposure": 191517.84847897294,
-      "daily_max_gross_open_exposure": 224540.21441373762
+      "daily_max_capital_open_exposure": 178130.50366487438,
+      "daily_max_net_open_exposure": 178130.50366487438,
+      "daily_max_gross_open_exposure": 221220.19393613728
     },
     {
       "date": "2026-07-08",
-      "daily_max_capital_open_exposure": 218508.79431233078,
-      "daily_max_net_open_exposure": 218508.79431233078,
-      "daily_max_gross_open_exposure": 266273.3702113403
-    },
-    {
-      "date": "2026-07-09",
-      "daily_max_capital_open_exposure": 220121.1987263539,
-      "daily_max_net_open_exposure": 220121.1987263539,
-      "daily_max_gross_open_exposure": 274271.7046669435
-    },
-    {
-      "date": "2026-07-10",
-      "daily_max_capital_open_exposure": 167172.96683681564,
-      "daily_max_net_open_exposure": 167172.96683681564,
-      "daily_max_gross_open_exposure": 167172.96683681564
-    },
-    {
-      "date": "2026-07-13",
-      "daily_max_capital_open_exposure": 189175.63587962833,
-      "daily_max_net_open_exposure": 189175.63587962833,
-      "daily_max_gross_open_exposure": 196292.6598235211
-    },
-    {
-      "date": "2026-07-14",
-      "daily_max_capital_open_exposure": 188326.95158687828,
-      "daily_max_net_open_exposure": 188326.95158687828,
-      "daily_max_gross_open_exposure": 208019.39599542652
-    },
-    {
-      "date": "2026-07-15",
-      "daily_max_capital_open_exposure": 195932.01513472345,
-      "daily_max_net_open_exposure": 195932.01513472345,
-      "daily_max_gross_open_exposure": 215805.5322884887
-    },
-    {
-      "date": "2026-07-16",
-      "daily_max_capital_open_exposure": 206030.12742171582,
-      "daily_max_net_open_exposure": 206030.12742171582,
-      "daily_max_gross_open_exposure": 229248.39832971545
-    },
-    {
-      "date": "2026-07-17",
-      "daily_max_capital_open_exposure": 166705.214656955,
-      "daily_max_net_open_exposure": 166705.214656955,
-      "daily_max_gross_open_exposure": 179871.6786540147
-    },
-    {
-      "date": "2026-07-20",
-      "daily_max_capital_open_exposure": 167066.74312657287,
-      "daily_max_net_open_exposure": 167066.74312657287,
-      "daily_max_gross_open_exposure": 167576.603485653
-    },
-    {
-      "date": "2026-07-21",
-      "daily_max_capital_open_exposure": 189804.7735900834,
-      "daily_max_net_open_exposure": 189804.7735900834,
-      "daily_max_gross_open_exposure": 189804.7735900834
-    },
-    {
-      "date": "2026-07-22",
-      "daily_max_capital_open_exposure": 198493.17270283846,
-      "daily_max_net_open_exposure": 198493.17270283846,
-      "daily_max_gross_open_exposure": 203506.20179869773
-    },
-    {
-      "date": "2026-07-23",
-      "daily_max_capital_open_exposure": 139427.20085175752,
-      "daily_max_net_open_exposure": 139427.20085175752,
-      "daily_max_gross_open_exposure": 152146.7578983159
-    },
-    {
-      "date": "2026-07-24",
-      "daily_max_capital_open_exposure": 137439.6142647135,
-      "daily_max_net_open_exposure": 137439.6142647135,
-      "daily_max_gross_open_exposure": 142198.7405830115
-    },
-    {
-      "date": "2026-07-27",
-      "daily_max_capital_open_exposure": 179014.05811767752,
-      "daily_max_net_open_exposure": 179014.05811767752,
-      "daily_max_gross_open_exposure": 179014.05811767752
-    },
-    {
-      "date": "2026-07-28",
-      "daily_max_capital_open_exposure": 139230.59426599494,
-      "daily_max_net_open_exposure": 139230.59426599494,
-      "daily_max_gross_open_exposure": 139230.59426599494
-    },
-    {
-      "date": "2026-07-29",
-      "daily_max_capital_open_exposure": 133768.5132235749,
-      "daily_max_net_open_exposure": 133768.5132235749,
-      "daily_max_gross_open_exposure": 133768.5132235749
-    },
-    {
-      "date": "2026-07-30",
-      "daily_max_capital_open_exposure": 163181.07668637618,
-      "daily_max_net_open_exposure": 163181.07668637618,
-      "daily_max_gross_open_exposure": 182819.11444206664
-    },
-    {
-      "date": "2026-07-31",
-      "daily_max_capital_open_exposure": 159151.51629900766,
-      "daily_max_net_open_exposure": 159151.51629900766,
-      "daily_max_gross_open_exposure": 178748.30834288077
-    },
-    {
-      "date": "2026-08-03",
-      "daily_max_capital_open_exposure": 143103.3110242679,
-      "daily_max_net_open_exposure": 143103.3110242679,
-      "daily_max_gross_open_exposure": 211884.95542285996
-    },
-    {
-      "date": "2026-08-04",
-      "daily_max_capital_open_exposure": 166361.15025682084,
-      "daily_max_net_open_exposure": 166361.15025682084,
-      "daily_max_gross_open_exposure": 215715.81771588454
-    },
-    {
-      "date": "2026-08-05",
-      "daily_max_capital_open_exposure": 137069.25924754053,
-      "daily_max_net_open_exposure": 137069.25924754053,
-      "daily_max_gross_open_exposure": 170851.78801454138
-    },
-    {
-      "date": "2026-08-06",
-      "daily_max_capital_open_exposure": 167276.09051566562,
-      "daily_max_net_open_exposure": 167276.09051566562,
-      "daily_max_gross_open_exposure": 180530.34071614678
-    },
-    {
-      "date": "2026-08-07",
-      "daily_max_capital_open_exposure": 183051.3052911396,
-      "daily_max_net_open_exposure": 183051.3052911396,
-      "daily_max_gross_open_exposure": 223952.83223871604
-    },
-    {
-      "date": "2026-08-10",
-      "daily_max_capital_open_exposure": 179467.5259468528,
-      "daily_max_net_open_exposure": 179467.5259468528,
-      "daily_max_gross_open_exposure": 222428.3142629842
-    },
-    {
-      "date": "2026-08-11",
-      "daily_max_capital_open_exposure": 158050.58970181365,
-      "daily_max_net_open_exposure": 158050.58970181365,
-      "daily_max_gross_open_exposure": 170100.1224624609
-    },
-    {
-      "date": "2026-08-12",
-      "daily_max_capital_open_exposure": 167655.15506672263,
-      "daily_max_net_open_exposure": 167655.15506672263,
-      "daily_max_gross_open_exposure": 168735.04540983192
-    },
-    {
-      "date": "2026-08-13",
-      "daily_max_capital_open_exposure": 156429.47055111048,
-      "daily_max_net_open_exposure": 156429.47055111048,
-      "daily_max_gross_open_exposure": 161882.14967839728
-    },
-    {
-      "date": "2026-08-14",
-      "daily_max_capital_open_exposure": 144368.5837880109,
-      "daily_max_net_open_exposure": 144368.5837880109,
-      "daily_max_gross_open_exposure": 144368.5837880109
-    },
-    {
-      "date": "2026-08-17",
-      "daily_max_capital_open_exposure": 142962.69371423003,
-      "daily_max_net_open_exposure": 142962.69371423003,
-      "daily_max_gross_open_exposure": 156134.6979560116
-    },
-    {
-      "date": "2026-08-18",
-      "daily_max_capital_open_exposure": 129643.79017283513,
-      "daily_max_net_open_exposure": 129643.79017283513,
-      "daily_max_gross_open_exposure": 143080.84703369424
-    },
-    {
-      "date": "2026-08-19",
-      "daily_max_capital_open_exposure": 176100.62797270613,
-      "daily_max_net_open_exposure": 176100.62797270613,
-      "daily_max_gross_open_exposure": 189418.35770243587
-    },
-    {
-      "date": "2026-08-20",
-      "daily_max_capital_open_exposure": 196191.09459208313,
-      "daily_max_net_open_exposure": 196191.09459208313,
-      "daily_max_gross_open_exposure": 209441.04053802908
-    },
-    {
-      "date": "2026-08-21",
-      "daily_max_capital_open_exposure": 222013.96588449544,
-      "daily_max_net_open_exposure": 222013.96588449544,
-      "daily_max_gross_open_exposure": 241921.71011818666
-    },
-    {
-      "date": "2026-08-24",
-      "daily_max_capital_open_exposure": 243564.84762388724,
-      "daily_max_net_open_exposure": 243564.84762388724,
-      "daily_max_gross_open_exposure": 247873.12655370813
-    },
-    {
-      "date": "2026-08-25",
-      "daily_max_capital_open_exposure": 265478.9205879442,
-      "daily_max_net_open_exposure": 265478.9205879442,
-      "daily_max_gross_open_exposure": 265478.9205879442
-    },
-    {
-      "date": "2026-08-26",
-      "daily_max_capital_open_exposure": 228803.53375301883,
-      "daily_max_net_open_exposure": 228803.53375301883,
-      "daily_max_gross_open_exposure": 228803.53375301883
-    },
-    {
-      "date": "2026-08-27",
-      "daily_max_capital_open_exposure": 194445.54811578974,
-      "daily_max_net_open_exposure": 194445.54811578974,
-      "daily_max_gross_open_exposure": 194445.54811578974
-    },
-    {
-      "date": "2026-08-28",
-      "daily_max_capital_open_exposure": 177265.58345593253,
-      "daily_max_net_open_exposure": 177265.58345593253,
-      "daily_max_gross_open_exposure": 196324.10538182015
-    },
-    {
-      "date": "2026-08-31",
-      "daily_max_capital_open_exposure": 185763.1101985022,
-      "daily_max_net_open_exposure": 185763.1101985022,
-      "daily_max_gross_open_exposure": 223941.31657858193
-    },
-    {
-      "date": "2026-09-01",
-      "daily_max_capital_open_exposure": 202577.6390935633,
-      "daily_max_net_open_exposure": 202577.6390935633,
-      "daily_max_gross_open_exposure": 208326.6159702297
-    },
-    {
-      "date": "2026-09-02",
-      "daily_max_capital_open_exposure": 244153.36684046136,
-      "daily_max_net_open_exposure": 244153.36684046136,
-      "daily_max_gross_open_exposure": 244153.36684046133
-    },
-    {
-      "date": "2026-09-03",
-      "daily_max_capital_open_exposure": 226083.78730536433,
-      "daily_max_net_open_exposure": 226083.78730536433,
-      "daily_max_gross_open_exposure": 245896.12208875053
-    },
-    {
-      "date": "2026-09-04",
-      "daily_max_capital_open_exposure": 204218.35063787244,
-      "daily_max_net_open_exposure": 204218.35063787244,
-      "daily_max_gross_open_exposure": 241268.74586844927
-    },
-    {
-      "date": "2026-09-08",
-      "daily_max_capital_open_exposure": 177126.7123083521,
-      "daily_max_net_open_exposure": 177126.7123083521,
-      "daily_max_gross_open_exposure": 209963.90325768478
-    },
-    {
-      "date": "2026-09-09",
-      "daily_max_capital_open_exposure": 188696.72116445567,
-      "daily_max_net_open_exposure": 188696.72116445567,
-      "daily_max_gross_open_exposure": 215341.0252604219
-    },
-    {
-      "date": "2026-09-10",
-      "daily_max_capital_open_exposure": 219062.05538721837,
-      "daily_max_net_open_exposure": 219062.05538721837,
-      "daily_max_gross_open_exposure": 219062.05538721837
-    },
-    {
-      "date": "2026-09-11",
-      "daily_max_capital_open_exposure": 228167.2892300603,
-      "daily_max_net_open_exposure": 228167.2892300603,
-      "daily_max_gross_open_exposure": 228167.2892300603
-    },
-    {
-      "date": "2026-09-14",
-      "daily_max_capital_open_exposure": 228607.4468725349,
-      "daily_max_net_open_exposure": 228607.4468725349,
-      "daily_max_gross_open_exposure": 228607.4468725349
-    },
-    {
-      "date": "2026-09-15",
-      "daily_max_capital_open_exposure": 194812.73116963677,
-      "daily_max_net_open_exposure": 194812.73116963677,
-      "daily_max_gross_open_exposure": 194812.73116963677
-    },
-    {
-      "date": "2026-09-16",
-      "daily_max_capital_open_exposure": 217851.1835267255,
-      "daily_max_net_open_exposure": 217851.1835267255,
-      "daily_max_gross_open_exposure": 217851.1835267255
-    },
-    {
-      "date": "2026-09-17",
-      "daily_max_capital_open_exposure": 198637.0281262172,
-      "daily_max_net_open_exposure": 198637.0281262172,
-      "daily_max_gross_open_exposure": 213362.92942847253
-    },
-    {
-      "date": "2026-09-18",
-      "daily_max_capital_open_exposure": 205258.39686244697,
-      "daily_max_net_open_exposure": 205258.39686244697,
-      "daily_max_gross_open_exposure": 230230.89633114566
-    },
-    {
-      "date": "2026-09-21",
-      "daily_max_capital_open_exposure": 191231.23858246245,
-      "daily_max_net_open_exposure": 191231.23858246245,
-      "daily_max_gross_open_exposure": 205209.10565293868
-    },
-    {
-      "date": "2026-09-22",
-      "daily_max_capital_open_exposure": 238783.22796177727,
-      "daily_max_net_open_exposure": 238783.22796177727,
-      "daily_max_gross_open_exposure": 238783.22796177727
-    },
-    {
-      "date": "2026-09-23",
-      "daily_max_capital_open_exposure": 246704.88687385706,
-      "daily_max_net_open_exposure": 246704.88687385706,
-      "daily_max_gross_open_exposure": 246704.88687385706
-    },
-    {
-      "date": "2026-09-24",
-      "daily_max_capital_open_exposure": 211199.85668814636,
-      "daily_max_net_open_exposure": 211199.85668814636,
-      "daily_max_gross_open_exposure": 222013.47992467068
-    },
-    {
-      "date": "2026-09-25",
-      "daily_max_capital_open_exposure": 194108.46649617856,
-      "daily_max_net_open_exposure": 194108.46649617856,
-      "daily_max_gross_open_exposure": 218007.85323490555
-    },
-    {
-      "date": "2026-09-28",
-      "daily_max_capital_open_exposure": 187281.7217333066,
-      "daily_max_net_open_exposure": 187281.7217333066,
-      "daily_max_gross_open_exposure": 200141.86985360124
-    },
-    {
-      "date": "2026-09-29",
-      "daily_max_capital_open_exposure": 124859.54060897994,
-      "daily_max_net_open_exposure": 124859.54060897994,
-      "daily_max_gross_open_exposure": 149300.26353076732
-    },
-    {
-      "date": "2026-09-30",
-      "daily_max_capital_open_exposure": 134153.91762488885,
-      "daily_max_net_open_exposure": 134153.91762488885,
-      "daily_max_gross_open_exposure": 146944.35961077583
-    },
-    {
-      "date": "2026-10-01",
-      "daily_max_capital_open_exposure": 136161.69002449972,
-      "daily_max_net_open_exposure": 136161.69002449972,
-      "daily_max_gross_open_exposure": 136161.69002449972
-    },
-    {
-      "date": "2026-10-02",
-      "daily_max_capital_open_exposure": 113616.19940615933,
-      "daily_max_net_open_exposure": 113616.19940615933,
-      "daily_max_gross_open_exposure": 113616.19940615933
-    },
-    {
-      "date": "2026-10-05",
-      "daily_max_capital_open_exposure": 103762.3893231146,
-      "daily_max_net_open_exposure": 103762.3893231146,
-      "daily_max_gross_open_exposure": 116971.11423598566
-    },
-    {
-      "date": "2026-10-06",
-      "daily_max_capital_open_exposure": 146083.87914723015,
-      "daily_max_net_open_exposure": 146083.87914723015,
-      "daily_max_gross_open_exposure": 165917.58215788583
-    },
-    {
-      "date": "2026-10-07",
-      "daily_max_capital_open_exposure": 146683.22214512966,
-      "daily_max_net_open_exposure": 146683.22214512966,
-      "daily_max_gross_open_exposure": 166581.15038741013
-    },
-    {
-      "date": "2026-10-08",
-      "daily_max_capital_open_exposure": 117765.4997972807,
-      "daily_max_net_open_exposure": 117765.4997972807,
-      "daily_max_gross_open_exposure": 117765.4997972807
-    },
-    {
-      "date": "2026-10-09",
-      "daily_max_capital_open_exposure": 131431.9620956812,
-      "daily_max_net_open_exposure": 131431.9620956812,
-      "daily_max_gross_open_exposure": 131431.9620956812
-    },
-    {
-      "date": "2026-10-12",
-      "daily_max_capital_open_exposure": 173034.46853908667,
-      "daily_max_net_open_exposure": 173034.46853908667,
-      "daily_max_gross_open_exposure": 173034.46853908667
-    },
-    {
-      "date": "2026-10-13",
-      "daily_max_capital_open_exposure": 199556.55455398848,
-      "daily_max_net_open_exposure": 199556.55455398848,
-      "daily_max_gross_open_exposure": 199556.55455398848
-    },
-    {
-      "date": "2026-10-14",
-      "daily_max_capital_open_exposure": 223437.55876654948,
-      "daily_max_net_open_exposure": 223437.55876654948,
-      "daily_max_gross_open_exposure": 254872.72748053697
-    },
-    {
-      "date": "2026-10-15",
-      "daily_max_capital_open_exposure": 212343.8623528285,
-      "daily_max_net_open_exposure": 212343.8623528285,
-      "daily_max_gross_open_exposure": 221132.6846430867
-    },
-    {
-      "date": "2026-10-16",
-      "daily_max_capital_open_exposure": 256610.3823025802,
-      "daily_max_net_open_exposure": 256610.3823025802,
-      "daily_max_gross_open_exposure": 265178.28904979327
-    },
-    {
-      "date": "2026-10-19",
-      "daily_max_capital_open_exposure": 205782.2138832378,
-      "daily_max_net_open_exposure": 205782.2138832378,
-      "daily_max_gross_open_exposure": 209904.5166857789
-    },
-    {
-      "date": "2026-10-20",
-      "daily_max_capital_open_exposure": 190893.1619975965,
-      "daily_max_net_open_exposure": 190893.1619975965,
-      "daily_max_gross_open_exposure": 210202.86129903575
-    },
-    {
-      "date": "2026-10-21",
-      "daily_max_capital_open_exposure": 142443.18753108522,
-      "daily_max_net_open_exposure": 142443.18753108522,
-      "daily_max_gross_open_exposure": 168455.2421143916
-    },
-    {
-      "date": "2026-10-22",
-      "daily_max_capital_open_exposure": 129662.2580960546,
-      "daily_max_net_open_exposure": 129662.2580960546,
-      "daily_max_gross_open_exposure": 147594.6931873423
-    },
-    {
-      "date": "2026-10-23",
-      "daily_max_capital_open_exposure": 123260.94966442765,
-      "daily_max_net_open_exposure": 123260.94966442765,
-      "daily_max_gross_open_exposure": 133403.5472414309
-    },
-    {
-      "date": "2026-10-26",
-      "daily_max_capital_open_exposure": 150890.981010545,
-      "daily_max_net_open_exposure": 150890.981010545,
-      "daily_max_gross_open_exposure": 161284.0737335178
-    },
-    {
-      "date": "2026-10-27",
-      "daily_max_capital_open_exposure": 153778.000510041,
-      "daily_max_net_open_exposure": 153778.000510041,
-      "daily_max_gross_open_exposure": 191135.30796109897
-    },
-    {
-      "date": "2026-10-28",
-      "daily_max_capital_open_exposure": 187352.53783322417,
-      "daily_max_net_open_exposure": 187352.53783322417,
-      "daily_max_gross_open_exposure": 207546.50088768324
-    },
-    {
-      "date": "2026-10-29",
-      "daily_max_capital_open_exposure": 259542.0395030037,
-      "daily_max_net_open_exposure": 259542.0395030037,
-      "daily_max_gross_open_exposure": 259542.03950300373
-    },
-    {
-      "date": "2026-10-30",
-      "daily_max_capital_open_exposure": 258817.07826911387,
-      "daily_max_net_open_exposure": 258817.07826911387,
-      "daily_max_gross_open_exposure": 258817.07826911387
-    },
-    {
-      "date": "2026-11-02",
-      "daily_max_capital_open_exposure": 189536.3351546566,
-      "daily_max_net_open_exposure": 189536.3351546566,
-      "daily_max_gross_open_exposure": 202818.13101575797
-    },
-    {
-      "date": "2026-11-03",
-      "daily_max_capital_open_exposure": 185783.69364130904,
-      "daily_max_net_open_exposure": 185783.69364130904,
-      "daily_max_gross_open_exposure": 185783.69364130904
-    },
-    {
-      "date": "2026-11-04",
-      "daily_max_capital_open_exposure": 201308.77076391486,
-      "daily_max_net_open_exposure": 201308.77076391486,
-      "daily_max_gross_open_exposure": 201308.77076391486
-    },
-    {
-      "date": "2026-11-05",
-      "daily_max_capital_open_exposure": 181327.9765346624,
-      "daily_max_net_open_exposure": 181327.9765346624,
-      "daily_max_gross_open_exposure": 181327.9765346624
-    },
-    {
-      "date": "2026-11-06",
-      "daily_max_capital_open_exposure": 188612.50118368198,
-      "daily_max_net_open_exposure": 188612.50118368198,
-      "daily_max_gross_open_exposure": 202320.52615716282
-    },
-    {
-      "date": "2026-11-09",
-      "daily_max_capital_open_exposure": 191208.68137794395,
-      "daily_max_net_open_exposure": 191208.68137794395,
-      "daily_max_gross_open_exposure": 218649.93265471733
-    },
-    {
-      "date": "2026-11-10",
-      "daily_max_capital_open_exposure": 172367.77520574944,
-      "daily_max_net_open_exposure": 172367.77520574944,
-      "daily_max_gross_open_exposure": 210566.0140923182
-    },
-    {
-      "date": "2026-11-11",
-      "daily_max_capital_open_exposure": 154279.00427798944,
-      "daily_max_net_open_exposure": 154279.00427798944,
-      "daily_max_gross_open_exposure": 222426.17513992696
-    },
-    {
-      "date": "2026-11-12",
-      "daily_max_capital_open_exposure": 93548.46076264308,
-      "daily_max_net_open_exposure": 93548.46076264308,
-      "daily_max_gross_open_exposure": 129108.75357810684
-    },
-    {
-      "date": "2026-11-13",
-      "daily_max_capital_open_exposure": 112149.97646732838,
-      "daily_max_net_open_exposure": 112149.97646732838,
-      "daily_max_gross_open_exposure": 149107.78329593115
+      "daily_max_capital_open_exposure": 184880.63331810446,
+      "daily_max_net_open_exposure": 184880.63331810446,
+      "daily_max_gross_open_exposure": 232645.209217114
     }
   ],
   "daily_max_open_exposure_summary": {
-    "days_observed": 117,
-    "days_with_exposure": 117,
-    "mean": 174414.33212466797,
-    "standard_deviation": 39544.07324343464,
-    "max": 265478.9205879442,
-    "min": 52315.93523981473,
+    "days_observed": 26,
+    "days_with_exposure": 26,
+    "mean": 158786.70951287175,
+    "standard_deviation": 34374.66907020071,
+    "max": 199569.26682536767,
+    "min": 58958.86999535051,
     "capital_basis": "net_positions",
     "net_positions": {
-      "days_observed": 117,
-      "days_with_exposure": 117,
-      "mean": 174414.33212466797,
-      "standard_deviation": 39544.07324343464,
-      "max": 265478.9205879442,
-      "min": 52315.93523981473
+      "days_observed": 26,
+      "days_with_exposure": 26,
+      "mean": 158786.70951287175,
+      "standard_deviation": 34374.66907020071,
+      "max": 199569.26682536767,
+      "min": 58958.86999535051
     },
     "virtual_ledger": {
-      "days_observed": 117,
-      "days_with_exposure": 117,
-      "mean": 189166.44498438112,
-      "standard_deviation": 41252.78924818367,
-      "max": 274271.7046669435,
-      "min": 52315.93523981473
+      "days_observed": 26,
+      "days_with_exposure": 26,
+      "mean": 172149.21898154196,
+      "standard_deviation": 40391.43807683849,
+      "max": 232645.209217114,
+      "min": 58958.86999535051
     }
   }
 }

@@ -59,7 +59,7 @@ def draw_chart(ax,ticker,data,entries,exits,signals,entries_and_exits,lux_algo_s
 					key=(label,selected,color)
 					if key not in zone_labels:handles.append(Patch(facecolor=color,alpha=.45,label=label+' ('+selected+')'));zone_labels.add(key)
 		if o.get('shade_trend_zones',True):
-			trend_rows=sorted(layers.get('4h',{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
+			trend_rows=sorted(layers.get(o.get('plotted_trend_and_universal_zones','4h'),{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
 			for index,row in enumerate(trend_rows):
 				strong=row.get('strong_long_trend') or row.get('strong_short_trend')
 				if not strong:continue
@@ -69,8 +69,8 @@ def draw_chart(ax,ticker,data,entries,exits,signals,entries_and_exits,lux_algo_s
 				right=min(x(trend_rows[index+1]['completed_at']) if index+1<len(trend_rows) else x(data['end']),x(data['end']))
 				if right<=left:continue
 				styles=[]
-				if row.get('strong_long_trend'):styles.append(('Strong long trend (4h)','#16BDB4','..'))
-				if row.get('strong_short_trend'):styles.append(('Strong short trend (4h)','#E83E8C','.' if styles else '..'))
+				if row.get('strong_long_trend'):styles.append(('Strong long trend ('+o.get('plotted_trend_and_universal_zones','4h')+')','#16BDB4','..'))
+				if row.get('strong_short_trend'):styles.append(('Strong short trend ('+o.get('plotted_trend_and_universal_zones','4h')+')','#E83E8C','.' if styles else '..'))
 				for label,color,hatch in styles:
 					ax.add_patch(Rectangle((left,lower),right-left,upper-lower,facecolor='none',edgecolor=color,hatch=hatch,linewidth=0,alpha=.8,zorder=.7,label=label))
 					if label not in zone_labels:
@@ -79,14 +79,14 @@ def draw_chart(ax,ticker,data,entries,exits,signals,entries_and_exits,lux_algo_s
 		if o.get('shade_universal_peak_trough_zones',True):
 			from chart_patterns import install_short_dashes
 			install_short_dashes()
-			universal_rows=sorted(layers.get('4h',{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
+			universal_rows=sorted(layers.get(o.get('plotted_trend_and_universal_zones','4h'),{}).get('indicators',[]),key=lambda r:pd.Timestamp(r['completed_at']).value)
 			for index,row in enumerate(universal_rows):
 				upper,lower=row.get('bollinger_upper'),row.get('bollinger_lower')
 				if not all(finite(v) for v in (upper,lower)) or upper<=lower:continue
 				left=max(x(row['completed_at']),x(data['start']))
 				right=min(x(universal_rows[index+1]['completed_at']) if index+1<len(universal_rows) else x(data['end']),x(data['end']))
 				if right<=left:continue
-				for field,label,hatch in (('universal_peak','Universal peak (4h)','xxxx'),('universal_trough','Universal trough (4h)','--')):
+				for field,label,hatch in (('universal_peak','Universal peak ('+o.get('plotted_trend_and_universal_zones','4h')+')','xxxx'),('universal_trough','Universal trough ('+o.get('plotted_trend_and_universal_zones','4h')+')','--')):
 					if not row.get(field):continue
 					ax.add_patch(Rectangle((left,lower),right-left,upper-lower,facecolor='none',edgecolor='#555555',hatch=hatch,linewidth=0,alpha=.8,zorder=.7,label=label))
 					if label not in zone_labels:

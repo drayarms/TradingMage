@@ -3,7 +3,7 @@ from dataclasses import dataclass,asdict
 import math
 import pandas as pd
 
-SELECTORS=('plotted_range_zone','plotted_stretch_zones','plotted_fast_ma','plotted_slow_ma','plotted_bollingers','plotted_candlesticks','plotted_ichimoku_cloud')
+SELECTORS=('plotted_range_zone','plotted_stretch_zones','plotted_fast_ma','plotted_slow_ma','plotted_bollingers','plotted_candlesticks','plotted_ichimoku_cloud','plotted_trend_and_universal_zones')
 
 @dataclass(frozen=True)
 class PlotOptions:
@@ -14,6 +14,7 @@ class PlotOptions:
 	plotted_bollingers:str='4h'
 	plotted_candlesticks:str='4h'
 	plotted_ichimoku_cloud:str='4h'
+	plotted_trend_and_universal_zones:str='4h'
 	candlestick_type:str='regular'
 	shade_universal_peak_trough_zones:bool=True
 	universal_zone_gradient_candles:int=2
@@ -94,7 +95,7 @@ def future_slots(api,frame,tf,cache):
 	cache[key]=future[:26];return cache[key]
 
 
-def prepare_chart_data(api,settings,frames,start,end,options):
+def prepare_chart_data(api,settings,frames,start,end,options,hourly_frames=None):
 	from golden_cross_history import GoldenCrossHistory
 	from golden_cross_dip_recovery import build_indicator_frame
 	from cross_strategy_indicators import fast_moving_average_reversed
@@ -103,14 +104,14 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 	from alpaca_trade_api.rest import TimeFrame,TimeFrameUnit
 	start,end=pd.Timestamp(start),pd.Timestamp(end);result={};cache={}
 	wanted={getattr(options,k) for k in SELECTORS}
-	if settings.cross_exit_method=='dema5' or options.shade_trend_zones or options.shade_universal_peak_trough_zones:wanted.add('4h')
+	if settings.cross_exit_method=='dema5':wanted.add('4h')
 	for ticker,original in frames.items():
 		native={'4h':original.copy()}
 		if '1h' in wanted:
 			# Bounded prehistory: enough for mature averages/ATR/HA without a cross search.
 			days=max(365,math.ceil(max(settings.slow_period,settings.fast_period,settings.bollinger_period,52)*5/8*7/5)+30)
 			history=GoldenCrossHistory(api,settings,TimeFrame(1,TimeFrameUnit.Hour),bar_duration=pd.Timedelta(hours=1))
-			raw=history._fetch(ticker,start-pd.Timedelta(days=days),end)
+			raw=hourly_frames[ticker] if hourly_frames is not None and ticker in hourly_frames else history._fetch(ticker,start-pd.Timedelta(days=days),end)
 			if raw.empty:raise ValueError('No completed native 1h chart data for '+ticker)
 			native['1h']=build_indicator_frame(raw,settings,pd.Timedelta(hours=1))
 		layers={}
@@ -119,10 +120,10 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 			if frame.empty:continue
 			points=fast_moving_average_reversed(frame,tf)
 			frame=attach_cross_turning_context(frame,points)
-			if tf=="4h" and options.shade_trend_zones:
+			if tf==options.plotted_trend_and_universal_zones and options.shade_trend_zones:
 				from trend_plot_zones import annotate_trend_zones
 				frame=annotate_trend_zones(frame,points,trend_cloud_condition_enabled=options.trend_cloud_condition_enabled,trend_heikin_ashi_streak_condition_enabled=options.trend_heikin_ashi_streak_condition_enabled,trend_heikin_ashi_streak_min_candles=options.trend_heikin_ashi_streak_min_candles,trend_heikin_ashi_streak_max_ma_gap_atr_multiple=options.trend_heikin_ashi_streak_max_ma_gap_atr_multiple,trend_cloud_fast_ma_band_gap_fraction=options.trend_cloud_fast_ma_band_gap_fraction)
-			if tf=="4h" and options.shade_universal_peak_trough_zones:
+			if tf==options.plotted_trend_and_universal_zones and options.shade_universal_peak_trough_zones:
 				from universal_plot_zones import annotate_universal_zones
 				frame=annotate_universal_zones(frame,options.universal_zone_gradient_candles,points,universal_zone_min_fast_ma_change_atr_multiple=options.universal_zone_min_fast_ma_change_atr_multiple)
 			visible=frame.loc[(frame.index>=start)&(frame.completed_at<=end)]
@@ -134,10 +135,10 @@ def prepare_chart_data(api,settings,frames,start,end,options):
 			prior=frame.loc[frame.completed_at<=start].tail(1)
 			indicator_frame=pd.concat([prior,frame.loc[(frame.completed_at>start)&(frame.completed_at<=end)]])
 			names=('close','fast_moving_average','slow_moving_average','bollinger_upper','bollinger_lower','dema5','atr','high','low','ranging_market','extreme_bullish_price_stretch','extreme_bearish_price_stretch')
-			if tf=='4h' and options.shade_trend_zones:
+			if tf==options.plotted_trend_and_universal_zones and options.shade_trend_zones:
 				from trend_plot_zones import TREND_FIELDS
 				names=names+TREND_FIELDS
-			if tf=="4h" and options.shade_universal_peak_trough_zones:
+			if tf==options.plotted_trend_and_universal_zones and options.shade_universal_peak_trough_zones:
 				from universal_plot_zones import UNIVERSAL_FIELDS
 				names=names+UNIVERSAL_FIELDS
 			rows=_records(indicator_frame,names)

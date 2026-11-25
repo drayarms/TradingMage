@@ -7,7 +7,9 @@ EXIT_REASON='opposing_1h_heikin_ashi_run'
 
 class HeikinAshiRuns:
 	def __init__(self,frames,n,anchors=None,bollinger_proximity_atr_multiple=.2):
+		self.raw_frames=frames
 		self.index={}
+		self.candles={}
 		self.color_clears={}
 		self.streak_ends={}
 		anchors=anchors or {}
@@ -36,6 +38,7 @@ class HeikinAshiRuns:
 				values.append((red>=n and red_near,green>=n and green_near))
 			self.index[ticker]=(pd.DatetimeIndex(frame.index+pd.Timedelta(hours=1)).asi8,values)
 			times=self.index[ticker][0]
+			self.candles[ticker]=(times,frame[['open','high','low','close']].to_dict('records'))
 			valid=np.isfinite(frame.open.to_numpy()) & np.isfinite(frame.close.to_numpy())
 			indices=np.arange(len(frame))
 			long_clear=np.maximum.accumulate(np.where(valid & (frame.close.to_numpy()>=frame.open.to_numpy()),indices,-1))
@@ -49,6 +52,13 @@ class HeikinAshiRuns:
 				if previous and color!=previous:ends['long' if previous==1 else 'short'].append(stamp)
 				previous=color
 			self.streak_ends[ticker]={side:np.array(values,dtype=np.int64) for side,values in ends.items()}
+
+	def latest_completed_candle(self,ticker,when):
+		if ticker not in self.candles:return None
+		times,rows=self.candles[ticker];i=int(np.searchsorted(times,pd.Timestamp(when).value,side='right'))-1
+		if i<0:return None
+		row=rows[i]
+		return row if all(np.isfinite(v) for v in row.values()) else None
 
 	def streak_ended_since(self,ticker,side,after,when):
 		ends=self.streak_ends.get(ticker,{}).get(side,np.array([],dtype=np.int64))
